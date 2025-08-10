@@ -181,7 +181,8 @@ document.addEventListener('DOMContentLoaded', () => {
       const wasPlaying = !$('livePlayer').paused;
       await j('/api/dj-now', { method: 'POST' });
       toast('Generating…');
-      setTimeout(loadTTS, 1500);
+      setTimeout(loadTTS, 3000);
+      setTimeout(loadTTS, 6000);
       if (wasPlaying && $('livePlayer').paused) {
         $('livePlayer').play().catch(() => {});
       }
