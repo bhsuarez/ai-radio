@@ -20,7 +20,6 @@
     .btn.warn{background:var(--warn);border-color:var(--warn);color:#271400}
     .grid{display:grid;gap:16px}
     @media(min-width:820px){ .grid{grid-template-columns:1.2fr .8fr} }
-
     .card{background:var(--card);border:1px solid #202634;border-radius:var(--radius);padding:16px}
     .now{display:flex;gap:16px}
     .art{width:110px;height:110px;border-radius:12px;object-fit:cover;background:#0b0d12;border:1px solid #1f2531}
@@ -44,24 +43,15 @@
 <header>
   <h1>🎧 AI Radio</h1>
   <div class="row" style="gap:10px; align-items:center">
-    
-
-    <!-- Open in external player -->
-    <a class="btn" id="openLink" href="http://icecast.zorro.local:8000/stream.mp3" target="_blank" rel="noopener">
-      🔗 Open stream
-    </a>
-
-    <!-- Inline player -->
+    <a class="btn" id="openLink" href="http://icecast.zorro.local:8000/stream.mp3" target="_blank" rel="noopener">🔗 Open stream</a>
     <audio id="livePlayer" controls preload="none" style="height:32px; max-width:320px">
       <source src="http://icecast.zorro.local:8000/stream.mp3" type="audio/mpeg">
     </audio>
-
     <button class="btn warn" id="skipBtn">⏭️ Skip track</button>
   </div>
 </header>
 
     <div class="grid">
-      <!-- Now Playing -->
       <section class="card">
         <div class="row" style="margin-bottom:8px">
           <div class="title">Now playing</div>
@@ -70,7 +60,7 @@
         </div>
         <div class="now">
           <img id="cover" alt="album art" style="max-width:240px;border-radius:8px" onerror="this.src='/static/no-cover.png'">
-	  <div style="min-width:0">
+          <div style="min-width:0">
             <div id="trackTitle" class="title">—</div>
             <div id="trackMeta" class="sub">—</div>
             <div id="timing" class="small" style="margin-top:6px">—</div>
@@ -78,14 +68,12 @@
         </div>
       </section>
 
-      <!-- Up Next -->
       <section class="card">
         <div class="title" style="margin-bottom:8px">Up next</div>
         <div id="upNext" class="list small"></div>
       </section>
     </div>
 
-    <!-- DJ Panel -->
     <section class="card">
       <div class="row" style="margin-bottom:8px">
         <div class="title">DJ</div>
@@ -99,7 +87,6 @@
       <textarea id="djText" placeholder="Your DJ line will appear here…"></textarea>
     </section>
 
-    <!-- TTS Queue -->
     <section class="card">
       <div class="title" style="margin-bottom:8px">TTS queue</div>
       <div id="ttsList" class="list"></div>
@@ -109,6 +96,7 @@
   <div id="toast" class="toast"></div>
 
 <script>
+document.addEventListener('DOMContentLoaded', () => {
   const $ = (id) => document.getElementById(id);
   const toast = (msg) => { const t=$('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'), 1800); };
 
@@ -125,17 +113,13 @@
       const d = await j('/api/now');
       $('trackTitle').textContent = d.title || d.name || 'Unknown title';
       $('trackMeta').textContent  = [d.artist, d.album].filter(Boolean).join(' • ') || '—';
-
-      // album art via /api/cover if we have a filename
       if (d.filename){
         const u = new URL('/api/cover', location.origin);
         u.searchParams.set('file', d.filename);
-        $('cover').src = u.toString() + '&t=' + Date.now(); // cache-bust
+        $('cover').src = u.toString() + '&t=' + Date.now();
       } else if (d.artwork_url){
         $('cover').src = d.artwork_url;
       }
-
-      // timing
       let startedMs = d.started_at ? Date.parse(d.started_at) : 0;
       let duration  = Number(d.duration) || 0;
       if (startedMs && duration){
@@ -161,8 +145,7 @@
       (items||[]).slice(0,10).forEach((t,i)=>{
         const row = document.createElement('div');
         row.className='item';
-        row.innerHTML = `
-          <div class="bullet">${i+1}</div>
+        row.innerHTML = `<div class="bullet">${i+1}</div>
           <div style="min-width:0">
             <div><strong>${t.title||t.name||'Unknown'}</strong></div>
             <div class="small">${[t.artist,t.album].filter(Boolean).join(' • ')}</div>
@@ -180,8 +163,7 @@
       (items||[]).forEach((q,i)=>{
         const row = document.createElement('div');
         row.className='item';
-        row.innerHTML = `
-          <div class="bullet">#${i+1}</div>
+        row.innerHTML = `<div class="bullet">#${i+1}</div>
           <div style="min-width:0;flex:1">
             <div class="small" style="margin-bottom:6px;word-break:break-word">${q.text||'(missing text)'}</div>
             ${q.audio_url ? `<audio controls preload="none" src="${q.audio_url}"></audio>` : `<div class="small">No audio yet</div>`}
@@ -192,40 +174,35 @@
     } catch(e){ console.error(e); toast('Failed to load TTS queue'); }
   }
 
-  // Actions
   $('skipBtn').onclick = async () => { try{ await j('/api/skip',{method:'POST'}); toast('Skipped'); loadNow(); loadNext(); } catch(e){ toast('Skip failed'); } };
+
   $('genBtn').onclick = async () => {
-  try {
-    const wasPlaying = !$('livePlayer').paused; // remember if stream was playing
-    await j('/api/dj-now', { method: 'POST' });
-    toast('Generating…');
-    setTimeout(loadTTS, 1500);
-    // resume stream if it was playing before
-    if (wasPlaying && $('livePlayer').paused) {
-      $('livePlayer').play().catch(() => {});
+    try {
+      const wasPlaying = !$('livePlayer').paused;
+      await j('/api/dj-now', { method: 'POST' });
+      toast('Generating…');
+      setTimeout(loadTTS, 1500);
+      if (wasPlaying && $('livePlayer').paused) {
+        $('livePlayer').play().catch(() => {});
+      }
+    } catch (e) {
+      toast('Gen failed');
     }
-  } catch (e) {
-    toast('Gen failed');
-  }
-};
+  };
+
   $('sayBtn').onclick  = async () => {
-    const text = document.getElementById('djText').value.trim();
+    const text = $('djText').value.trim();
     if(!text) return toast('Type or generate a line');
     try{ await j('/api/tts_queue',{method:'POST',body:JSON.stringify({text})}); toast('Enqueued'); setTimeout(loadTTS, 800); } catch(e){ toast('Enqueue failed'); }
   };
 
-  // Initial loads
   (async ()=>{ await Promise.all([loadNow(), loadNext(), loadTTS()]); })();
-
-  // Only refresh "Now playing" every 10s (no auto refresh on the others)
   setInterval(loadNow, 10000);
-</script>
-<script>
-  // Build a stream URL once, in case you change hostnames
-  const STREAM_URL = "http://icecast.zorro.local:8000/stream.mp3";
-  document.getElementById('livePlayer').src = STREAM_URL;
-  document.getElementById('openLink').href = STREAM_URL;
-</script>
 
+  const STREAM_URL = "http://icecast.zorro.local:8000/stream.mp3";
+  $('livePlayer').src = STREAM_URL;
+  $('openLink').href = STREAM_URL;
+});
+</script>
 </body>
 </html>
