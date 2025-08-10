@@ -194,7 +194,20 @@
 
   // Actions
   $('skipBtn').onclick = async () => { try{ await j('/api/skip',{method:'POST'}); toast('Skipped'); loadNow(); loadNext(); } catch(e){ toast('Skip failed'); } };
-  $('genBtn').onclick  = async () => { try{ await j('/api/dj-now',{method:'POST'}); toast('Generating…'); setTimeout(loadTTS, 1500); } catch(e){ toast('Gen failed'); } };
+  $('genBtn').onclick = async () => {
+  try {
+    const wasPlaying = !$('livePlayer').paused; // remember if stream was playing
+    await j('/api/dj-now', { method: 'POST' });
+    toast('Generating…');
+    setTimeout(loadTTS, 1500);
+    // resume stream if it was playing before
+    if (wasPlaying && $('livePlayer').paused) {
+      $('livePlayer').play().catch(() => {});
+    }
+  } catch (e) {
+    toast('Gen failed');
+  }
+};
   $('sayBtn').onclick  = async () => {
     const text = document.getElementById('djText').value.trim();
     if(!text) return toast('Type or generate a line');
