@@ -33,7 +33,7 @@ def announce_song(m)
     " -d ''{\"type\":\"song\",\"time\":" ^ string_of(time()) ^
     ",\"title\":\"" ^ title ^ "\",\"artist\":\"" ^ artist ^
     "\",\"album\":\"" ^ album ^ "\",\"filename\":\"" ^ file ^ "\"}'' " ^
-    " http://127.0.0.1:5000/api/log_event >/dev/null 2>&1 &'"
+    " http://127.0.0.1:5055/api/log_event >/dev/null 2>&1 &'"
   ))
 end
 all_music = source.on_metadata(all_music, announce_song)
