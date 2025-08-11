@@ -3,6 +3,7 @@ import os, json, glob, socket, subprocess, time, re, hashlib
 from datetime import datetime
 from urllib.parse import quote
 from flask import Flask, jsonify, request, send_from_directory, send_file, abort
+from flask import request
 
 # ── Config ──────────────────────────────────────────────────────
 HOST = "0.0.0.0"
@@ -10,6 +11,8 @@ PORT = 5055
 
 TELNET_HOST = "127.0.0.1"
 TELNET_PORT = 1234
+
+history = []
 
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
 NOW_JSON   = "/opt/ai-radio/now.json"
@@ -135,6 +138,14 @@ def api_history():
         except Exception:
             pass
     return jsonify([])
+
+
+@app.route("/api/log_event", methods=["POST"])
+def log_event():
+    data = request.get_json()
+    data["time"] = int(time.time() * 1000)
+    history.insert(0, data)  # Add newest first
+    return {"status": "ok"}
 
 @app.route("/api/now")
 def api_now():
