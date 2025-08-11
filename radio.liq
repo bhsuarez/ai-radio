@@ -1,3 +1,8 @@
+# Prefer mad/faad over ffmpeg; keep ffmpeg as a fallback.
+settings.decoder.priorities.ffmpeg.set(0)
+settings.decoder.priorities.mad.set(10)
+
+
 # --- Core / logging -----------------------------------------------------------
 settings.init.allow_root.set(true)
 
@@ -102,7 +107,18 @@ def update_metadata(m)
   m
 end
 
+# Keep your original radio pipeline with metadata
 radio = metadata.map(update_metadata, radio)
+
+# Preserve your final music pipeline (with metadata applied)
+music = radio
+
+# DJ queue source (trim any leading/ending silence so it fires cleanly)
+dj = strip_blank(max_blank=0.1, tts_q)
+
+# Prefer DJ clip when available; otherwise play music.
+# track_sensitive=false allows switching as soon as a track ends (no extra waiting).
+radio = fallback(track_sensitive=false, [dj, music])
 
 # --- Output -------------------------------------------------------------------
 output.icecast(
