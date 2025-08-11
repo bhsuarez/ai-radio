@@ -95,8 +95,6 @@ document.addEventListener('DOMContentLoaded', () => {
   $('livePlayer').src = STREAM_URL;
   $('openLink').href = STREAM_URL;
 
-  let localHistory = [];
-
   async function j(url,opts={}) {
     const r = await fetch(url,{headers:{'Content-Type':'application/json'},...opts});
     if(!r.ok) throw new Error(await r.text());
@@ -119,40 +117,23 @@ document.addEventListener('DOMContentLoaded', () => {
 
   async function loadTimeline(){
     try {
-      const [now, next, tts] = await Promise.all([
+      const [now, next, tts, history] = await Promise.all([
         j('/api/now'),
         j('/api/next'),
-        j('/api/tts_queue')
+        j('/api/tts_queue'),
+        j('/api/history')
       ]);
-      const events = [];
 
-      if (localHistory.length === 0 || localHistory[0].title !== now.title) {
-        if (localHistory.length > 0) {
-          localHistory.unshift({...localHistory[0], time: Date.now()});
-        }
-        localHistory[0] = {
-          type: 'song',
-          time: now.started_at || Date.now(),
-          title: now.title || now.name || 'Unknown title',
-          artist: now.artist || '',
-          album: now.album || '',
-          filename: now.filename || '',
-          artwork_url: now.artwork_url || ''
-        };
-      }
+      const events = [...history];
 
-      events.push(...localHistory);
-
+      // Merge in any TTS items not yet in history
       (tts||[]).forEach(t => {
-        events.push({
-          type:'dj',
-          time:t.timestamp || Date.now(),
-          voice:t.voice || 'Unknown',
-          text:t.text || '(missing text)',
-          audio_url:t.audio_url || null
-        });
+        if (!events.find(e => e.type === 'dj' && e.text === t.text)) {
+          events.push(t);
+        }
       });
 
+      // Merge upcoming
       (next||[]).forEach(s => {
         events.push({
           type:'upcoming',
@@ -165,6 +146,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
       });
 
+      // Sort newest first
       events.sort((a,b)=> new Date(b.time)-new Date(a.time));
 
       const box = $('timeline');
@@ -175,7 +157,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if(ev.type==='dj'){
           div.innerHTML=`
             <div class="event-details">
-              <div class="event-meta"><span>${fmtTime(ev.time)}</span><span class="voice-chip">${ev.voice}</span></div>
+              <div class="event-meta"><span>${fmtTime(ev.time)}</span><span class="voice-chip">${ev.voice || ''}</span></div>
               <div class="event-title">🎙️ ${ev.text}</div>
               ${ev.audio_url ? `<audio controls preload="none" src="${ev.audio_url}"></audio>` : ''}
             </div>`;

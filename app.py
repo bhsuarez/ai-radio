@@ -2,7 +2,7 @@
 import os, json, glob, socket, subprocess, time, re, hashlib
 from datetime import datetime
 from urllib.parse import quote
-from flask import Flask, jsonify, request, send_from_directory, render_template_string, send_file, abort
+from flask import Flask, jsonify, request, send_from_directory, send_file, abort
 
 # ── Config ──────────────────────────────────────────────────────
 HOST = "0.0.0.0"
@@ -12,15 +12,17 @@ TELNET_HOST = "127.0.0.1"
 TELNET_PORT = 1234
 
 BASE_DIR   = os.path.dirname(os.path.abspath(__file__))
-NOW_JSON   = "/opt/ai-radio/now.json"           # optional (preferred)
-NOW_TXT    = "/opt/ai-radio/nowplaying.txt"     # fallback key=value
-LIB_ALL    = "/opt/ai-radio/library_all.m3u"
+NOW_JSON   = "/opt/ai-radio/now.json"
+NOW_TXT    = "/opt/ai-radio/nowplaying.txt"
 TTS_DIR    = "/opt/ai-radio/tts_queue"
 GEN_SCRIPT = "/opt/ai-radio/gen_dj_clip.sh"
 
 LOG_DIR    = "/opt/ai-radio/logs"
 DJ_LOG     = os.path.join(LOG_DIR, "dj-now.log")
 COVER_CACHE = "/opt/ai-radio/ui/cache/covers"
+
+HISTORY_FILE = "/opt/ai-radio/play_history.json"
+MAX_HISTORY = 100
 
 os.makedirs(LOG_DIR, exist_ok=True)
 os.makedirs(COVER_CACHE, exist_ok=True)
@@ -34,17 +36,28 @@ try:
 except Exception:
     _MUTAGEN_OK = False
 
-# ── App ─────────────────────────────────────────────────────────
 app = Flask(__name__)
 
-# Optional: existing admin blueprint
-try:
-    from radio_admin import bp as radio_admin_bp
-    app.register_blueprint(radio_admin_bp)
-except Exception as e:
-    print(f"[WARN] radio_admin blueprint not loaded: {e}")
+# ── Helpers ─────────────────────────────────────────────────────
+def add_to_history(entry):
+    history = []
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r") as f:
+                history = json.load(f)
+        except Exception:
+            history = []
+    if not history or (
+        history[0].get("type") != entry.get("type") or
+        history[0].get("title") != entry.get("title") or
+        history[0].get("text") != entry.get("text")
+    ):
+        entry["time"] = datetime.utcnow().isoformat() + "Z"
+        history.insert(0, entry)
+    history = history[:MAX_HISTORY]
+    with open(HISTORY_FILE, "w") as f:
+        json.dump(history, f)
 
-# ── Utils ───────────────────────────────────────────────────────
 def telnet_cmd(cmd: str, timeout=1.5) -> str:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(timeout)
@@ -70,244 +83,96 @@ def parse_kv_text(text: str) -> dict:
         if "=" in line:
             k, v = line.split("=", 1)
             out[k.strip()] = v.strip().strip('"')
-    if not out and ";" in text:
-        for part in text.split(";"):
-            if "=" in part:
-                k, v = part.split("=", 1)
-                out[k].strip()
-                out[k.strip()] = v.strip().strip('"')
     return out
 
 def read_now() -> dict:
     data = {}
-
-    # Preferred JSON writer (if your liquidsoap script writes it)
+    # Preferred: NOW_JSON
     if os.path.exists(NOW_JSON):
         try:
             with open(NOW_JSON, "r") as f:
                 j = json.load(f)
             if isinstance(j, dict):
                 data.update(j)
-        except Exception as e:
-            print(f"[WARN] failed to read {NOW_JSON}: {e}")
-
-    # Fallback text file (key=value)
-    if os.path.exists(NOW_TXT):
+        except Exception:
+            pass
+    # Fallback: NOW_TXT
+    if not data.get("title") and os.path.exists(NOW_TXT):
         try:
             with open(NOW_TXT, "r") as f:
                 kv = parse_kv_text(f.read())
-            for k in ("title","artist","album","artwork_url","started_at","duration","filename","path","file"):
+            for k in ("title","artist","album","artwork_url","started_at","duration","filename"):
                 if k not in data and k in kv:
                     data[k] = kv[k]
-        except Exception as e:
-            print(f"[WARN] failed to read {NOW_TXT}: {e}")
-
-    # Last resort: ask telnet for metadata
-    if not data.get("title") or not data.get("artist"):
-        try:
-            raw = telnet_cmd("AI_Plex_DJ.metadata")
-            kv = parse_kv_text(raw)
-            mapping = {"name": "title", "song": "title", "cover": "artwork_url", "filename":"filename", "path":"filename", "file":"filename"}
-            for src, dst in mapping.items():
-                if src in kv and dst not in data:
-                    data[dst] = kv[src]
-            for k in ("title","artist","album","artwork_url","started_at","duration","filename"):
-                if k in kv and k not in data:
-                    data[k] = kv[k]
-            data.setdefault("metadata_raw", raw)
-        except Exception as e:
-            print(f"[WARN] telnet metadata failed: {e}")
-
-    # Normalize numbers / timestamps
-    if "duration" in data:
-        try:
-            data["duration"] = int(float(data["duration"]))
-        except Exception:
-            data.pop("duration", None)
-
-    if "started_at" in data:
-        try:
-            if re.fullmatch(r"\d{10}(\.\d+)?", str(data["started_at"])):
-                data["started_at"] = datetime.utcfromtimestamp(float(data["started_at"])).isoformat() + "Z"
         except Exception:
             pass
-
+    # New fallback: Telnet metadata
+    if not data.get("title"):
+        try:
+            raw = telnet_cmd("metadata")
+            kv = parse_kv_text(raw)
+            data["title"] = kv.get("title") or kv.get("song") or "Unknown title"
+            data["artist"] = kv.get("artist") or "Unknown artist"
+            data["album"] = kv.get("album") or ""
+            data["filename"] = kv.get("filename") or kv.get("file") or ""
+        except Exception:
+            pass
     data.setdefault("title", "Unknown title")
     data.setdefault("artist", "Unknown artist")
     return data
 
-def list_up_next(limit=10):
-    items = []
-    paths = []
-
-    # Try telnet first
-    try:
-        raw = telnet_cmd("library_all.m3u.next")
-        lines = [l.strip() for l in raw.splitlines() if l.strip()]
-        for l in lines:
-            if os.path.isabs(l) and os.path.exists(l):
-                paths.append(l)
-    except Exception:
-        pass
-
-    # Fallback to reading the M3U file
-    if not paths and os.path.exists(LIB_ALL):
-        try:
-            with open(LIB_ALL, "r", errors="ignore") as f:
-                for path in f:
-                    path = path.strip()
-                    if path and not path.startswith("#") and os.path.isabs(path):
-                        paths.append(path)
-                        if len(paths) >= limit:
-                            break
-        except Exception as e:
-            print(f"[WARN] failed to read {LIB_ALL}: {e}")
-
-    # Build item list with metadata
-    for path in paths[:limit]:
-        title = os.path.basename(path)
-        artist = ""
-        album = ""
-        if _MUTAGEN_OK:
-            try:
-                audio = MFile(path)
-                if audio:
-                    title = audio.tags.get("TIT2", title) if hasattr(audio, "tags") else title
-                    artist = audio.tags.get("TPE1", "") if hasattr(audio, "tags") else ""
-                    album = audio.tags.get("TALB", "") if hasattr(audio, "tags") else ""
-                    # Convert Mutagen tag objects to strings
-                    if hasattr(title, "text"): title = title.text[0]
-                    if hasattr(artist, "text"): artist = artist.text[0]
-                    if hasattr(album, "text"): album = album.text[0]
-            except Exception:
-                pass
-
-        items.append({
-            "title": title,
-            "artist": artist,
-            "album": album,
-            "filename": path
-        })
-
-    return items
-
-# ── Album art helpers ───────────────────────────────────────────
-def _cover_from_tags(path: str):
-    if not _MUTAGEN_OK:
-        return None
-    try:
-        audio = MFile(path)
-    except Exception:
-        audio = None
-    if audio is None:
-        return None
-
-    # MP3: ID3 APIC
-    try:
-        if getattr(audio, "tags", None):
-            apics = [v for _, v in audio.tags.items() if isinstance(v, APIC)]
-            if apics:
-                return apics[0].data, (apics[0].mime or "image/jpeg")
-    except Exception:
-        pass
-
-    # FLAC
-    try:
-        if isinstance(audio, FLAC) and audio.pictures:
-            pic = audio.pictures[0]
-            return pic.data, (pic.mime or "image/jpeg")
-    except Exception:
-        pass
-
-    # MP4/M4A common tags
-    try:
-        covr = None
-        if getattr(audio, "tags", None):
-            covr = audio.tags.get("covr") or audio.tags.get("----:com.apple.iTunes:cover")
-        if covr:
-            data = covr[0] if isinstance(covr, list) else covr
-            return bytes(data), "image/jpeg"
-    except Exception:
-        pass
-
-    return None
-
-# ── Static / Index ──────────────────────────────────────────────
+# ── Routes ──────────────────────────────────────────────────────
 @app.route("/")
 def index():
     return send_from_directory(BASE_DIR, "index.html")
 
-@app.route("/tts/<path:filename>")
-def serve_tts(filename):
-    return send_from_directory(TTS_DIR, filename, conditional=True)
+@app.route("/api/history")
+def api_history():
+    if os.path.exists(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r") as f:
+                return jsonify(json.load(f))
+        except Exception:
+            pass
+    return jsonify([])
 
-@app.get("/healthz")
-def healthz():
-    return jsonify({"ok": True, "ts": int(time.time())})
-
-# ── API: Now / Next / TTS ───────────────────────────────────────
 @app.route("/api/now")
 def api_now():
-    now = read_now()  # use your existing helper
-
-    # Ensure we always send artwork_url
+    now = read_now()
     if "artwork_url" not in now or not now["artwork_url"]:
         if "filename" in now and now["filename"]:
             cover_url = request.url_root.rstrip("/") + "/api/cover?file=" + quote(now["filename"])
             now["artwork_url"] = cover_url
         else:
             now["artwork_url"] = request.url_root.rstrip("/") + "/static/no-cover.png"
-
+    add_to_history({
+        "type": "song",
+        "title": now.get("title"),
+        "artist": now.get("artist"),
+        "album": now.get("album"),
+        "filename": now.get("filename"),
+        "artwork_url": now.get("artwork_url")
+    })
     return jsonify(now)
 
 @app.get("/api/next")
 def api_next():
     items = []
     try:
-        # Ask Liquidsoap for the request queue (only what's actually queued)
         raw = telnet_cmd("requests")
         lines = [l.strip() for l in raw.splitlines() if l.strip()]
-
         for l in lines:
-            # Some lines might have metadata: [id] path/to/file
-            parts = l.split(" ", 1)
-            if len(parts) == 2:
-                path = parts[1].strip()
-            else:
-                path = l
-
+            path = l.split(" ", 1)[-1] if " " in l else l
             if os.path.exists(path):
                 item = {
-                    "filename": path,
-                    "title": os.path.basename(path)
+                    "title": os.path.basename(path),
+                    "filename": path
                 }
-
-                # Add cover art URL
                 cover_url = request.url_root.rstrip("/") + "/api/cover?file=" + quote(path)
                 item["artwork_url"] = cover_url
-
-                # Optional: add artist/album if mutagen is available
-                if _MUTAGEN_OK:
-                    try:
-                        audio = MFile(path)
-                        if audio and hasattr(audio, "tags"):
-                            title_tag = audio.tags.get("TIT2")
-                            artist_tag = audio.tags.get("TPE1")
-                            album_tag = audio.tags.get("TALB")
-                            if title_tag:
-                                item["title"] = title_tag.text[0] if hasattr(title_tag, "text") else str(title_tag)
-                            if artist_tag:
-                                item["artist"] = artist_tag.text[0] if hasattr(artist_tag, "text") else str(artist_tag)
-                            if album_tag:
-                                item["album"] = album_tag.text[0] if hasattr(album_tag, "text") else str(album_tag)
-                    except Exception:
-                        pass
-
                 items.append(item)
-
-    except Exception as e:
-        print(f"[WARN] Failed to get next tracks: {e}")
-
+    except Exception:
+        pass
     return jsonify(items)
 
 @app.get("/api/tts_queue")
@@ -329,18 +194,20 @@ def api_tts_queue():
                     text = f.read().strip()
             except Exception:
                 pass
-        items.append({
+        item = {
+            "type": "dj",
             "text": text,
             "audio_url": f"/tts/{quote(os.path.basename(wav))}",
-            "file": os.path.basename(wav)
-        })
+            "file": os.path.basename(wav),
+            "time": datetime.utcfromtimestamp(os.path.getmtime(wav)).isoformat() + "Z"
+        }
+        items.append(item)
     return jsonify(items)
 
 @app.post("/api/tts_queue")
 def api_tts_enqueue():
     try:
         data = request.get_json(force=True, silent=True) or {}
-        # fix .trim(): Python uses .strip()
         text = (data.get("text") or "").strip()
         if not text:
             return jsonify({"ok": False, "error": "No text provided"}), 400
@@ -349,6 +216,11 @@ def api_tts_enqueue():
         txt_path = os.path.join(TTS_DIR, f"dj_{stamp}.txt")
         with open(txt_path, "w") as f:
             f.write(text + "\n")
+        add_to_history({
+            "type": "dj",
+            "text": text,
+            "audio_url": None
+        })
         return jsonify({"ok": True, "queued": os.path.basename(txt_path)})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -361,118 +233,40 @@ def api_skip():
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
-# ── API: Generate DJ now (async) ────────────────────────────────
-import threading
-def _bg_gen():
-    try:
-        os.makedirs(LOG_DIR, exist_ok=True)
-        env = dict(os.environ)
-        env["PATH"] = env.get("PATH", "/usr/local/bin:/usr/bin:/bin")
-        with open(DJ_LOG, "ab", buffering=0) as lf:
-            lf.write(f"\n\n==== DJ NOW @ {time.strftime('%Y-%m-%d %H:%M:%S')} ====\n".encode())
-            subprocess.Popen(
-                ["bash", "-lc", f"cd /opt/ai-radio && {GEN_SCRIPT}"],
-                stdout=lf, stderr=lf, env=env
-            )
-    except Exception as e:
-        with open(DJ_LOG, "ab", buffering=0) as lf:
-            lf.write(f"[ERROR] {e}\n".encode())
-
-@app.post("/api/dj-now")
-def api_dj_now():
-    t = threading.Thread(target=_bg_gen, daemon=True)
-    t.start()
-    return jsonify({"ok": True, "started": True, "ts": int(time.time()), "log": DJ_LOG})
-
-# ── API: Album cover from embedded tags (with cache) ────────────
 @app.get("/api/cover")
 def api_cover():
-    """
-    GET /api/cover?file=/abs/path/to/song.ext
-    Returns embedded cover art (cached) or 404 if none.
-    """
     fpath = request.args.get("file", "")
     if not fpath or not os.path.isabs(fpath) or not os.path.exists(fpath):
         return abort(404)
-
     key = hashlib.sha1(fpath.encode("utf-8")).hexdigest()
     cache_jpg = os.path.join(COVER_CACHE, key + ".jpg")
     cache_png = os.path.join(COVER_CACHE, key + ".png")
-
     if os.path.exists(cache_jpg):
         return send_file(cache_jpg, mimetype="image/jpeg", conditional=True)
     if os.path.exists(cache_png):
         return send_file(cache_png, mimetype="image/png", conditional=True)
-
-    found = _cover_from_tags(fpath) if _MUTAGEN_OK else None
+    found = None
+    if _MUTAGEN_OK:
+        try:
+            audio = MFile(fpath)
+            if audio:
+                if getattr(audio, "tags", None):
+                    apics = [v for _, v in audio.tags.items() if isinstance(v, APIC)]
+                    if apics:
+                        found = (apics[0].data, (apics[0].mime or "image/jpeg"))
+                if isinstance(audio, FLAC) and audio.pictures:
+                    pic = audio.pictures[0]
+                    found = (pic.data, (pic.mime or "image/jpeg"))
+        except Exception:
+            pass
     if not found:
         return abort(404)
-
     data, mime = found
     ext = ".jpg" if "jpeg" in (mime or "").lower() else ".png"
     out = os.path.join(COVER_CACHE, key + ext)
     with open(out, "wb") as w:
         w.write(data)
     return send_file(out, mimetype="image/jpeg" if ext == ".jpg" else "image/png", conditional=True)
-
-# ── Legacy debug page ───────────────────────────────────────────
-@app.get("/old")
-def old_page():
-    html = """
-    <html><head>
-      <meta name=viewport content="width=device-width,initial-scale=1"/>
-      <style>
-        body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;max-width:900px;margin:24px auto;padding:0 12px}
-        .row{display:flex;gap:16px;flex-wrap:wrap}
-        .card{flex:1 1 280px;border:1px solid #e5e7eb;border-radius:10px;padding:16px}
-        button{padding:8px 12px;border-radius:8px;border:1px solid #ddd;cursor:pointer}
-        li{margin:8px 0}
-        pre{white-space:pre-wrap;word-wrap:break-word;background:#f6f8fa;padding:8px;border-radius:6px}
-      </style>
-    </head><body>
-      <h2>AI Plex DJ — Status</h2>
-      <div class="row">
-        <div class="card">
-          <h3>Now Playing</h3>
-          <div id="now">Loading…</div>
-        </div>
-        <div class="card">
-          <h3>Up Next</h3>
-          <div id="next">Loading…</div>
-          <div style="margin-top:12px">
-            <button onclick="act('skip')">Skip Track</button>
-            <button onclick="act('dj-now')">Trigger DJ Now</button>
-          </div>
-        </div>
-      </div>
-      <div class="card" style="margin-top:16px">
-        <h3>AI-DJ Queue (latest)</h3>
-        <div id="tts">Loading…</div>
-      </div>
-      <script>
-        async function load() {
-          const now = await fetch('/api/now').then(r=>r.json());
-          document.getElementById('now').innerHTML =
-            '<pre>'+ (JSON.stringify(now, null, 2)) +'</pre>';
-          const nxt = await fetch('/api/next').then(r=>r.json());
-          document.getElementById('next').innerText = (Array.isArray(nxt)?nxt.map(x=>x.title).join('\\n'):JSON.stringify(nxt));
-          const tts = await fetch('/api/tts_queue').then(r=>r.json());
-          let html = '<ul>';
-          for (const item of (tts||[])) {
-            html += '<li><b>'+item.file+'</b><br/><i>'+item.text+'</i></li>';
-          }
-          html += '</ul>';
-          document.getElementById('tts').innerHTML = html;
-        }
-        async function act(a){
-          await fetch('/api/'+a, {method:'POST'});
-          setTimeout(load, 1200);
-        }
-        load(); setInterval(load, 5000);
-      </script>
-    </body></html>
-    """
-    return render_template_string(html)
 
 # ── Main ────────────────────────────────────────────────────────
 if __name__ == "__main__":
