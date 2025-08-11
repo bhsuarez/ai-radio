@@ -27,22 +27,45 @@ def announce_song(m)
 
   # Queue TTS
   tts_q.push(request.create("/opt/ai-radio/tts/next_intro.mp3"))
-
-  # Log how many tracks are queued
-  log("📜 Tracks in playlist: unknown (request.queue pending not available)")
 end
 
-# Attach hook to playlist
+# Attach song announcement hook
 all_music = source.on_metadata(all_music, announce_song)
 
-# Log when sine starts
+# Sine fallback logging
 def log_sine(_m)
   log("⚠️ Sine wave fallback active!")
 end
 sine_src = source.on_metadata(sine(), log_sine)
 
-# Main fallback chain: TTS → music → sine wave
+# Auto-DJ after every song
+def after_song(m)
+  log("🎙️ Auto-DJ triggered after song")
+
+  # Run Python script to generate intro MP3
+  ignore(process.run("python3 /opt/ai-radio/make_intro.py"))
+
+  # Push generated MP3 into the TTS queue
+  tts_q.push(request.create("/opt/ai-radio/tts/next_intro.mp3"))
+end
+all_music = source.on_metadata(all_music, after_song)
+
+# Build main fallback chain
 radio = fallback(track_sensitive=false, [tts_q, all_music, sine_src])
+
+# Ensure metadata always has title/artist
+def update_metadata(m)
+  if (not list.mem("title", list.map(fst, m))) or m["title"] == "" then
+    m = list.append(m, [("title", "Unknown")])
+  end
+
+  if (not list.mem("artist", list.map(fst, m))) or m["artist"] == "" then
+    m = list.append(m, [("artist", "Unknown Artist")])
+  end
+
+  m
+end
+radio = map_metadata(update_metadata, radio)
 
 # Icecast output
 output.icecast(
