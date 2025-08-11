@@ -40,13 +40,24 @@ sine_src = source.on_metadata(sine(), log_sine)
 
 # Auto-DJ after every song
 def after_song(m)
-  log("🎙️ Auto-DJ triggered after song")
+  artist = if list.mem("artist", list.map(fst, m)) then m["artist"] else "Unknown Artist" end
+  title  = if list.mem("title", list.map(fst, m)) then m["title"] else "Unknown Title" end
 
-  # Run Python script to generate intro MP3
-  ignore(process.run("python3 /opt/ai-radio/make_intro.py"))
+  ts = string_of(time())
+  filepath = "/opt/ai-radio/tts/intro_" ^ ts ^ ".mp3"
 
-  # Push generated MP3 into the TTS queue
-  tts_q.push(request.create("/opt/ai-radio/tts/next_intro.mp3"))
+  # Run the script and get two lines: text, filepath
+  lines = get_process_lines("python3 /opt/ai-radio/make_intro.py \"" ^ artist ^ "\" \"" ^ title ^ "\" \"" ^ filepath ^ "\"")
+  text = list.nth(lines, 0)
+  file = list.nth(lines, 1)
+
+  # Push intro audio to TTS queue
+  tts_q.push(request.create(file))
+
+  # Log event to Flask backend
+  ignore(process.run("curl -s -X POST -H 'Content-Type: application/json' \
+    -d '{\"type\":\"dj\",\"text\":\"" ^ text ^ "\",\"audio_url\":\"" ^ file ^ "\"}' \
+    http://127.0.0.1:5000/api/log_event"))
 end
 all_music = source.on_metadata(all_music, after_song)
 

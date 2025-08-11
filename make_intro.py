@@ -1,7 +1,7 @@
+#!/usr/bin/env python3
 import sys
 import subprocess
 import time
-import os
 
 if len(sys.argv) < 3:
     print("Usage: make_intro.py \"artist\" \"title\" [output_path]")
@@ -10,7 +10,7 @@ if len(sys.argv) < 3:
 artist = sys.argv[1]
 title = sys.argv[2]
 
-# Optional output path from Liquidsoap
+# Unique output file if not provided
 if len(sys.argv) >= 4:
     output_path = sys.argv[3]
 else:
@@ -32,10 +32,7 @@ try:
 except Exception:
     intro_text = f"Now playing {title} by {artist}."
 
-print(f"AI DJ intro: {intro_text}")
-
 model_path = "/mnt/music/ai-dj/piper_voices/en/en_US/norman/medium/en_US-norman-medium.onnx"
-
 with subprocess.Popen(
     ["piper", "--model", model_path, "--output_file", output_path],
     stdin=subprocess.PIPE
@@ -44,5 +41,6 @@ with subprocess.Popen(
     proc.stdin.close()
     proc.wait()
 
-# Print the output path so Liquidsoap knows where to find it
+# Print two separate lines so Liquidsoap can read them easily
+print(intro_text)
 print(output_path)
