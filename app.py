@@ -138,27 +138,58 @@ def read_now() -> dict:
 
 def list_up_next(limit=10):
     items = []
+    paths = []
+
+    # Try telnet first
     try:
         raw = telnet_cmd("library_all.m3u.next")
         lines = [l.strip() for l in raw.splitlines() if l.strip()]
-        for l in lines[:limit]:
-            items.append({"title": l})
+        for l in lines:
+            if os.path.isabs(l) and os.path.exists(l):
+                paths.append(l)
     except Exception:
         pass
 
-    if not items and os.path.exists(LIB_ALL):
+    # Fallback to reading the M3U file
+    if not paths and os.path.exists(LIB_ALL):
         try:
             with open(LIB_ALL, "r", errors="ignore") as f:
                 for path in f:
                     path = path.strip()
-                    if not path or path.startswith("#"):
-                        continue
-                    items.append({"title": os.path.basename(path)})
-                    if len(items) >= limit: break
+                    if path and not path.startswith("#") and os.path.isabs(path):
+                        paths.append(path)
+                        if len(paths) >= limit:
+                            break
         except Exception as e:
             print(f"[WARN] failed to read {LIB_ALL}: {e}")
 
-    return items[:limit]
+    # Build item list with metadata
+    for path in paths[:limit]:
+        title = os.path.basename(path)
+        artist = ""
+        album = ""
+        if _MUTAGEN_OK:
+            try:
+                audio = MFile(path)
+                if audio:
+                    title = audio.tags.get("TIT2", title) if hasattr(audio, "tags") else title
+                    artist = audio.tags.get("TPE1", "") if hasattr(audio, "tags") else ""
+                    album = audio.tags.get("TALB", "") if hasattr(audio, "tags") else ""
+                    # Convert Mutagen tag objects to strings
+                    if hasattr(title, "text"): title = title.text[0]
+                    if hasattr(artist, "text"): artist = artist.text[0]
+                    if hasattr(album, "text"): album = album.text[0]
+            except Exception:
+                pass
+
+        items.append({
+            "title": title,
+            "artist": artist,
+            "album": album,
+            "filename": path
+        })
+
+    return items
 
 # ── Album art helpers ───────────────────────────────────────────
 def _cover_from_tags(path: str):
@@ -215,13 +246,69 @@ def healthz():
     return jsonify({"ok": True, "ts": int(time.time())})
 
 # ── API: Now / Next / TTS ───────────────────────────────────────
-@app.get("/api/now")
+@app.route("/api/now")
 def api_now():
-    return jsonify(read_now())
+    now = read_now()  # use your existing helper
+
+    # Ensure we always send artwork_url
+    if "artwork_url" not in now or not now["artwork_url"]:
+        if "filename" in now and now["filename"]:
+            cover_url = request.url_root.rstrip("/") + "/api/cover?file=" + quote(now["filename"])
+            now["artwork_url"] = cover_url
+        else:
+            now["artwork_url"] = request.url_root.rstrip("/") + "/static/no-cover.png"
+
+    return jsonify(now)
 
 @app.get("/api/next")
 def api_next():
-    return jsonify(list_up_next(limit=10))
+    items = []
+    try:
+        # Ask Liquidsoap for the request queue (only what's actually queued)
+        raw = telnet_cmd("requests")
+        lines = [l.strip() for l in raw.splitlines() if l.strip()]
+
+        for l in lines:
+            # Some lines might have metadata: [id] path/to/file
+            parts = l.split(" ", 1)
+            if len(parts) == 2:
+                path = parts[1].strip()
+            else:
+                path = l
+
+            if os.path.exists(path):
+                item = {
+                    "filename": path,
+                    "title": os.path.basename(path)
+                }
+
+                # Add cover art URL
+                cover_url = request.url_root.rstrip("/") + "/api/cover?file=" + quote(path)
+                item["artwork_url"] = cover_url
+
+                # Optional: add artist/album if mutagen is available
+                if _MUTAGEN_OK:
+                    try:
+                        audio = MFile(path)
+                        if audio and hasattr(audio, "tags"):
+                            title_tag = audio.tags.get("TIT2")
+                            artist_tag = audio.tags.get("TPE1")
+                            album_tag = audio.tags.get("TALB")
+                            if title_tag:
+                                item["title"] = title_tag.text[0] if hasattr(title_tag, "text") else str(title_tag)
+                            if artist_tag:
+                                item["artist"] = artist_tag.text[0] if hasattr(artist_tag, "text") else str(artist_tag)
+                            if album_tag:
+                                item["album"] = album_tag.text[0] if hasattr(album_tag, "text") else str(album_tag)
+                    except Exception:
+                        pass
+
+                items.append(item)
+
+    except Exception as e:
+        print(f"[WARN] Failed to get next tracks: {e}")
+
+    return jsonify(items)
 
 @app.get("/api/tts_queue")
 def api_tts_queue():

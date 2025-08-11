@@ -1,208 +1,181 @@
 <!doctype html>
 <html lang="en">
 <head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>AI Radio</title>
-  <style>
-    :root {
-      --bg: #0f1115; --card:#171a22; --text:#e9ecf1; --muted:#9aa4b2; --accent:#4da3ff; --ok:#3ddc97; --warn:#ffb020; --err:#ff5d5d;
-      --radius:14px;
-    }
-    *{box-sizing:border-box}
-    body{margin:0;background:var(--bg);color:var(--text);font:16px/1.4 system-ui, -apple-system, Segoe UI, Roboto, Arial}
-    .wrap{max-width:960px;margin:auto;padding:16px;display:grid;gap:16px}
-    header{display:flex;gap:12px;align-items:center;justify-content:space-between}
-    h1{font-size:20px;margin:0}
-    .btn{appearance:none;border:1px solid #2a2f3a;background:var(--card);color:var(--text);padding:10px 14px;border-radius:10px;cursor:pointer}
-    .btn:hover{border-color:#3a4150}
-    .btn.accent{background:var(--accent);border-color:var(--accent);color:#041427}
-    .btn.warn{background:var(--warn);border-color:var(--warn);color:#271400}
-    .grid{display:grid;gap:16px}
-    @media(min-width:820px){ .grid{grid-template-columns:1.2fr .8fr} }
-    .card{background:var(--card);border:1px solid #202634;border-radius:var(--radius);padding:16px}
-    .now{display:flex;gap:16px}
-    .art{width:110px;height:110px;border-radius:12px;object-fit:cover;background:#0b0d12;border:1px solid #1f2531}
-    .title{font-weight:600;font-size:18px}
-    .sub{color:var(--muted);font-size:14px}
-    .row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
-    .spacer{flex:1}
-    .list{display:flex;flex-direction:column;gap:10px;max-height:340px;overflow:auto;padding-right:4px}
-    .item{display:flex;gap:12px;align-items:center}
-    .bullet{width:36px;height:36px;border-radius:8px;background:#10141c;border:1px solid #1f2531;display:grid;place-items:center;color:var(--muted);font-size:12px}
-    .small{font-size:12px;color:var(--muted)}
-    textarea{width:100%;min-height:96px;border-radius:10px;border:1px solid #2a2f3a;background:#0c0f14;color:var(--text);padding:10px;resize:vertical}
-    audio{width:100%}
-    .toast{position:fixed;bottom:16px;left:50%;transform:translateX(-50%);background:#11161f;color:var(--text);padding:10px 14px;border-radius:10px;border:1px solid #2a2f3a;box-shadow:0 10px 30px rgba(0,0,0,.35);opacity:0;pointer-events:none;transition:.25s}
-    .toast.show{opacity:1;pointer-events:auto}
-    .chip{display:inline-block;padding:4px 8px;border-radius:999px;background:#0f1420;border:1px solid #1f2531;color:var(--muted);font-size:12px}
-  </style>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>AI Radio</title>
+<style>
+  :root {
+    --bg: #0f1115; --card:#171a22; --text:#e9ecf1; --muted:#9aa4b2; --accent:#4da3ff;
+    --ok:#3ddc97; --warn:#ffb020; --err:#ff5d5d; --radius:14px;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.4 system-ui, sans-serif; display:flex; height:100vh; }
+  a { color:var(--accent); text-decoration:none; }
+  /* Sidebar */
+  .sidebar { width:260px; background:#13161d; border-right:1px solid #1f2531; display:flex; flex-direction:column; padding:16px; gap:20px; }
+  .sidebar h1 { font-size:20px; margin:0 0 10px; }
+  .btn { appearance:none; border:1px solid #2a2f3a; background:var(--card); color:var(--text); padding:10px 14px; border-radius:10px; cursor:pointer; text-align:left; }
+  .btn:hover { border-color:#3a4150; }
+  .btn.accent { background:var(--accent); border-color:var(--accent); color:#041427; }
+  .btn.warn { background:var(--warn); border-color:var(--warn); color:#271400; }
+  audio { width:100%; }
+  /* Main */
+  .main { flex:1; display:flex; flex-direction:column; overflow:hidden; }
+  header { padding:16px; border-bottom:1px solid #1f2531; }
+  header .title { font-size:18px; font-weight:600; }
+  .timeline { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:12px; }
+  .event { background:var(--card); border-radius:var(--radius); padding:12px; border:1px solid #202634; display:flex; gap:12px; }
+  .event.dj { border-left:4px solid var(--accent); }
+  .event.song { border-left:4px solid var(--ok); }
+  .event.upcoming { opacity:0.7; }
+  .event img { width:60px; height:60px; border-radius:8px; object-fit:cover; background:#0b0d12; border:1px solid #1f2531; }
+  .event-details { flex:1; }
+  .event-meta { font-size:12px; color:var(--muted); margin-bottom:4px; display:flex; gap:8px; flex-wrap:wrap; }
+  .voice-chip { padding:2px 6px; border-radius:999px; border:1px solid #1f2531; background:#0f1420; font-size:11px; color:var(--muted); }
+  .event-title { font-weight:600; }
+  .event-sub { font-size:14px; color:var(--muted); }
+</style>
 </head>
 <body>
-  <div class="wrap">
-<header>
-  <h1>🎧 AI Radio</h1>
-  <div class="row" style="gap:10px; align-items:center">
-    <a class="btn" id="openLink" href="http://icecast.zorro.local:8000/stream.mp3" target="_blank" rel="noopener">🔗 Open stream</a>
-    <audio id="livePlayer" controls preload="none" style="height:32px; max-width:320px">
-      <source src="http://icecast.zorro.local:8000/stream.mp3" type="audio/mpeg">
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <h1>🎧 AI Radio</h1>
+    <a class="btn" id="openLink" href="#" target="_blank" rel="noopener">🔗 Open Stream</a>
+    <audio id="livePlayer" controls preload="none">
+      <source src="" type="audio/mpeg">
     </audio>
-    <button class="btn warn" id="skipBtn">⏭️ Skip track</button>
+    <button class="btn warn" id="skipBtn">⏭️ Skip Track</button>
+    <button class="btn accent" id="genBtn">✨ Generate DJ Line</button>
+  </aside>
+
+  <!-- Main content -->
+  <div class="main">
+    <header>
+      <div class="title">📜 Live Timeline</div>
+    </header>
+    <div id="timeline" class="timeline"></div>
   </div>
-</header>
-
-    <div class="grid">
-      <section class="card">
-        <div class="row" style="margin-bottom:8px">
-          <div class="title">Now playing</div>
-          <div class="spacer"></div>
-          <div id="elapsed" class="small"></div>
-        </div>
-        <div class="now">
-          <img id="cover" alt="album art" style="max-width:240px;border-radius:8px" onerror="this.src='/static/no-cover.png'">
-          <div style="min-width:0">
-            <div id="trackTitle" class="title">—</div>
-            <div id="trackMeta" class="sub">—</div>
-            <div id="timing" class="small" style="margin-top:6px">—</div>
-          </div>
-        </div>
-      </section>
-
-      <section class="card">
-        <div class="title" style="margin-bottom:8px">Up next</div>
-        <div id="upNext" class="list small"></div>
-      </section>
-    </div>
-
-    <section class="card">
-      <div class="row" style="margin-bottom:8px">
-        <div class="title">DJ</div>
-        <div class="spacer"></div>
-        <span class="chip">Ollama generate ➜ enqueue TTS</span>
-      </div>
-      <div class="row" style="gap:10px;margin-bottom:8px">
-        <button class="btn accent" id="genBtn">✨ Generate DJ line</button>
-        <button class="btn" id="sayBtn">🗣️ Say this line</button>
-      </div>
-      <textarea id="djText" placeholder="Your DJ line will appear here…"></textarea>
-    </section>
-
-    <section class="card">
-      <div class="title" style="margin-bottom:8px">TTS queue</div>
-      <div id="ttsList" class="list"></div>
-    </section>
-  </div>
-
-  <div id="toast" class="toast"></div>
 
 <script>
 document.addEventListener('DOMContentLoaded', () => {
   const $ = (id) => document.getElementById(id);
-  const toast = (msg) => { const t=$('toast'); t.textContent=msg; t.classList.add('show'); setTimeout(()=>t.classList.remove('show'), 1800); };
+  const STREAM_URL = "http://icecast.zorro.local:8000/stream.mp3";
+  $('livePlayer').src = STREAM_URL;
+  $('openLink').href = STREAM_URL;
+
+  let localHistory = []; // stores past songs for session
 
   async function j(url,opts={}) {
     const r = await fetch(url,{headers:{'Content-Type':'application/json'},...opts});
     if(!r.ok) throw new Error(await r.text());
-    return r.headers.get('content-type')?.includes('json') ? r.json() : r.text();
+    return r.json();
   }
-
-  function fmt(sec){ sec=Math.max(0,Math.floor(+sec||0)); const m=String(Math.floor(sec/60)).padStart(2,'0'); const s=String(sec%60).padStart(2,'0'); return `${m}:${s}`; }
-
-  async function loadNow(){
-    try{
-      const d = await j('/api/now');
-      $('trackTitle').textContent = d.title || d.name || 'Unknown title';
-      $('trackMeta').textContent  = [d.artist, d.album].filter(Boolean).join(' • ') || '—';
-      if (d.filename){
-        const u = new URL('/api/cover', location.origin);
-        u.searchParams.set('file', d.filename);
-        $('cover').src = u.toString() + '&t=' + Date.now();
-      } else if (d.artwork_url){
-        $('cover').src = d.artwork_url;
-      }
-      let startedMs = d.started_at ? Date.parse(d.started_at) : 0;
-      let duration  = Number(d.duration) || 0;
-      if (startedMs && duration){
-        const tick = () => {
-          const elapsed = (Date.now()-startedMs)/1000;
-          $('timing').textContent = `${fmt(elapsed)} / ${fmt(duration)}`;
-          $('elapsed').textContent = `⏱ ${fmt(elapsed)}`;
-        };
-        tick();
-        clearInterval(window._npTimer);
-        window._npTimer = setInterval(tick, 1000);
-      } else {
-        $('timing').textContent = '—';
-        $('elapsed').textContent = '';
-      }
-    } catch(e){ console.error(e); toast('Failed to load now playing'); }
+  function fmtTime(ts) {
+    if (!ts) return '';
+    const d = new Date(ts);
+    return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
   }
-
-  async function loadNext(){
-    try{
-      const items = await j('/api/next');
-      const box = $('upNext'); box.innerHTML = '';
-      (items||[]).slice(0,10).forEach((t,i)=>{
-        const row = document.createElement('div');
-        row.className='item';
-        row.innerHTML = `<div class="bullet">${i+1}</div>
-          <div style="min-width:0">
-            <div><strong>${t.title||t.name||'Unknown'}</strong></div>
-            <div class="small">${[t.artist,t.album].filter(Boolean).join(' • ')}</div>
-          </div>`;
-        box.appendChild(row);
-      });
-      if(!items?.length) box.innerHTML = '<div class="small">Queue is empty.</div>';
-    } catch(e){ console.error(e); toast('Failed to load up next'); }
-  }
-
-  async function loadTTS(){
-    try{
-      const items = await j('/api/tts_queue');
-      const box = $('ttsList'); box.innerHTML='';
-      (items||[]).forEach((q,i)=>{
-        const row = document.createElement('div');
-        row.className='item';
-        row.innerHTML = `<div class="bullet">#${i+1}</div>
-          <div style="min-width:0;flex:1">
-            <div class="small" style="margin-bottom:6px;word-break:break-word">${q.text||'(missing text)'}</div>
-            ${q.audio_url ? `<audio controls preload="none" src="${q.audio_url}"></audio>` : `<div class="small">No audio yet</div>`}
-          </div>`;
-        box.appendChild(row);
-      });
-      if(!items?.length) box.innerHTML = '<div class="small">No TTS items queued.</div>';
-    } catch(e){ console.error(e); toast('Failed to load TTS queue'); }
-  }
-
-  $('skipBtn').onclick = async () => { try{ await j('/api/skip',{method:'POST'}); toast('Skipped'); loadNow(); loadNext(); } catch(e){ toast('Skip failed'); } };
-
-  $('genBtn').onclick = async () => {
-    try {
-      const wasPlaying = !$('livePlayer').paused;
-      await j('/api/dj-now', { method: 'POST' });
-      toast('Generating…');
-      setTimeout(loadTTS, 3000);
-      setTimeout(loadTTS, 6000);
-      if (wasPlaying && $('livePlayer').paused) {
-        $('livePlayer').play().catch(() => {});
-      }
-    } catch (e) {
-      toast('Gen failed');
+  function getCover(ev) {
+    if (ev.artwork_url) return ev.artwork_url;
+    if (ev.filename) {
+      const u = new URL('/api/cover', location.origin);
+      u.searchParams.set('file', ev.filename);
+      return u.toString();
     }
-  };
+    return '/static/no-cover.png';
+  }
 
-  $('sayBtn').onclick  = async () => {
-    const text = $('djText').value.trim();
-    if(!text) return toast('Type or generate a line');
-    try{ await j('/api/tts_queue',{method:'POST',body:JSON.stringify({text})}); toast('Enqueued'); setTimeout(loadTTS, 800); } catch(e){ toast('Enqueue failed'); }
-  };
+  async function loadTimeline(){
+    try {
+      const [now, next, tts] = await Promise.all([
+        j('/api/now'),
+        j('/api/next'),
+        j('/api/tts_queue')
+      ]);
+      const events = [];
 
-  (async ()=>{ await Promise.all([loadNow(), loadNext(), loadTTS()]); })();
-  setInterval(loadNow, 10000);
+      // Cache old now playing
+      if (localHistory.length === 0 || localHistory[0].title !== now.title) {
+        if (localHistory.length > 0) {
+          // push old now to history
+          localHistory.unshift({...localHistory[0], time: Date.now()});
+        }
+        localHistory[0] = {
+          type: 'song',
+          time: now.started_at || Date.now(),
+          title: now.title || now.name || 'Unknown title',
+          artist: now.artist || '',
+          album: now.album || '',
+          filename: now.filename || '',
+          artwork_url: now.artwork_url || ''
+        };
+      }
 
-  const STREAM_URL = "http://icecast.zorro.local:8000/stream.mp3";
-  $('livePlayer').src = STREAM_URL;
-  $('openLink').href = STREAM_URL;
+      // Add history first
+      events.push(...localHistory);
+
+      // DJ lines
+      (tts||[]).forEach(t => {
+        events.push({
+          type:'dj',
+          time:t.timestamp || Date.now(),
+          voice:t.voice || 'Unknown',
+          text:t.text || '(missing text)',
+          audio_url:t.audio_url || null
+        });
+      });
+
+      // Upcoming songs
+      (next||[]).forEach(s => {
+        events.push({
+          type:'upcoming',
+          time:Date.now()+Math.random()*100000,
+          title:s.title||s.name||'Unknown',
+          artist:s.artist||'',
+          album:s.album||'',
+          filename:s.filename||'',
+          artwork_url:s.artwork_url||''
+        });
+      });
+
+      // Sort newest first
+      events.sort((a,b)=> new Date(b.time)-new Date(a.time));
+
+      const box = $('timeline');
+      box.innerHTML='';
+      events.forEach(ev => {
+        const div = document.createElement('div');
+        div.className=`event ${ev.type}`;
+        if(ev.type==='dj'){
+          div.innerHTML=`
+            <div class="event-details">
+              <div class="event-meta"><span>${fmtTime(ev.time)}</span><span class="voice-chip">${ev.voice}</span></div>
+              <div class="event-title">🎙️ ${ev.text}</div>
+              ${ev.audio_url ? `<audio controls preload="none" src="${ev.audio_url}"></audio>` : ''}
+            </div>`;
+        } else {
+          div.innerHTML=`
+            <img src="${getCover(ev)}" onerror="this.src='/static/no-cover.png'">
+            <div class="event-details">
+              <div class="event-meta"><span>${fmtTime(ev.time)}</span>${ev.type==='upcoming' ? '<span class="voice-chip">Upcoming</span>' : ''}</div>
+              <div class="event-title">${ev.title}</div>
+              <div class="event-sub">${[ev.artist, ev.album].filter(Boolean).join(' • ')}</div>
+            </div>`;
+        }
+        box.appendChild(div);
+      });
+
+    } catch(e) {
+      console.error(e);
+    }
+  }
+
+  $('skipBtn').onclick = async () => { try{ await j('/api/skip',{method:'POST'}); loadTimeline(); } catch(e){} };
+  $('genBtn').onclick = async () => { try{ await j('/api/dj-now',{method:'POST'}); setTimeout(loadTimeline,3000); } catch(e){} };
+
+  loadTimeline();
+  setInterval(loadTimeline, 10000);
 });
 </script>
 </body>
