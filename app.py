@@ -7,6 +7,7 @@ try:
     import requests
 except Exception:
     requests = None  # online lookup disabled if requests isn't available
+from urllib.parse import quote
 
 # ── Config ──────────────────────────────────────────────────────
 HOST = "0.0.0.0"
@@ -392,7 +393,7 @@ def api_cover():
     # 1) embedded art
     if _MUTAGEN_OK:
         try:
-            audio = MFile(fpath)
+            audio = MutaFile(fpath)
             if audio:
                 # MP3 APIC
                 try:

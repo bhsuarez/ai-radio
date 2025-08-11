@@ -82,7 +82,8 @@ smooth_music = source.on_metadata(smooth_music, announce_song)
 smooth_music = source.on_metadata(smooth_music, after_song)
 
 # Main fallback: play TTS inserts when present, else music, else sine
-radio = fallback(track_sensitive=false, [tts_q, smooth_music, sine_src])
+# radio = fallback(track_sensitive=false, [tts_q, smooth_music, sine_src])   <-- remove this
+radio = smooth_music
 
 # Remove all entries for key k from association-list m
 def rm_key(m, k)
@@ -118,7 +119,7 @@ dj = strip_blank(max_blank=0.1, tts_q)
 
 # Prefer DJ clip when available; otherwise play music.
 # track_sensitive=false allows switching as soon as a track ends (no extra waiting).
-radio = fallback(track_sensitive=false, [dj, music])
+radio = fallback(track_sensitive=false, [dj, music, sine_src])
 
 # --- Output -------------------------------------------------------------------
 output.icecast(
