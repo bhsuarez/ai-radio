@@ -134,27 +134,46 @@ def read_now() -> dict:
     return data
 
 def push_event(ev):
-    # ensure ms timestamps (UI expects Date(ms))
+    # normalize timestamp to ms
+    now_ms = int(time.time() * 1000)
     if isinstance(ev.get("time"), (int, float)) and ev["time"] < 10_000_000_000:
         ev["time"] = int(ev["time"] * 1000)
-    # filename-based fallback for tags like "Artist - Title.mp3"
+
+    # filename/title/artist normalization (kept from your version)
     if ev.get("type") == "song":
         title = (ev.get("title") or "").strip()
         artist = (ev.get("artist") or "").strip()
         fn = (ev.get("filename") or "")
-        if (not title or title.lower() == "unknown") and fn:
-            m = re.search(r'([^/]+?)[/\\]([^/\\]+?)(?:\\.| - )([^/\\]+?)\\.(mp3|flac|m4a|wav)$', fn, re.I)
-            # also try "Artist - Title.mp3"
-            if not m:
-                m = re.search(r'([^/\\]+?)\\s+-\\s+([^/\\]+?)\\.(mp3|flac|m4a|wav)$', fn, re.I)
+        if not title and fn:
+            # quick filename fallbacks: "Artist - Title.mp3" or folder/name.mp3
+            import re
+            m = re.search(r'([^/\\]+?)\s*-\s*([^/\\]+?)\.(mp3|flac|m4a|wav)$', fn, re.I)
             if m:
-                # group order for second pattern: artist, title
                 artist = artist or m.group(1)
                 title  = title  or m.group(2)
         ev["artist"] = artist or "Unknown Artist"
         ev["title"]  = title  or "Unknown"
+
+    # ---- de-duplicate recent identical events ----
+    if HISTORY:
+        last = HISTORY[0]
+        # song de-dupe (title+artist+filename within window)
+        if ev.get("type") == "song" and last.get("type") == "song":
+            same = (
+                (ev.get("title") or "") == (last.get("title") or "") and
+                (ev.get("artist") or "") == (last.get("artist") or "") and
+                (ev.get("filename") or "") == (last.get("filename") or "")
+            )
+            if same and (now_ms - int(last.get("time", now_ms))) < DEDUP_WINDOW_MS:
+                return  # drop duplicate
+
+        # DJ de-dupe (text within short window)
+        if ev.get("type") == "dj" and last.get("type") == "dj":
+            if (ev.get("text") or "") == (last.get("text") or "") and \
+               (now_ms - int(last.get("time", now_ms))) < 5000:
+                return  # drop duplicate
+
     HISTORY.insert(0, ev)
-    # keep last 200
     del HISTORY[200:]
 
 # ── Routes ──────────────────────────────────────────────────────
