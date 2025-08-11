@@ -94,16 +94,15 @@ document.addEventListener('DOMContentLoaded', () => {
   $('livePlayer').load();
   $('openLink').href = STREAM_URL;
 
+  // ------- fetch helper
   async function j(url,opts={}) {
     const r = await fetch(url,{headers:{'Content-Type':'application/json'},...opts});
     if(!r.ok) throw new Error(await r.text());
     return r.json();
   }
-  function fmtTime(ts) {
-    if (!ts) return '';
-    const d = new Date(ts);
-    return d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'});
-  }
+  const fmtTime = (ts) => ts ? new Date(ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
+
+  // ------- cover helpers
   function getCover(ev) {
     if (ev.artwork_url) return ev.artwork_url;
     if (ev.filename) {
@@ -111,98 +110,144 @@ document.addEventListener('DOMContentLoaded', () => {
       u.searchParams.set('file', ev.filename);
       return u.toString();
     }
-    return '/static/station-cover.png';
+    return '/static/station-cover.jpg';
+  }
+  function eventKey(e){
+    return (e.filename && e.filename.length>0)
+      ? `f|${e.filename}`
+      : `t|${(e.title||'')}|${(e.artist||'')}|${(e.album||'')}`.toLowerCase() || `x|${e.time}`;
+  }
+  const lastArtByKey = new Map();
+  function setCoverOnce(imgEl, ev) {
+    const key = eventKey(ev);
+    const url = getCover(ev);
+    const prev = lastArtByKey.get(key);
+    if (prev !== url) {
+      imgEl.src = url;
+      lastArtByKey.set(key, url);
+    }
+    if (!imgEl._fallbackBound) {
+      imgEl.onerror = function(){ this.onerror=null; this.src='/static/station-cover.jpg'; };
+      imgEl._fallbackBound = true;
+    }
   }
 
-  function setImgOnce(imgEl, url) {
-  if (!imgEl) return;
-  if (imgEl.src !== url) imgEl.src = url;     // only change if different
-  if (!imgEl._fallbackBound) {
-    imgEl.onerror = function () {
-      this.onerror = null;
-      this.src = '/static/no-cover.png';      // your existing placeholder
-      };
-    imgEl._fallbackBound = true;
-    }
+  // ------- localStorage cache so hiccups don't wipe art
+  const CACHE_KEY = 'ai-radio:timeline-cache:v2';
+  const loadCache = () => { try { return JSON.parse(localStorage.getItem(CACHE_KEY) || '[]'); } catch { return []; } };
+  const saveCache = (evts) => { try { localStorage.setItem(CACHE_KEY, JSON.stringify(evts.slice(0,200))); } catch {} };
+  function mergeWithCache(newEvents){
+    const old = loadCache();
+    const byK = new Map(old.map(e => [eventKey(e), e]));
+    return newEvents.map(e => {
+      const k = eventKey(e);
+      const prev = byK.get(k);
+      // keep previous art if new one is missing or default
+      if (prev && (!e.artwork_url || e.artwork_url.endsWith('/station-cover.jpg'))) {
+        e.artwork_url = prev.artwork_url;
+      }
+      return e;
+    });
   }
 
   async function loadTimeline(){
-  const $ = (id) => document.getElementById(id);
-  const fmt = (ts) => ts ? new Date(ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
+    try {
+      const [now, next, tts, history] = await Promise.all([
+        j('/api/now'),
+        j('/api/next'),
+        j('/api/tts_queue'),
+        j('/api/history')
+      ]);
 
-  try {
-    const [now, next, tts, history] = await Promise.all([
-      fetch('/api/now').then(r=>r.json()),
-      fetch('/api/next').then(r=>r.json()),
-      fetch('/api/tts_queue').then(r=>r.json()),
-      fetch('/api/history').then(r=>r.json()),
-    ]);
-
-    // Mark the now-playing track in history so it always gets the LIVE NOW chip
-    const nowFile = now && now.filename ? now.filename : null;
-    (history || []).forEach(ev => {
-      if (ev.type === 'song' && nowFile && ev.filename === nowFile) {
-        ev.liveNow = true;
-      }
-    });
-
-    // Build events list: history first (already has songs), then DJ (optional), then upcoming
-    const events = [...(history || [])];
-
-    (tts || []).forEach(t => {
-      // Only include if not already in history
-      if (!events.find(e => e.type === 'dj' && e.text === t.text && e.time === t.time)) {
-        events.push(t);
-      }
-    });
-
-    (next || []).forEach(s => {
-      events.push({
-        type: 'upcoming',
-        time: Date.now() + Math.random()*100000,
-        title: s.title || 'Unknown title',
-        artist: s.artist || '',
-        album: s.album || '',
-        filename: s.filename || '',
-        artwork_url: s.artwork_url || '/static/station-cover.jpg'
+      // mark LIVE NOW by filename
+      const nowFile = now && now.filename ? now.filename : null;
+      (history || []).forEach(ev => {
+        if (ev.type === 'song' && nowFile && ev.filename === nowFile) ev.liveNow = true;
       });
-    });
 
-    // Newest first (top of the list)
-    events.sort((a,b)=> new Date(b.time) - new Date(a.time));
+      // assemble events
+      const events = [...(history||[])];
+      (tts||[]).forEach(t => {
+        if (!events.find(e => e.type==='dj' && e.text===t.text && e.time===t.time)) events.push(t);
+      });
+      (next||[]).forEach(s => {
+        events.push({
+          type:'upcoming',
+          time: Date.now()+Math.random()*100000,
+          title: s.title || 'Unknown title',
+          artist: s.artist || '',
+          album: s.album || '',
+          filename: s.filename || '',
+          artwork_url: s.artwork_url || '/static/station-cover.jpg'
+        });
+      });
 
-    // Render using your original card structure
-    const box = $('timeline');
-    box.innerHTML = '';
-    for (const ev of events) {
-      const div = document.createElement('div');
-      div.className = `event ${ev.type || 'song'}`;
+      // newest first
+      events.sort((a,b)=> new Date(b.time)-new Date(a.time));
 
-      if (ev.type === 'dj') {
-        div.innerHTML = `
-          <div class="event-details" style="width:100%">
-            <div class="event-meta"><span>${fmt(ev.time)}</span></div>
-            <div class="event-title">🎙️ ${ev.text || '(DJ line)'}</div>
-            ${ev.audio_url ? `<audio controls preload="none" src="${ev.audio_url}"></audio>` : ''}
-          </div>`;
-      } else {
-        const liveChip = ev.liveNow ? '<span class="live-chip">LIVE NOW</span>' : '';
-        const art = ev.artwork_url || '/static/station-cover.jpg';
-        div.innerHTML = `
-          <img src="${art}" onerror="this.src='/static/station-cover.jpg'" loading="lazy" decoding="async">
-          <div class="event-details">
-            <div class="event-meta"><span>${fmt(ev.time)}</span>${ev.type==='upcoming' ? '<span class="voice-chip">Upcoming</span>' : ''}</div>
-            <div class="event-title">${liveChip}${ev.title || 'Unknown title'}</div>
-            <div class="event-sub">${[ev.artist, ev.album].filter(Boolean).join(' • ') || 'Unknown artist'}</div>
-          </div>`;
+      // merge with cache, persist
+      const merged = mergeWithCache(events);
+      saveCache(merged);
+
+      // render
+      const box = $('timeline');
+      box.innerHTML='';
+      for (const ev of merged) {
+        const div = document.createElement('div');
+        div.className = `event ${ev.type || 'song'}`;
+        if (ev.type === 'dj') {
+          div.innerHTML = `
+            <div class="event-details" style="width:100%">
+              <div class="event-meta"><span>${fmtTime(ev.time)}</span></div>
+              <div class="event-title">🎙️ ${ev.text || '(DJ line)'}</div>
+              ${ev.audio_url ? `<audio controls preload="none" src="${ev.audio_url}"></audio>` : ''}
+            </div>`;
+        } else {
+          const liveChip = ev.liveNow ? '<span class="live-chip">LIVE NOW</span>' : '';
+          div.innerHTML = `
+            <img alt="" loading="lazy" decoding="async">
+            <div class="event-details">
+              <div class="event-meta"><span>${fmtTime(ev.time)}</span>${ev.type==='upcoming' ? '<span class="voice-chip">Upcoming</span>' : ''}</div>
+              <div class="event-title">${liveChip}${ev.title || 'Unknown title'}</div>
+              <div class="event-sub">${[ev.artist, ev.album].filter(Boolean).join(' • ') || 'Unknown artist'}</div>
+            </div>`;
+        }
+        box.appendChild(div);
+        if (ev.type !== 'dj') setCoverOnce(div.querySelector('img'), ev);
       }
 
-      box.appendChild(div);
+    } catch (e) {
+      console.error(e);
+      // fallback: render cached timeline
+      const cached = loadCache();
+      if (cached.length) {
+        const box = $('timeline');
+        box.innerHTML='';
+        for (const ev of cached) {
+          const div = document.createElement('div');
+          div.className = `event ${ev.type || 'song'}`;
+          if (ev.type === 'dj') {
+            div.innerHTML = `
+              <div class="event-details" style="width:100%">
+                <div class="event-meta"><span>${fmtTime(ev.time)}</span></div>
+                <div class="event-title">🎙️ ${ev.text || '(DJ line)'}</div>
+                ${ev.audio_url ? `<audio controls preload="none" src="${ev.audio_url}"></audio>` : ''}
+              </div>`;
+          } else {
+            div.innerHTML = `
+              <img alt="" loading="lazy" decoding="async">
+              <div class="event-details">
+                <div class="event-meta"><span>${fmtTime(ev.time)}</span></div>
+                <div class="event-title">${ev.title || 'Unknown title'}</div>
+                <div class="event-sub">${[ev.artist, ev.album].filter(Boolean).join(' • ') || 'Unknown artist'}</div>
+              </div>`;
+          }
+          box.appendChild(div);
+          if (ev.type !== 'dj') setCoverOnce(div.querySelector('img'), ev);
+        }
+      }
     }
-  } catch (e) {
-    console.error(e);
   }
-}
 
   $('skipBtn').onclick = async () => { try{ await j('/api/skip',{method:'POST'}); loadTimeline(); } catch(e){} };
   $('genBtn').onclick = async () => { try{ await j('/api/dj-now',{method:'POST'}); setTimeout(loadTimeline,3000); } catch(e){} };
