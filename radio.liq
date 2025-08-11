@@ -24,17 +24,12 @@ all_music = playlist(
 # Announce every song to the Flask backend (non-blocking)
 def announce_song(m)
   artist = if list.mem("artist", list.map(fst, m)) then m["artist"] else "Unknown Artist" end
-  title  = if list.mem("title",  list.map(fst, m)) then m["title"]  else "Unknown Title"  end
-  album  = if list.mem("album",  list.map(fst, m)) then m["album"]  else "" end
-  file   = if list.mem("filename", list.map(fst, m)) then m["filename"] else "" end
-
-  ignore(process.run(
-    "sh -c 'curl -s -X POST -H \"Content-Type: application/json\" " ^
-    " -d ''{\"type\":\"song\",\"time\":" ^ string_of(time()) ^
-    ",\"title\":\"" ^ title ^ "\",\"artist\":\"" ^ artist ^
-    "\",\"album\":\"" ^ album ^ "\",\"filename\":\"" ^ file ^ "\"}'' " ^
-    " http://127.0.0.1:5055/api/log_event >/dev/null 2>&1 &'"
-  ))
+  title  = if list.mem("title",  list.map(fst, m)) then m["title"]  else "Unknown"        end
+  album  = if list.mem("album",  list.map(fst, m)) then m["album"]  else ""               end
+  file   = if list.mem("filename", list.map(fst, m)) then m["filename"]
+           else if list.mem("file", list.map(fst, m)) then m["file"] else "" end end
+  ignore(process.run("python3 /opt/ai-radio/post_event.py \"" ^
+                     artist ^ "\" \"" ^ title ^ "\" \"" ^ album ^ "\" \"" ^ file ^ "\""))
 end
 all_music = source.on_metadata(all_music, announce_song)
 
