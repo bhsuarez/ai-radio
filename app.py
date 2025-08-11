@@ -338,6 +338,21 @@ def log_event():
     push_event(data)
     return {"ok": True}
 
+@app.post("/api/dj-now")
+def api_dj_now():
+    # Minimal: reuse your /api/tts_queue behavior with a placeholder line.
+    # You can swap this to actually call GEN_SCRIPT later.
+    text = request.json.get("text") if request.is_json else None
+    if not text:
+        text = "You're listening to AI Plex DJ—more music coming right up!"
+    push_event({
+        "type": "dj",
+        "text": text,
+        "audio_url": None,
+        "time": int(time.time() * 1000),
+    })
+    return {"ok": True, "queued_text": text}
+
 @app.get("/api/cover")
 def api_cover():
     """
