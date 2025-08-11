@@ -34,7 +34,7 @@ except Exception:
 
 model_path = "/mnt/music/ai-dj/piper_voices/en/en_US/norman/medium/en_US-norman-medium.onnx"
 with subprocess.Popen(
-    ["piper", "--model", model_path, "--output_file", output_path],
+    ["piper", "--num-threads", "1", "--model", model_path, "--output_file", output_path],
     stdin=subprocess.PIPE
 ) as proc:
     proc.stdin.write(intro_text.encode("utf-8"))
