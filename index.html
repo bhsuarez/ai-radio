@@ -90,6 +90,7 @@
 document.addEventListener('DOMContentLoaded', () => {
   const $ = (id) => document.getElementById(id);
   const STREAM_URL = "http://icecast.zorro.local:8000/stream.mp3";
+  const DEFAULT_COVER = '/static/station-cover.jpg';
   $('livePlayer').src = STREAM_URL;
   $('livePlayer').load();
   $('openLink').href = STREAM_URL;
@@ -110,7 +111,7 @@ document.addEventListener('DOMContentLoaded', () => {
       u.searchParams.set('file', ev.filename);
       return u.toString();
     }
-    return '/static/station-cover.jpg';
+    return DEFAULT_COVER;
   }
   function eventKey(e){
     return (e.filename && e.filename.length>0)
@@ -118,18 +119,51 @@ document.addEventListener('DOMContentLoaded', () => {
       : `t|${(e.title||'')}|${(e.artist||'')}|${(e.album||'')}`.toLowerCase() || `x|${e.time}`;
   }
   const lastArtByKey = new Map();
+
   function setCoverOnce(imgEl, ev) {
-    const key = eventKey(ev);
-    const url = getCover(ev);
-    const prev = lastArtByKey.get(key);
-    if (prev !== url) {
-      imgEl.src = url;
-      lastArtByKey.set(key, url);
-    }
-    if (!imgEl._fallbackBound) {
-      imgEl.onerror = function(){ this.onerror=null; this.src='/static/station-cover.jpg'; };
-      imgEl._fallbackBound = true;
-    }
+    const lastArtByKey = new Map();
+function eventKey(e){
+  return (e.filename && e.filename.length>0)
+    ? `f|${e.filename}`
+    : `t|${(e.title||'')}|${(e.artist||'')}|${(e.album||'')}`.toLowerCase() || `x|${e.time}`;
+}
+
+function desiredCover(ev){
+  if (ev.artwork_url) return ev.artwork_url;
+  if (ev.filename) {
+    const u = new URL('/api/cover', location.origin);
+    u.searchParams.set('file', ev.filename);
+    return u.toString();
+  }
+  return DEFAULT_COVER;
+}
+
+function setCoverOnce(imgEl, ev) {
+  const key = eventKey(ev);
+  const url = desiredCover(ev) || DEFAULT_COVER;
+  const prev = lastArtByKey.get(key);
+  if (prev === url) return; // nothing to do
+
+  // preload into a throwaway Image, only swap when loaded
+  const loader = new Image();
+  loader.onload = () => {
+    imgEl.src = url;
+    lastArtByKey.set(key, url);
+  };
+  loader.onerror = () => {
+    imgEl.src = DEFAULT_COVER;
+    lastArtByKey.set(key, DEFAULT_COVER);
+  };
+  loader.crossOrigin = 'anonymous';
+  loader.decoding = 'async';
+  loader.loading = 'eager';
+  loader.src = url;
+
+  if (!imgEl._fallbackBound) {
+    imgEl.onerror = function(){ this.onerror=null; this.src = DEFAULT_COVER; };
+    imgEl._fallbackBound = true;
+  }
+}
   }
 
   // ------- localStorage cache so hiccups don't wipe art
@@ -148,6 +182,12 @@ document.addEventListener('DOMContentLoaded', () => {
       }
       return e;
     });
+  }
+
+  let lastSig = '';
+  function signature(events){
+    // stable signature = filenames + types + times (don’t include artwork_url)
+    return events.map(e => [e.type||'song', e.filename||'', e.title||'', e.artist||'', e.time||0].join('|')).join('||');
   }
 
   async function loadTimeline(){
@@ -178,15 +218,20 @@ document.addEventListener('DOMContentLoaded', () => {
           artist: s.artist || '',
           album: s.album || '',
           filename: s.filename || '',
-          artwork_url: s.artwork_url || '/static/station-cover.jpg'
+          artwork_url: s.artwork_url || DEFAULT_COVER
         });
       });
 
       // newest first
       events.sort((a,b)=> new Date(b.time)-new Date(a.time));
 
-      // merge with cache, persist
       const merged = mergeWithCache(events);
+      const sig = signature(merged);
+      if (sig === lastSig) {
+        // nothing changed → keep current DOM & images
+        return;
+      }
+      lastSig = sig;
       saveCache(merged);
 
       // render
