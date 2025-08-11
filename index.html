@@ -35,6 +35,16 @@
   .voice-chip { padding:2px 6px; border-radius:999px; border:1px solid #1f2531; background:#0f1420; font-size:11px; color:var(--muted); }
   .event-title { font-weight:600; }
   .event-sub { font-size:14px; color:var(--muted); }
+  .live-chip {
+    display:inline-block;
+    padding:2px 8px;
+    border-radius:999px;
+    background:#ff4d4d;
+    color:white;
+    font-size:11px;
+    font-weight:bold;
+    margin-right:6px;
+  }
 </style>
 </head>
 <body>
@@ -98,7 +108,6 @@ document.addEventListener('DOMContentLoaded', () => {
       // Cache old now playing
       if (localHistory.length === 0 || localHistory[0].title !== now.title) {
         if (localHistory.length > 0) {
-          // push old now to history
           localHistory.unshift({...localHistory[0], time: Date.now()});
         }
         localHistory[0] = {
@@ -112,7 +121,6 @@ document.addEventListener('DOMContentLoaded', () => {
         };
       }
 
-      // Add history first
       events.push(...localHistory);
 
       // DJ lines
@@ -126,7 +134,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
       });
 
-      // Upcoming songs
+      // Upcoming
       (next||[]).forEach(s => {
         events.push({
           type:'upcoming',
@@ -144,7 +152,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
       const box = $('timeline');
       box.innerHTML='';
-      events.forEach(ev => {
+      events.forEach((ev, i) => {
         const div = document.createElement('div');
         div.className=`event ${ev.type}`;
         if(ev.type==='dj'){
@@ -155,11 +163,12 @@ document.addEventListener('DOMContentLoaded', () => {
               ${ev.audio_url ? `<audio controls preload="none" src="${ev.audio_url}"></audio>` : ''}
             </div>`;
         } else {
+          const liveLabel = (ev.type === 'song' && i === 0) ? '<span class="live-chip">LIVE NOW</span>' : '';
           div.innerHTML=`
             <img src="${getCover(ev)}" onerror="this.src='/static/no-cover.png'">
             <div class="event-details">
               <div class="event-meta"><span>${fmtTime(ev.time)}</span>${ev.type==='upcoming' ? '<span class="voice-chip">Upcoming</span>' : ''}</div>
-              <div class="event-title">${ev.title}</div>
+              <div class="event-title">${liveLabel}${ev.title}</div>
               <div class="event-sub">${[ev.artist, ev.album].filter(Boolean).join(' • ')}</div>
             </div>`;
         }
