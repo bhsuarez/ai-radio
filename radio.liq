@@ -9,24 +9,23 @@ settings.server.telnet.port.set(1234)
 tts_q = request.queue(id="tts")
 
 # Music playlist
-all_music = playlist(
-  mode="random",
-  reload=300,
-  reload_mode="watch",
-  "/opt/ai-radio/library_all.m3u"
-)
+all_music = playlist(mode="random", reload=300, reload_mode="watch",
+                     metadata_charset="UTF-8",
+                     "/opt/ai-radio/library_all.m3u")
 
 # Hook to create intro when a new song starts
 def announce_song(m)
   artist = if list.mem("artist", list.map(fst, m)) then m["artist"] else "Unknown Artist" end
-  title  = if list.mem("title", list.map(fst, m)) then m["title"] else "Unknown Title" end
-  log("🎵 Now playing: #{artist} - #{title}")
+  title  = if list.mem("title",  list.map(fst, m)) then m["title"]  else "Unknown Title"  end
+  album  = if list.mem("album",  list.map(fst, m)) then m["album"]  else "" end
+  file   = if list.mem("filename", list.map(fst, m)) then m["filename"] else "" end
 
-  # Call intro generator
-  process.run("python3 /opt/ai-radio/make_intro.py #{artist} #{title}")
-
-  # Queue TTS
-  tts_q.push(request.create("/opt/ai-radio/tts/next_intro.mp3"))
+  ignore(process.run(
+    "sh -c 'curl -s -X POST -H \"Content-Type: application/json\" " ^
+    " -d ''{\"type\":\"song\",\"time\":" ^ string_of(time()) ^
+    ",\"title\":\"" ^ title ^ "\",\"artist\":\"" ^ artist ^
+    "\",\"album\":\"" ^ album ^ "\",\"filename\":\"" ^ file ^ "\"}'' " ^
+    " http://127.0.0.1:5000/api/log_event >/dev/null 2>&1 &'"))
 end
 
 # Attach song announcement hook
