@@ -13,12 +13,12 @@ settings.server.telnet.port.set(1234)
 # Queue for TTS intros (id="tts" exposes telnet commands: tts.push / tts.skip / tts.queue)
 tts_q = request.queue(id="tts")
 
-# Music playlist
+# Load everything from the folder
 all_music = playlist(
   mode="random",
   reload=300,
   reload_mode="watch",
-  "/opt/ai-radio/library_all.m3u"
+  "/opt/ai-radio/library_clean.m3u"
 )
 
 # Announce every song to the Flask backend (non-blocking)
