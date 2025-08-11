@@ -142,10 +142,12 @@ def api_history():
 
 @app.route("/api/log_event", methods=["POST"])
 def log_event():
-    data = request.get_json()
-    data["time"] = int(time.time() * 1000)
-    history.insert(0, data)  # Add newest first
-    return {"status": "ok"}
+    data = request.get_json(force=True)
+    # store as ms to match your UI's Date() usage
+    if isinstance(data.get("time"), int) and data["time"] < 10_000_000_000:
+        data["time"] *= 1000
+    history.insert(0, data)
+    return {"ok": True}
 
 @app.route("/api/now")
 def api_now():
