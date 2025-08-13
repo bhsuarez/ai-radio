@@ -18,7 +18,7 @@ else:
     output_path = f"/opt/ai-radio/tts/intro_{ts}.mp3"
 
 prompt = f"""
-You are an energetic radio DJ. Introduce the song "{title}" by {artist}. 
+You are an energetic radio DJ. Introduce the song "{title}" by {artist}.
 Give a fun fact about the artist or song.
 Keep it under 12 words. Make it unique and upbeat. Do not repeat the title twice.
 """

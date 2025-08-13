@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
-import os, json, socket, time, hashlib, io, re
+import os, json, socket, time, hashlib, io, re, subprocess
 from datetime import datetime
 from pathlib import Path
-from flask import Flask, jsonify, request, send_from_directory, send_file
+from flask import Flask, jsonify, request, send_from_directory, send_file, abort
 try:
     import requests
 except Exception:
@@ -26,6 +26,10 @@ GEN_SCRIPT = "/opt/ai-radio/gen_dj_clip.sh"
 
 LOG_DIR    = "/opt/ai-radio/logs"
 DJ_LOG     = os.path.join(LOG_DIR, "dj-now.log")
+
+ANSI = re.compile(r'\x1B\[[0-9;?]*[ -/]*[@-~]')
+TTS_DIR = "/opt/ai-radio/tts"
+VOICE   = "/mnt/music/ai-dj/piper_voices/en/en_US/norman/medium/en_US-norman-medium.onnx"
 
 COVER_CACHE = Path("/opt/ai-radio/cache/covers"); COVER_CACHE.mkdir(parents=True, exist_ok=True)
 
@@ -339,20 +343,67 @@ def log_event():
     push_event(data)
     return {"ok": True}
 
+from flask import jsonify, request
+import os, time, re, subprocess, requests
+
+ANSI = re.compile(r'\x1B\[[0-9;?]*[ -/]*[@-~]')
+TTS_DIR = "/opt/ai-radio/tts"
+VOICE   = "/mnt/music/ai-dj/piper_voices/en/en_US/norman/medium/en_US-norman-medium.onnx"
+
 @app.post("/api/dj-now")
 def api_dj_now():
-    # Minimal: reuse your /api/tts_queue behavior with a placeholder line.
-    # You can swap this to actually call GEN_SCRIPT later.
-    text = request.json.get("text") if request.is_json else None
-    if not text:
-        text = "You're listening to AI Plex DJ—more music coming right up!"
+    os.makedirs(TTS_DIR, exist_ok=True)
+    ts = int(time.time())
+
+    # 1) What’s playing?
+    try:
+        base = request.host_url.rstrip('/')      # respects your real port (5055)
+        now  = requests.get(f"{base}/api/now", timeout=3).json()
+    except Exception:
+        now = {}
+    title  = now.get("title")  or "Unknown Title"
+    artist = now.get("artist") or "Unknown Artist"
+
+    # 2) Generate a DJ line (Ollama/OpenAI is inside your script)
+    try:
+        out = subprocess.check_output(
+            ["/opt/ai-radio/gen_ai_dj_line.sh", title, artist],
+            stderr=subprocess.DEVNULL, timeout=60
+        ).decode("utf-8", "ignore").strip()
+    except Exception:
+        out = f"That was '{title}' by {artist}."
+
+    line = ANSI.sub('', out)  # strip any ANSI control codes
+
+    # 3) TTS via Piper → WAV → MP3 (if ffmpeg available)
+    wav = os.path.join(TTS_DIR, f"intro_{ts}.wav")
+    mp3 = os.path.join(TTS_DIR, f"intro_{ts}.mp3")
+    audio_url = None
+    try:
+        subprocess.check_call(
+            ["piper", "--model", VOICE, "--output_file", wav],
+            input=line.encode("utf-8"), timeout=60
+        )
+        try:
+            subprocess.check_call(
+                ["ffmpeg", "-nostdin", "-y", "-i", wav, "-codec:a", "libmp3lame", "-q:a", "3", mp3],
+                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60
+            )
+            audio_url = f"/tts/{os.path.basename(mp3)}"
+        except Exception:
+            audio_url = f"/tts/{os.path.basename(wav)}"
+    except Exception:
+        pass  # fall back to text-only event
+
+    # 4) Show it in the UI timeline immediately
     push_event({
         "type": "dj",
-        "text": text,
-        "audio_url": None,
+        "text": line,
+        "audio_url": audio_url,   # UI will render <audio> if present
         "time": int(time.time() * 1000),
     })
-    return {"ok": True, "queued_text": text}
+
+    return jsonify(ok=True, queued_text=line, audio_url=audio_url), 200
 
 @app.get("/api/cover")
 def api_cover():
