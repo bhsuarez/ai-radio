@@ -180,6 +180,19 @@ async function load(){
   document.getElementById('ts').textContent = 'Updated ' + new Date().toLocaleTimeString();
 }
 
+function setImgOnce(id, url) {
+  const el = document.getElementById(id);
+  if (!el) return;
+  // Only set if different, to avoid flicker + re-request storms
+  if (el.src !== url) el.src = url;
+  // Fallback if the image 404s
+  el.onerror = function() {
+    // point this to a real file you have available in your static folder
+    this.onerror = null;
+    this.src = '/static/img/placeholder-art.svg';
+  }
+}
+
 document.getElementById('refresh').addEventListener('click', load);
 load(); setInterval(load, 5000);
 </script>

@@ -1,100 +1,64 @@
-#!/bin/bash
+#!/usr/bin/env bash
 set -euo pipefail
 
-LOG="/var/log/ai-dj-gen.log"
-OUT_DIR="/opt/ai-radio/tts_queue"
-PIPER="/root/.local/bin/piper"
-VOICE_ONNX="/mnt/music/ai-dj/piper_voices/en/en_US/norman/medium/en_US-norman-medium.onnx"
-VOICE_CFG="${VOICE_ONNX}.json"
-MODEL="llama3.2:1b"      # or: phi3:mini
-STATION="AI Plex DJ"
+# Ensure Ollama uses the right model directory
+export OLLAMA_MODELS="/mnt/music/ai-dj/ollama"
 
-mkdir -p "$OUT_DIR" "$(dirname "$LOG")"
+TITLE="${1:-}"
+ARTIST="${2:-}"
 
-# -------- Helpers --------
-tod() {
-  h=$(date +%H)
-  if   [ "$h" -lt 12 ]; then echo morning
-  elif [ "$h" -lt 18 ]; then echo afternoon
-  elif [ "$h" -lt 22 ]; then echo evening
-  else echo "late night"; fi
-}
+# Default to a smaller, RAM-friendly model
+MODEL="${MODEL:-llama3.2:3b}"
+PROVIDER="${PROVIDER:-ollama}"
+OPENAI_MODEL="${OPENAI_MODEL:-gpt-4o-mini}"
 
-ensure_ollama() {
-  if command -v systemctl >/dev/null 2>&1; then
-    systemctl is-active --quiet ollama || systemctl start ollama || true
-  fi
-  for i in $(seq 1 10); do
-    if curl -sSf --max-time 1 http://127.0.0.1:11434/api/version >/dev/null; then
-      return 0
-    fi
-    sleep 1
-  done
-  return 1
-}
+STYLES=("energetic hype" "laid-back chill" "warm late-night" "quirky college-radio" "BBC-style concise" "retro 90s alt" "clubby electronic")
+STYLE="${STYLE:-$(printf '%s\n' "${STYLES[@]}" | shuf -n1)}"
 
-# -------- Filenames --------
-STAMP="$(date +%s)"
-BASE="dj_${STAMP}"
-OUT_WAV="${OUT_DIR}/${BASE}.wav"
-OUT_TXT="${OUT_DIR}/${BASE}.txt"
-VARIATION="$(date +%s%N)"
-
-# -------- Build prompt --------
-PROMPT=$(
-  cat <<EOF
-You are "Norman", an energetic but natural radio DJ for a personal music stream.
-
-Goal:
-- Say ONE short upbeat line to introduce the next set of songs.
-- Be friendly & confident; 8–20 words; plain text only; no emojis/hashtags.
-
-Context:
-- Station: ${STATION}
-- Time of day: $(tod)
-
-Constraints:
-- Vary your wording every time. Variation token: ${VARIATION}
-EOF
-)
-
-echo "[$(date)] START base=$BASE" >> "$LOG"
-
-# -------- Generate text via Ollama --------
-if ensure_ollama; then
-  DJ_TEXT="$(printf '%s' "$PROMPT" | ollama run "$MODEL" | tr -d '\r' | sed 's/^"//;s/"$//')"
+if (( RANDOM % 100 < 60 )); then
+  TRIVIA_LINE="If you genuinely know one short, widely known fact about ${ARTIST:-the artist} or the song '${TITLE:-this track}', include it; if not, skip trivia."
 else
-  echo "[$(date)] Ollama not reachable — using fallback" >> "$LOG"
-  DJ_TEXT="Stay tuned, more great tracks coming your way!"
+  TRIVIA_LINE=""
 fi
 
-if [ -z "${DJ_TEXT// }" ]; then
-  echo "[$(date)] ERROR: Empty DJ text" >> "$LOG"
-  exit 1
-fi
+PROMPT="You are a radio DJ. Style: ${STYLE}.
+In 1–2 sentences, speak about the song '${TITLE:-this track}' by ${ARTIST:-an unknown artist}.
+${TRIVIA_LINE}
+Keep it natural, conversational, and clean. No emojis or hashtags. Do not invent facts."
 
-printf '%s\n' "$DJ_TEXT" > "$OUT_TXT"
-echo "[$(date)] TEXT: $DJ_TEXT" >> "$LOG"
+collapse_line() {
+  tr -d '\r' | sed 's/^[[:space:]]\+//; s/[[:space:]]\+$//' | awk 'NF' | paste -sd' ' - | sed 's/  */ /g'
+}
 
-# -------- TTS with Piper --------
-if ! command -v "$PIPER" >/dev/null 2>&1; then
-  echo "[$(date)] Piper missing at $PIPER" >> "$LOG"
-  exit 1
-fi
+run_ollama() {
+  ollama run "$MODEL" "$PROMPT" | collapse_line
+}
 
-if ! printf '%s' "$DJ_TEXT" | "$PIPER" \
-    -m "$VOICE_ONNX" -c "$VOICE_CFG" \
-    --length-scale 0.92 --volume 1.15 \
-    -f "$OUT_WAV"; then
-  echo "[$(date)] ERROR: Piper synthesis failed" >> "$LOG"
-  exit 1
-fi
+run_openai() {
+  : "${OPENAI_API_KEY:?OPENAI_API_KEY is required when PROVIDER=openai}"
+  resp="$(curl -sS https://api.openai.com/v1/chat/completions \
+    -H "Authorization: Bearer ${OPENAI_API_KEY}" \
+    -H "Content-Type: application/json" \
+    -d @- <<EOF
+{
+  "model": "${OPENAI_MODEL}",
+  "temperature": 0.8,
+  "max_tokens": 120,
+  "messages": [
+    {"role":"system","content":"You are a concise, engaging radio DJ. No emojis or hashtags. Never invent facts."},
+    {"role":"user","content": ${PROMPT@Q} }
+  ]
+}
+EOF
+)"
+  python3 - "$resp" <<'PY' | collapse_line
+import sys, json
+data = json.loads(sys.argv[1])
+print(data["choices"][0]["message"]["content"])
+PY
+}
 
-echo "[$(date)] WAV: $OUT_WAV ($(du -h "$OUT_WAV" | cut -f1))" >> "$LOG"
-
-# -------- Push once into Liquidsoap queue --------
-echo "tts.push ${OUT_WAV}" | nc -w 1 127.0.0.1 1234 >/dev/null 2>&1 || \
-  echo "[$(date)] WARN: Could not push to Liquidsoap" >> "$LOG"
-
-# -------- Cleanup (>12h) --------
-find "$OUT_DIR" -type f -mmin +720 -delete 2>/dev/null || true
+case "$PROVIDER" in
+  openai) run_openai ;;
+  *)      run_ollama ;;
+esac
