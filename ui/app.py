@@ -355,14 +355,29 @@ def api_dj_now():
     os.makedirs(TTS_DIR, exist_ok=True)
     ts = int(time.time())
 
-    # 1) What’s playing?
+    # 1) What's next? (fall back to what's playing)
     try:
-        base = request.host_url.rstrip('/')      # respects your real port (5055)
-        now  = requests.get(f"{base}/api/now", timeout=3).json()
+        base = request.host_url.rstrip('/')  # respects your real port
+        nxt = requests.get(f"{base}/api/next", timeout=3).json()  # typically a list
+        if isinstance(nxt, list) and nxt:
+            cand = nxt[0]  # first upcoming track
+        elif isinstance(nxt, dict):  # if your /api/next returns a single dict
+            cand = nxt
+        else:
+            cand = {}
     except Exception:
-        now = {}
-    title  = now.get("title")  or "Unknown Title"
-    artist = now.get("artist") or "Unknown Artist"
+        cand = {}
+
+    # Fallback to "now" if we didn't get anything for next
+    if not cand:
+        try:
+            now = requests.get(f"{base}/api/now", timeout=3).json()
+        except Exception:
+            now = {}
+        cand = now or {}
+
+    title  = cand.get("title")  or "Unknown Title"
+    artist = cand.get("artist") or "Unknown Artist"
 
     # 2) Generate a DJ line (Ollama/OpenAI is inside your script)
     try:
@@ -390,8 +405,23 @@ def api_dj_now():
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60
             )
             audio_url = f"/tts/{os.path.basename(mp3)}"
+
+            # NEW — push to Liquidsoap
+            uri = f"file://{mp3}"
+            subprocess.run(
+                ["nc", "127.0.0.1", "1234"],
+                input=f"tts.push {uri}\n".encode(),
+                check=True
+            )
+
         except Exception:
             audio_url = f"/tts/{os.path.basename(wav)}"
+            uri = f"file://{wav}"
+            subprocess.run(
+                ["nc", "127.0.0.1", "1234"],
+                input=f"tts.push {uri}\n".encode(),
+                check=True
+            )
     except Exception:
         pass  # fall back to text-only event
 
