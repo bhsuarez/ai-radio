@@ -115,9 +115,11 @@ music = radio
 # DJ queue source (trim any leading/ending silence so it fires cleanly)
 dj = strip_blank(max_blank=0.1, tts_q)
 
-# Prefer DJ clip when available; otherwise play music.
-# track_sensitive=false allows switching as soon as a track ends (no extra waiting).
-radio = fallback(track_sensitive=false, [dj, music, sine_src])
+# Primary (song + DJ) should be track-sensitive between themselves
+primary = fallback(track_sensitive=true, [dj, music])
+
+# Sine only as a last resort, but NOT track-sensitive so we can bail out instantly
+radio = fallback(track_sensitive=false, [primary, sine_src])
 
 # --- Output -------------------------------------------------------------------
 output.icecast(
