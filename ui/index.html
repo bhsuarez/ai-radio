@@ -1,0 +1,288 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<title>AI Radio</title>
+<style>
+  :root {
+    --bg: #0f1115; --card:#171a22; --text:#e9ecf1; --muted:#9aa4b2; --accent:#4da3ff;
+    --ok:#3ddc97; --warn:#ffb020; --err:#ff5d5d; --radius:14px;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--text); font:16px/1.4 system-ui, sans-serif; display:flex; height:100vh; }
+  a { color:var(--accent); text-decoration:none; }
+
+  /* Sidebar */
+  .sidebar { width:260px; background:#13161d; border-right:1px solid #1f2531; display:flex; flex-direction:column; padding:16px; gap:12px; }
+  .sidebar h1 { font-size:20px; margin:0 0 6px; }
+  .btn { appearance:none; border:1px solid #2a2f3a; background:var(--card); color:var(--text); padding:10px 14px; border-radius:10px; cursor:pointer; text-align:left; }
+  .btn:hover { border-color:#3a4150; }
+  .btn.accent { background:var(--accent); border-color:var(--accent); color:#041427; }
+  .btn.warn { background:var(--warn); border-color:var(--warn); color:#271400; }
+  audio { width:100%; }
+
+  /* Main */
+  .main { flex:1; display:flex; flex-direction:column; overflow:hidden; }
+  header { padding:16px; border-bottom:1px solid #1f2531; display:flex; justify-content:space-between; align-items:center; }
+  header .title { font-size:18px; font-weight:600; }
+  .timeline { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:12px; }
+  .event { background:var(--card); border-radius:var(--radius); padding:12px; border:1px solid #202634; display:flex; gap:12px; }
+  .event.dj { border-left:4px solid var(--accent); }
+  .event.song { border-left:4px solid var(--ok); }
+  .event.upcoming { opacity:0.7; }
+  .event img { width:60px; height:60px; border-radius:8px; object-fit:cover; background:#0b0d12; border:1px solid #1f2531; }
+  .event-details { flex:1; }
+  .event-meta { font-size:12px; color:var(--muted); margin-bottom:4px; display:flex; gap:8px; flex-wrap:wrap; }
+  .voice-chip { padding:2px 6px; border-radius:999px; border:1px solid #1f2531; background:#0f1420; font-size:11px; color:var(--muted); }
+  .event-title { font-weight:600; }
+  .event-sub { font-size:14px; color:var(--muted); }
+  .live-chip {
+    display:inline-block;
+    padding:2px 8px;
+    border-radius:999px;
+    background:#ff4d4d;
+    color:white;
+    font-size:11px;
+    font-weight:bold;
+    margin-right:6px;
+  }
+
+  /* Mobile styles */
+  @media (max-width: 768px) {
+    body { flex-direction:column; }
+    .sidebar {
+      flex-direction:row;
+      flex-wrap:wrap;
+      width:100%;
+      border-right:none;
+      border-bottom:1px solid #1f2531;
+      align-items:center;
+      gap:8px;
+    }
+    .sidebar h1 { flex:1 1 100%; margin-bottom:4px; }
+    .btn { flex:1; font-size:14px; padding:8px; text-align:center; }
+    audio { position:sticky; top:0; z-index:10; background:#13161d; }
+    .timeline { padding:8px; }
+  }
+</style>
+</head>
+<body>
+  <!-- Sidebar -->
+  <aside class="sidebar">
+    <h1>🎧 AI Radio</h1>
+    <a class="btn" id="openLink" href="#" target="_blank" rel="noopener">🔗 Open Stream</a>
+    <a class="btn" href="http://icecast.zorro.local:8000" target="_blank">📊 Icecast Admin</a>
+    <audio id="livePlayer" controls preload="none"></audio>
+    <button class="btn warn" id="skipBtn">⏭️ Skip Track</button>
+    <button class="btn accent" id="genBtn">✨ Generate DJ Line</button>
+  </aside>
+
+  <!-- Main content -->
+  <div class="main">
+    <header>
+      <div class="title">📜 Live Timeline</div>
+    </header>
+    <div id="timeline" class="timeline"></div>
+  </div>
+
+<script>
+document.addEventListener('DOMContentLoaded', () => {
+  const $ = (id) => document.getElementById(id);
+  const STREAM_URL = "http://icecast.zorro.local:8000/stream.mp3";
+  $('livePlayer').src = STREAM_URL;
+  $('livePlayer').load();
+  $('openLink').href = STREAM_URL;
+
+  // ------- fetch helper
+  async function j(url,opts={}) {
+    const r = await fetch(url,{headers:{'Content-Type':'application/json'},...opts});
+    if(!r.ok) throw new Error(await r.text());
+    return r.json();
+  }
+  const fmtTime = (ts) => ts ? new Date(ts).toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : '';
+
+  // ------- cover helpers
+  function getCover(ev) {
+    if (ev.artwork_url) return ev.artwork_url;
+    if (ev.filename) {
+      const u = new URL('/api/cover', location.origin);
+      u.searchParams.set('file', ev.filename);
+      return u.toString();
+    }
+    return '/static/station-cover.jpg';
+  }
+  function eventKey(e){
+    return (e.filename && e.filename.length>0)
+      ? `f|${e.filename}`
+      : `t|${(e.title||'')}|${(e.artist||'')}|${(e.album||'')}`.toLowerCase() || `x|${e.time}`;
+  }
+  const lastArtByKey = new Map();
+  function setCoverOnce(imgEl, ev) {
+    const key = eventKey(ev);
+    const url = getCover(ev);
+    const prev = lastArtByKey.get(key);
+    if (prev !== url) {
+      imgEl.src = url;
+      lastArtByKey.set(key, url);
+    }
+    if (!imgEl._fallbackBound) {
+      imgEl.onerror = function(){ this.onerror=null; this.src='/static/station-cover.jpg'; };
+      imgEl._fallbackBound = true;
+    }
+  }
+
+  // ------- localStorage cache so hiccups don't wipe art
+  const CACHE_KEY = 'ai-radio:timeline-cache:v2';
+  const loadCache = () => { try { return JSON.parse(localStorage.getItem(CACHE_KEY) || '[]'); } catch { return []; } };
+  const saveCache = (evts) => { try { localStorage.setItem(CACHE_KEY, JSON.stringify(evts.slice(0,200))); } catch {} };
+  function mergeWithCache(newEvents){
+    const old = loadCache();
+    const byK = new Map(old.map(e => [eventKey(e), e]));
+    return newEvents.map(e => {
+      const k = eventKey(e);
+      const prev = byK.get(k);
+      // keep previous art if new one is missing or default
+      if (prev && (!e.artwork_url || e.artwork_url.endsWith('/station-cover.jpg'))) {
+        e.artwork_url = prev.artwork_url;
+      }
+      return e;
+    });
+  }
+
+  async function loadTimeline(){
+    try {
+      const [now, next, tts, history] = await Promise.all([
+        j('/api/now'),
+        j('/api/next'),
+        j('/api/tts_queue'),
+        j('/api/history')
+      ]);
+
+      // treat an all-empty payload as a backend hiccup; keep current DOM
+      const isHiccup =
+        (!history || history.length === 0) &&
+        (!next || next.length === 0) &&
+        (!tts || tts.length === 0) &&
+        (!now || !now.filename); // no current track
+
+      if (isHiccup) {
+        return; // don't clear or re-render; keep existing images
+      }
+
+      // mark LIVE NOW by filename
+      const nowFile = now && now.filename ? now.filename : null;
+      (history || []).forEach(ev => {
+        if (ev.type === 'song' && nowFile && ev.filename === nowFile) ev.liveNow = true;
+      });
+
+      // assemble events
+      const events = [...(history||[])];
+      (tts||[]).forEach(t => {
+        const dj = { ...t, type: 'dj' };
+        if (!events.find(e => e.type==='dj' && e.text===dj.text && e.time===dj.time)) events.push(dj);
+      });
+      (next||[]).forEach(s => {
+        events.push({
+          type:'upcoming',
+          time: Date.now()+Math.random()*100000,
+          title: s.title || 'Unknown title',
+          artist: s.artist || '',
+          album: s.album || '',
+          filename: s.filename || '',
+          artwork_url: s.artwork_url || '/static/station-cover.jpg'
+        });
+      });
+
+      // newest first
+      events.sort((a,b)=> new Date(b.time)-new Date(a.time));
+
+      // after: events.sort((a,b)=> new Date(b.time)-new Date(a.time));
+      const sigParts = events.map(e => [
+        e.type || 'song',
+        e.filename || '',
+        e.title || '',
+        e.artist || '',
+        Math.floor((e.time || 0)/60000) // minute-level to avoid jitter
+      ].join('|'));
+      const sig = sigParts.join('||');
+
+      window._lastSig = window._lastSig || '';
+      if (sig === window._lastSig) {
+        return; // nothing new; keep current DOM & covers
+      }
+      window._lastSig = sig;
+
+      // merge with cache, persist
+      const merged = mergeWithCache(events);
+      saveCache(merged);
+
+      // render
+      const box = $('timeline');
+      box.innerHTML='';
+      for (const ev of merged) {
+        const div = document.createElement('div');
+        div.className = `event ${ev.type || 'song'}`;
+        if (ev.type === 'dj') {
+          div.innerHTML = `
+            <div class="event-details" style="width:100%">
+              <div class="event-meta"><span>${fmtTime(ev.time)}</span></div>
+              <div class="event-title">🎙️ ${ev.text || '(DJ line)'}</div>
+              ${ev.audio_url ? `<audio controls preload="none" src="${ev.audio_url}"></audio>` : ''}
+            </div>`;
+        } else {
+          const liveChip = ev.liveNow ? '<span class="live-chip">LIVE NOW</span>' : '';
+          div.innerHTML = `
+            <img alt="" loading="lazy" decoding="async">
+            <div class="event-details">
+              <div class="event-meta"><span>${fmtTime(ev.time)}</span>${ev.type==='upcoming' ? '<span class="voice-chip">Upcoming</span>' : ''}</div>
+              <div class="event-title">${liveChip}${ev.title || 'Unknown title'}</div>
+              <div class="event-sub">${[ev.artist, ev.album].filter(Boolean).join(' • ') || 'Unknown artist'}</div>
+            </div>`;
+        }
+        box.appendChild(div);
+        if (ev.type !== 'dj') setCoverOnce(div.querySelector('img'), ev);
+      }
+
+    } catch (e) {
+      console.error(e);
+      // fallback: render cached timeline
+      const cached = loadCache();
+      if (cached.length) {
+        const box = $('timeline');
+        box.innerHTML='';
+        for (const ev of cached) {
+          const div = document.createElement('div');
+          div.className = `event ${ev.type || 'song'}`;
+          if (ev.type === 'dj') {
+            div.innerHTML = `
+              <div class="event-details" style="width:100%">
+                <div class="event-meta"><span>${fmtTime(ev.time)}</span></div>
+                <div class="event-title">🎙️ ${ev.text || '(DJ line)'}</div>
+                ${ev.audio_url ? `<audio controls preload="none" src="${ev.audio_url}"></audio>` : ''}
+              </div>`;
+          } else {
+            div.innerHTML = `
+              <img alt="" loading="lazy" decoding="async">
+              <div class="event-details">
+                <div class="event-meta"><span>${fmtTime(ev.time)}</span></div>
+                <div class="event-title">${ev.title || 'Unknown title'}</div>
+                <div class="event-sub">${[ev.artist, ev.album].filter(Boolean).join(' • ') || 'Unknown artist'}</div>
+              </div>`;
+          }
+          box.appendChild(div);
+          if (ev.type !== 'dj') setCoverOnce(div.querySelector('img'), ev);
+        }
+      }
+    }
+  }
+
+  $('skipBtn').onclick = async () => { try{ await j('/api/skip',{method:'POST'}); loadTimeline(); } catch(e){} };
+  $('genBtn').onclick = async () => { try{ await j('/api/dj-now',{method:'POST'}); setTimeout(loadTimeline,3000); } catch(e){} };
+
+  loadTimeline();
+  setInterval(loadTimeline, 10000);
+});
+</script>
+</body>
+</html>
