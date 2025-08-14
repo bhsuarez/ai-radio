@@ -26,23 +26,31 @@ all_music = playlist(
   "/opt/ai-radio/library_clean.m3u"
 )
 
-# Announce every song to the Flask backend (non-blocking)
-def announce_song(m)
-  artist = if list.mem("artist", list.map(fst, m)) then m["artist"] else "Unknown Artist" end
-  title  = if list.mem("title",  list.map(fst, m)) then m["title"]  else "Unknown"        end
-  album  = if list.mem("album",  list.map(fst, m)) then m["album"]  else ""               end
-  file   = if list.mem("filename", list.map(fst, m)) then m["filename"]
-           else if list.mem("file", list.map(fst, m)) then m["file"] else "" end end
-
-  qs = "artist=" ^ url.encode(artist)
-     ^ "&title=" ^ url.encode(title)
-     ^ "&album=" ^ url.encode(album)
-     ^ "&filename=" ^ url.encode(file)
-
-  ignore(process.run("curl -sS -X POST 'http://127.0.0.1:5055/api/log_event?" ^ qs ^ "'"))
+def meta_get(m, k, d)
+  if list.mem(k, list.map(fst, m)) then list.assoc(k, m) else d end
 end
 
-# (keep this line)
+def announce_song(m)
+  artist = meta_get(m, "artist", "Unknown artist")
+  title  = meta_get(m, "title",  "Unknown title")
+  album  = meta_get(m, "album",  "")
+  file   = if list.mem("filename", list.map(fst, m)) then list.assoc("filename", m)
+           else if list.mem("file", list.map(fst, m)) then list.assoc("file", m) else "" end end
+
+  qs = "type=song"
+       ^ "&artist=" ^ url.encode(artist)
+       ^ "&title="  ^ url.encode(title)
+       ^ "&album="  ^ url.encode(album)
+       ^ "&filename=" ^ url.encode(file)
+
+  # fire‑and‑forget so audio never blocks
+  cmd = "bash -lc \"(curl -fsS 'http://127.0.0.1:5055/api/event?" ^ qs ^
+        "' || wget -qO- 'http://127.0.0.1:5055/api/event?" ^ qs ^
+        "') >/dev/null 2>&1 &\""
+  ignore(process.run(cmd))
+end
+
+# (re)attach the hook
 all_music = source.on_metadata(all_music, announce_song)
 
 
