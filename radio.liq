@@ -1,14 +1,7 @@
 # Prefer ffmpeg over mad for decoding MP3/metadata with embedded images
 set("decoder.mad", false)
 set("decoder.ffmpeg", true)
-# Optional: if ffmpeg isn't on PATH, point to it:
-# set("ffmpeg.binary", "/usr/bin/ffmpeg")
-
-
-# Prefer mad/faad over ffmpeg; keep ffmpeg as a fallback.
-#settings.decoder.priorities.ffmpeg.set(0)
-#settings.decoder.priorities.mad.set(10)
-
+set("decoder.faad", true)
 
 # --- Core / logging -----------------------------------------------------------
 settings.init.allow_root.set(true)
@@ -134,10 +127,10 @@ output.icecast(
   host="127.0.0.1",
   port=8000,
   user="source",
-  password="orroz.123",
+  password="passw0rd",
   mount="/stream.mp3",
   name="AI Plex DJ",
-  url="http://192.168.1.243:8000/",
+  url="http://192.168.1.146:8000/",
   genre="Mixed",
   description="24/7 auto-DJ",
   radio
