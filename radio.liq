@@ -33,8 +33,16 @@ def announce_song(m)
   album  = if list.mem("album",  list.map(fst, m)) then m["album"]  else ""               end
   file   = if list.mem("filename", list.map(fst, m)) then m["filename"]
            else if list.mem("file", list.map(fst, m)) then m["file"] else "" end end
-  ignore(process.run("python3 /opt/ai-radio/post_event.py \"" ^
-                     artist ^ "\" \"" ^ title ^ "\" \"" ^ album ^ "\" \"" ^ file ^ "\""))
+
+  # url-encode fields and POST as x-www-form-urlencoded
+  cmd = "curl -sS -X POST -H 'Content-Type: application/x-www-form-urlencoded' " ^
+        "--data 'type=song&artist=" ^ url.encode(artist) ^
+        "&title=" ^ url.encode(title) ^
+        "&album=" ^ url.encode(album) ^
+        "&filename=" ^ url.encode(file) ^ "' " ^
+        "http://127.0.0.1:5055/api/log_event"
+
+  ignore(process.run(cmd))
 end
 all_music = source.on_metadata(all_music, announce_song)
 
