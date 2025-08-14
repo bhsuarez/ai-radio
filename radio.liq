@@ -34,17 +34,18 @@ def announce_song(m)
   file   = if list.mem("filename", list.map(fst, m)) then m["filename"]
            else if list.mem("file", list.map(fst, m)) then m["file"] else "" end end
 
-  # url-encode fields and POST as x-www-form-urlencoded
-  cmd = "curl -sS -X POST -H 'Content-Type: application/x-www-form-urlencoded' " ^
-        "--data 'type=song&artist=" ^ url.encode(artist) ^
-        "&title=" ^ url.encode(title) ^
-        "&album=" ^ url.encode(album) ^
-        "&filename=" ^ url.encode(file) ^ "' " ^
-        "http://127.0.0.1:5055/api/log_event"
+  qs = "artist=" ^ url.encode(artist)
+     ^ "&title=" ^ url.encode(title)
+     ^ "&album=" ^ url.encode(album)
+     ^ "&filename=" ^ url.encode(file)
 
-  ignore(process.run(cmd))
+  ignore(process.run("curl -sS -X POST 'http://127.0.0.1:5055/api/log_event?" ^ qs ^ "'"))
 end
+
+# (keep this line)
 all_music = source.on_metadata(all_music, announce_song)
+
+
 
 # Simple log when sine fallback is active (kept tiny)
 def log_sine(_)
