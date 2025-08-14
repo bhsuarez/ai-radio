@@ -104,19 +104,25 @@ def save_history():
     except Exception:
         pass
 
-def read_now() -> dict:
-    """Best-effort live metadata: JSON → key=value txt → 'Artist - Title' → telnet."""
-    data = {}
-
-    # Preferred: JSON file
-    if os.path.exists(NOW_JSON):
-        try:
-            with open(NOW_JSON, "r") as f:
-                j = json.load(f)
-            if isinstance(j, dict):
-                data.update(j)
-        except Exception:
-            pass
+def read_now():
+    try:
+        out = subprocess.check_output(
+            ["bash","-lc","printf 'output.icecast.metadata\nquit\n' | telnet 127.0.0.1 1234 | sed -n '/--- 1 ---/,/END/p'"],
+            stderr=subprocess.DEVNULL, timeout=2
+        ).decode()
+        m = {}
+        for line in out.splitlines():
+            if '=' in line:
+                k,v = line.split('=',1)
+                m[k.strip()] = v.strip().strip('"')
+        return {
+            "title": m.get("title",""),
+            "artist": m.get("artist",""),
+            "album": m.get("album",""),
+            "filename": m.get("filename","")
+        }
+    except Exception:
+        return {}
 
     # Fallback: NOW_TXT (key=value OR "Artist - Title")
     if os.path.exists(NOW_TXT) and not (data.get("title") and data.get("artist")):
@@ -278,28 +284,55 @@ def api_history():
         load_history()
     return jsonify(HISTORY[:MAX_HISTORY])
 
-@app.get("/api/now")
-def api_now():
-    # Prefer the newest song event from memory
-    for ev in HISTORY:
-        if ev.get("type") == "song":
-            return jsonify(ev)
-    # Fallback to live metadata (works mid-track)
-    data = read_now()
+@app.get("/api/event")
+def api_event_compat():
+    # accept old querystring style from Liquidsoap
     ev = {
         "type": "song",
         "time": int(time.time() * 1000),
-        "title": data.get("title") or "Unknown",
-        "artist": data.get("artist") or "",
-        "album": data.get("album") or "",
+        "title": request.args.get("title", ""),
+        "artist": request.args.get("artist", ""),
+        "album": request.args.get("album", ""),
+        "filename": request.args.get("filename", ""),
+        # let the UI compute art if not provided
+    }
+    HISTORY.insert(0, ev)
+    del HISTORY[200:]
+    return jsonify({"ok": True, "stored": ev})
+
+@app.get("/api/now")
+def api_now():
+    now_ms = int(time.time() * 1000)
+    for ev in HISTORY:                          # newest first
+        if ev.get("type") == "song" and now_ms - ev["time"] < 15*60*1000:
+            return jsonify(ev)
+
+    data = read_now() or {}
+    ev = {
+        "type": "song",
+        "time": now_ms,
+        "title":    data.get("title") or "Unknown",
+        "artist":   data.get("artist") or "",
+        "album":    data.get("album") or "",
         "filename": data.get("filename") or "",
-        "artwork_url": data.get("artwork_url") or _build_art_url(data.get("filename"))
+        "artwork_url": data.get("artwork_url") or _build_art_url(data.get("filename")),
     }
     return jsonify(ev)
 
 @app.get("/api/next")
 def api_next():
-    return jsonify(UPCOMING)
+    # naive heuristic: anything in HISTORY after the first 'song'
+    seen_current = False
+    nxt = []
+    for ev in HISTORY:
+        if ev.get("type") == "song":
+            if not seen_current:
+                seen_current = True
+            else:
+                nxt.append(ev)
+        if len(nxt) >= 3:
+            break
+    return jsonify(nxt)
 
 @app.get("/api/tts_queue")
 def tts_queue_get():
@@ -339,9 +372,20 @@ def api_skip():
 
 @app.post("/api/log_event")
 def log_event():
-    data = request.get_json(force=True) or {}
-    push_event(data)
-    return {"ok": True}
+    payload = request.get_json(silent=True) or request.form or request.args
+    ev = {
+        "type": "song",
+        "time": int(time.time() * 1000),
+        "title":  (payload.get("title")  or "").strip(),
+        "artist": (payload.get("artist") or "").strip(),
+        "album":  (payload.get("album")  or "").strip(),
+        "filename": (payload.get("filename") or "").strip(),
+    }
+    if ev["title"] or ev["filename"]:
+        HISTORY.appendleft(ev)        # newest first
+        while len(HISTORY) > 200:
+            HISTORY.pop()
+    return jsonify({"ok": True})
 
 from flask import jsonify, request
 import os, time, re, subprocess, requests
