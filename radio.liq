@@ -1,6 +1,13 @@
+# Prefer ffmpeg over mad for decoding MP3/metadata with embedded images
+set("decoder.mad", false)
+set("decoder.ffmpeg", true)
+# Optional: if ffmpeg isn't on PATH, point to it:
+# set("ffmpeg.binary", "/usr/bin/ffmpeg")
+
+
 # Prefer mad/faad over ffmpeg; keep ffmpeg as a fallback.
-settings.decoder.priorities.ffmpeg.set(0)
-settings.decoder.priorities.mad.set(10)
+#settings.decoder.priorities.ffmpeg.set(0)
+#settings.decoder.priorities.mad.set(10)
 
 
 # --- Core / logging -----------------------------------------------------------
