@@ -7,19 +7,34 @@ mkdir -p "$TTSDIR"
 
 # 1) Get the upcoming track (UI already uses /api/next) 
 #    It may return a list or single object; handle both.
-json="$(curl -fsS "$BASE/api/next" || echo '{}')"
-readarray -t kv < <(python3 - <<'PY'
+# --- safe next-track parsing (no eval, handles spaces) ---
+BASE="${BASE:-http://127.0.0.1:5055}"
+json="$(curl -fsS "$BASE/api/next" 2>/dev/null || echo '[]')"
+
+TITLE="$(
+python3 - <<'PY' "$json"
 import json,sys
-try:
-    data=json.load(sys.stdin)
-except: data={}
-if isinstance(data,list) and data: data=data[0]
-if not isinstance(data,dict): data={}
-print("TITLE="+str(data.get("title","Unknown Title")))
-print("ARTIST="+str(data.get("artist","Unknown Artist")))
+data=json.loads(sys.argv[1] or '[]')
+if isinstance(data,list) and data:
+    data=data[0]
+elif not isinstance(data,dict):
+    data={}
+print(data.get("title","Unknown Title"))
 PY
-<<<"$json") || true
-for line in "${kv[@]}"; do eval "$line"; done
+)"
+
+ARTIST="$(
+python3 - <<'PY' "$json"
+import json,sys
+data=json.loads(sys.argv[1] or '[]')
+if isinstance(data,list) and data:
+    data=data[0]
+elif not isinstance(data,dict):
+    data={}
+print(data.get("artist","Unknown Artist"))
+PY
+)"
+# --- end safe parser ---
 
 # 2) Safe filename + paths
 ts=$(date +%s)
