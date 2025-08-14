@@ -106,59 +106,38 @@ def save_history():
 
 def read_now():
     try:
-        out = subprocess.check_output(
-            ["bash","-lc","printf 'output.icecast.metadata\nquit\n' | telnet 127.0.0.1 1234 | sed -n '/--- 1 ---/,/END/p'"],
-            stderr=subprocess.DEVNULL, timeout=2
-        ).decode()
-        m = {}
-        for line in out.splitlines():
-            if '=' in line:
-                k,v = line.split('=',1)
-                m[k.strip()] = v.strip().strip('"')
+        with socket.create_connection(("127.0.0.1", 1234), timeout=2.0) as s:
+            s.sendall(b"output.icecast.metadata\n")
+            buf = b""
+            s.settimeout(2.0)
+            while b"END\n" not in buf:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+        text = buf.decode(errors="ignore")
+
+        # grab the current block (--- 1 --- ... END)
+        m = re.search(r"---\s*1\s*---\s*(.*?)\s*END", text, re.S)
+        if not m:
+            return {}
+        block = m.group(1)
+
+        meta = {}
+        for line in block.splitlines():
+            if "=" in line:
+                k, v = line.split("=", 1)
+                meta[k.strip()] = v.strip().strip('"')
+
         return {
-            "title": m.get("title",""),
-            "artist": m.get("artist",""),
-            "album": m.get("album",""),
-            "filename": m.get("filename","")
+            "title": meta.get("title", ""),
+            "artist": meta.get("artist", ""),
+            "album": meta.get("album", ""),
+            # filename usually isn’t in this telnet block; ok to leave blank.
+            "filename": meta.get("filename", "")
         }
     except Exception:
         return {}
-
-    # Fallback: NOW_TXT (key=value OR "Artist - Title")
-    if os.path.exists(NOW_TXT) and not (data.get("title") and data.get("artist")):
-        try:
-            with open(NOW_TXT, "r") as f:
-                raw = f.read().strip()
-            # key=value lines?
-            if "=" in raw:
-                kv = parse_kv_text(raw)
-                for k in ("title","artist","album","artwork_url","started_at","duration","filename"):
-                    if k not in data and k in kv:
-                        data[k] = kv[k]
-            # single line "Artist - Title"
-            if not (data.get("title") and data.get("artist")) and " - " in raw and "\n" not in raw:
-                artist, title = raw.split(" - ", 1)
-                data.setdefault("artist", artist.strip())
-                data.setdefault("title", title.strip())
-        except Exception:
-            pass
-
-    # Fallback: Liquidsoap telnet (namespaced command)
-    if not data.get("title"):
-        try:
-            raw = telnet_cmd("AI_Plex_DJ.metadata")
-            kv = parse_kv_text(raw)
-            data["title"]     = kv.get("title") or kv.get("song") or data.get("title") or "Unknown title"
-            data["artist"]    = kv.get("artist") or data.get("artist") or "Unknown artist"
-            data["album"]     = kv.get("album") or data.get("album") or ""
-            data["filename"]  = kv.get("filename") or kv.get("file") or data.get("filename") or ""
-            data["artwork_url"] = data.get("artwork_url") or ""
-        except Exception:
-            pass
-
-    data.setdefault("title", "Unknown title")
-    data.setdefault("artist", "Unknown artist")
-    return data
 
 def push_event(ev: dict):
     """Insert newest-first with light de-duplication and persist to disk."""
@@ -302,22 +281,27 @@ def api_event_compat():
 
 @app.get("/api/now")
 def api_now():
-    now_ms = int(time.time() * 1000)
-    for ev in HISTORY:                          # newest first
-        if ev.get("type") == "song" and now_ms - ev["time"] < 15*60*1000:
-            return jsonify(ev)
-
     data = read_now() or {}
-    ev = {
-        "type": "song",
-        "time": now_ms,
-        "title":    data.get("title") or "Unknown",
-        "artist":   data.get("artist") or "",
-        "album":    data.get("album") or "",
-        "filename": data.get("filename") or "",
-        "artwork_url": data.get("artwork_url") or _build_art_url(data.get("filename")),
-    }
-    return jsonify(ev)
+    if data.get("title") or data.get("artist") or data.get("album") or data.get("filename"):
+        return jsonify({
+            "type": "song",
+            "time": int(time.time() * 1000),
+            "title": data.get("title","Unknown"),
+            "artist": data.get("artist",""),
+            "album": data.get("album",""),
+            "filename": data.get("filename",""),
+            "artwork_url": data.get("artwork_url") or _build_art_url(data.get("filename"))
+        })
+    # fallback: newest song we logged
+    for ev in HISTORY:
+        if ev.get("type") == "song":
+            return jsonify(ev)
+    # last resort
+    return jsonify({
+        "type": "song","time": int(time.time()*1000),
+        "title":"Unknown","artist":"","album":"","filename":"",
+        "artwork_url": url_for("static", filename="station-cover.jpg", _external=True)
+    })
 
 @app.get("/api/next")
 def api_next():
