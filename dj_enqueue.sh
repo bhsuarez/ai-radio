@@ -63,23 +63,35 @@ BASE_NAME="intro_$(safe "$ARTIST")_$(safe "$TITLE")_${ts}"
 WAV="$TTSDIR/${BASE_NAME}.wav"
 OUT="$TTSDIR/${BASE_NAME}.mp3"
 
-# ---------- 4) synthesize with espeak‑ng (simple, works today) ----------
-# Check if tools exist
-if ! command -v espeak-ng >/dev/null 2>&1; then
-    echo "DJ_ENQUEUE: ERROR - espeak-ng not found!" >> /var/tmp/dj_enqueue.log
-    exit 1
+# ---------- 4) synthesize with Piper CLI (fallback to espeak‑ng) ----------
+# You can use either a model NAME (downloaded via `python3 -m piper.download_voices`)
+# or an ONNX file path you already have.
+VOICE_NAME="${VOICE_NAME:-en_US-norman-medium}"
+VOICE_PATH="${VOICE_PATH:-/mnt/music/ai-dj/piper_voices/en/en_US/norman/medium/en_US-norman-medium.onnx}"
+
+make_wav_with_piper() {
+  # Try model name first (fast if voices were installed via piper downloader)
+  if python3 -m piper -m "$VOICE_NAME" -f "$WAV" -- "$LINE"; then
+    return 0
+  fi
+  # Fallback to explicit ONNX path
+  if [ -f "$VOICE_PATH" ] && python3 -m piper -m "$VOICE_PATH" -f "$WAV" -- "$LINE"; then
+    return 0
+  fi
+  return 1
+}
+
+if make_wav_with_piper; then
+  :
+else
+  echo "DJ_ENQUEUE: WARN - Piper failed; using espeak-ng fallback." >> /var/tmp/dj_enqueue.log
+  espeak-ng -v en-us -s 175 -w "$WAV" "$LINE" 2>> /var/tmp/dj_enqueue.log
 fi
 
-if ! command -v ffmpeg >/dev/null 2>&1; then
-    echo "DJ_ENQUEUE: ERROR - ffmpeg not found!" >> /var/tmp/dj_enqueue.log
-    exit 1
-fi
-
-echo "DJ_ENQUEUE: Generating TTS audio..." >> /var/tmp/dj_enqueue.log
-espeak-ng -v en-us -s 175 -w "$WAV" "$LINE" 2>> /var/tmp/dj_enqueue.log
-ffmpeg -nostdin -y -i "$WAV" -codec:a libmp3lame -q:a 3 "$OUT" >/dev/null 2>&1
-
-echo "DJ_ENQUEUE: Generated audio file: $OUT" >> /var/tmp/dj_enqueue.log
+# Convert to a "radio-safe" MP3: 44.1kHz, stereo, a bit louder, tiny tail pad
+ffmpeg -nostdin -y -i "$WAV" \
+  -ar 44100 -ac 2 -af "volume=9dB,apad=pad_dur=0.5" \
+  -codec:a libmp3lame -q:a 3 "$OUT" >/dev/null 2>&1
 
 # ---------- 5) enqueue into Liquidsoap queue ----------
 URI="$(python3 - <<'PY' "$OUT"
