@@ -4,6 +4,7 @@ import os, json, socket, time, hashlib, re, subprocess
 from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory, send_file, abort
 from urllib.parse import quote
+import random
 import threading
 
 # ── Config ──────────────────────────────────────────────────────
@@ -15,12 +16,64 @@ TELNET_PORT = 1234
 
 BASE_DIR     = os.path.dirname(os.path.abspath(__file__))
 HISTORY_FILE = "/opt/ai-radio/play_history.json"
+DJ_CONFIG_FILE = "/opt/ai-radio/dj_settings.json"
+DJ_LINES_FILE = "/opt/ai-radio/dj_lines.txt"
 MAX_HISTORY  = 500  # Increased to store more history
 DEDUP_WINDOW_MS = 30_000  # Reduced to 30 seconds for better tracking
 
 COVER_CACHE = Path("/opt/ai-radio/cache/covers"); COVER_CACHE.mkdir(parents=True, exist_ok=True)
 
+# ADD THIS DJ CONFIGURATION SECTION after the COVER_CACHE line (around line 25)
+DEFAULT_DJ_CONFIG = {
+    "auto_dj_enabled": True,
+    "dj_probability": 30,  # 30% chance after each track
+    "min_interval_minutes": 5,  # Minimum 5 minutes between DJ lines
+    "max_interval_minutes": 15, # Force DJ line after 15 minutes
+    "dj_templates": [
+        "That was {title} by {artist}, keeping the vibes flowing here on AI Radio!",
+        "You just heard {title} from {artist}, and we've got more great music coming up!",
+        "{artist} with {title}, and this is AI Radio bringing you the best mix!",
+        "Beautiful track there - {title} by {artist}. Stay tuned for more!",
+        "That's {title} from {artist}, and you're listening to AI Radio!",
+        "What a great song! {title} by {artist}. More awesome music ahead!",
+        "AI Radio bringing you {title} from {artist}. We'll be right back with more hits!",
+        "{artist}'s {title} there, and this is your AI DJ keeping the music flowing!",
+    ],
+    "save_to_file": True
+}
+
+def load_dj_config():
+    """Load DJ configuration from file or create default"""
+    try:
+        if os.path.exists(DJ_CONFIG_FILE):
+            with open(DJ_CONFIG_FILE, 'r') as f:
+                config = json.load(f)
+            # Merge with defaults to handle new keys
+            merged = DEFAULT_DJ_CONFIG.copy()
+            merged.update(config)
+            return merged
+        else:
+            save_dj_config(DEFAULT_DJ_CONFIG)
+            return DEFAULT_DJ_CONFIG.copy()
+    except Exception:
+        return DEFAULT_DJ_CONFIG.copy()
+
+def save_dj_config(config):
+    """Save DJ configuration to file"""
+    try:
+        Path(DJ_CONFIG_FILE).parent.mkdir(parents=True, exist_ok=True)
+        with open(DJ_CONFIG_FILE, 'w') as f:
+            json.dump(config, f, indent=2)
+    except Exception:
+        pass
+
+# ADD THIS after your existing State section (around line 35)
+last_dj_time = 0
+
 app = Flask(__name__)
+
+# Load DJ config at startup
+dj_config = load_dj_config()
 
 # ── State ───────────────────────────────────────────────────────
 HISTORY  = []   # newest first
@@ -472,6 +525,49 @@ def debug_cover():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+# ADD THESE FUNCTIONS after your existing utility functions (around line 300, before push_event)
+def should_trigger_dj():
+    """Determine if we should trigger a DJ line based on probability and timing"""
+    global last_dj_time
+    
+    if not dj_config.get("auto_dj_enabled", True):
+        return False
+    
+    current_time = time.time()
+    time_since_last = current_time - last_dj_time
+    min_interval = dj_config.get("min_interval_minutes", 5) * 60
+    max_interval = dj_config.get("max_interval_minutes", 15) * 60
+    probability = dj_config.get("dj_probability", 30)
+    
+    # Force DJ line if too much time has passed
+    if time_since_last > max_interval:
+        print(f"DJ: Forcing DJ line after {time_since_last/60:.1f} minutes")
+        return True
+    
+    # Check probability if enough time has passed
+    if time_since_last > min_interval:
+        chance = random.randint(1, 100)
+        if chance <= probability:
+            print(f"DJ: Triggering DJ line (chance: {chance} <= {probability})")
+            return True
+        else:
+            print(f"DJ: Not triggering DJ line (chance: {chance} > {probability})")
+    
+    return False
+
+def generate_dj_line(title="Unknown", artist="Unknown Artist", album=""):
+    """Generate a DJ line using templates"""
+    templates = dj_config.get("dj_templates", DEFAULT_DJ_CONFIG["dj_templates"])
+    template = random.choice(templates)
+    
+    try:
+        dj_text = template.format(title=title, artist=artist, album=album)
+    except Exception:
+        # Fallback if template formatting fails
+        dj_text = f"That was {title} by {artist}, and you're listening to AI Radio!"
+    
+    return dj_text
+
 def push_event(ev: dict):
     """Insert newest-first with light de-duplication and persist."""
     now_ms = int(time.time() * 1000)
@@ -534,7 +630,52 @@ def push_event(ev: dict):
     print(f"Adding to history: {ev.get('title')} by {ev.get('artist')}")
     HISTORY.insert(0, ev)
     del HISTORY[MAX_HISTORY:]
+    
+    # Save DJ lines to file if enabled (MOVE THIS BEFORE save_history())
+    if ev.get("type") == "dj" and dj_config.get("save_to_file", True):
+        try:
+            dj_text = ev.get("text", "")
+            timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+            line = f"{timestamp} - {dj_text}\n"
+            
+            Path(DJ_LINES_FILE).parent.mkdir(parents=True, exist_ok=True)
+            with open(DJ_LINES_FILE, "a", encoding="utf-8") as f:
+                f.write(line)
+            print(f"Saved DJ line to file: {dj_text}")
+        except Exception as e:
+            print(f"Error saving DJ line to file: {e}")
+    
     save_history()
+    
+    # Check if we should trigger automatic DJ after song events
+    if ev.get("type") == "song" and should_trigger_dj():
+        global last_dj_time
+        last_dj_time = time.time()
+        
+        # Generate DJ line in a separate thread to avoid blocking
+        def delayed_dj():
+            time.sleep(3)  # Wait a bit for the song to start
+            try:
+                dj_text = generate_dj_line(
+                    title=ev.get("title", "Unknown"),
+                    artist=ev.get("artist", "Unknown Artist"),
+                    album=ev.get("album", "")
+                )
+                
+                dj_event = {
+                    "type": "dj",
+                    "text": dj_text,
+                    "time": int(time.time() * 1000),
+                    "audio_url": None,
+                    "auto_generated": True
+                }
+                
+                push_event(dj_event)
+                print(f"Auto-generated DJ line: {dj_text}")
+            except Exception as e:
+                print(f"Error generating automatic DJ line: {e}")
+        
+        threading.Thread(target=delayed_dj, daemon=True).start()
 
 def _build_art_url(path: str) -> str:
     if path and os.path.isabs(path) and os.path.exists(path):
@@ -808,6 +949,78 @@ def log_event():
         push_event(ev)
         return jsonify({"ok": True, "event": ev})
     return jsonify({"ok": False, "error": "No title or filename provided"}), 400
+
+@app.post("/api/dj-now")
+def api_dj_now():
+    """Generate a DJ line for the current track and save it to timeline"""
+    try:
+        # Get current track info
+        now_data = read_now() or {}
+        
+        # Generate DJ text
+        artist = now_data.get("artist", "Unknown Artist")
+        title = now_data.get("title", "Unknown Track")
+        album = now_data.get("album", "")
+        
+        dj_text = generate_dj_line(title=title, artist=artist, album=album)
+        
+        # Save to timeline
+        dj_event = {
+            "type": "dj",
+            "text": dj_text,
+            "time": int(time.time() * 1000),
+            "audio_url": None,
+            "manual_generated": True
+        }
+        
+        push_event(dj_event)
+        
+        return jsonify({
+            "ok": True, 
+            "text": dj_text,
+            "event": dj_event
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "ok": False, 
+            "error": str(e)
+        }), 500
+
+@app.get("/api/dj/config")
+def get_dj_config():
+    """Get current DJ configuration"""
+    return jsonify(dj_config)
+
+@app.post("/api/dj/config")
+def update_dj_config():
+    """Update DJ configuration"""
+    global dj_config
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        for key, value in data.items():
+            if key in DEFAULT_DJ_CONFIG:
+                dj_config[key] = value
+        
+        save_dj_config(dj_config)
+        return jsonify({"ok": True, "config": dj_config})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+@app.post("/api/dj/test-template")
+def test_dj_template():
+    """Test a DJ template with sample data"""
+    try:
+        template = request.json.get('template', '')
+        sample_data = {
+            'artist': 'Test Artist',
+            'title': 'Sample Song',
+            'album': 'Test Album'
+        }
+        result = template.format(**sample_data)
+        return jsonify({"ok": True, "result": result})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)})
 
 @app.get("/api/cover")
 def api_cover():
