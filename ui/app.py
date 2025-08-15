@@ -6,6 +6,9 @@ from flask import Flask, jsonify, request, send_from_directory, send_file, abort
 from urllib.parse import quote
 import random
 import threading
+import subprocess
+import tempfile
+import requests
 
 # ── Config ──────────────────────────────────────────────────────
 HOST = "0.0.0.0"
@@ -42,6 +45,12 @@ DEFAULT_DJ_CONFIG = {
     "save_to_file": True
 }
 
+TTS_PROVIDER = "piper"  # Change to "elevenlabs" when ready
+PIPER_MODEL_PATH = "/mnt/music/ai-dj/piper_voices/en/en_US/norman/medium/en_US-norman-medium.onnx"
+ELEVENLABS_API_KEY = ""  # Set this when you switch to ElevenLabs
+ELEVENLABS_VOICE_ID = ""  # Set this when you switch to ElevenLabs
+TTS_OUTPUT_DIR = "/opt/ai-radio/tts"
+
 def load_dj_config():
     """Load DJ configuration from file or create default"""
     try:
@@ -66,6 +75,182 @@ def save_dj_config(config):
             json.dump(config, f, indent=2)
     except Exception:
         pass
+
+# Add this function after your existing DJ functions
+def generate_dj_audio(text, provider="piper"):
+    """Generate audio file from DJ text using Piper or ElevenLabs"""
+    try:
+        # Create output directory
+        Path(TTS_OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
+        
+        # Generate unique filename
+        timestamp = int(time.time())
+        safe_text = re.sub(r'[^\w\s-]', '', text)[:50]  # Safe filename
+        filename = f"dj_{timestamp}_{safe_text.replace(' ', '_')}.wav"
+        output_path = os.path.join(TTS_OUTPUT_DIR, filename)
+        
+        if provider == "piper":
+            return generate_piper_audio(text, output_path)
+        elif provider == "elevenlabs":
+            return generate_elevenlabs_audio(text, output_path)
+        else:
+            raise ValueError(f"Unknown TTS provider: {provider}")
+            
+    except Exception as e:
+        print(f"Error generating DJ audio: {e}")
+        return None
+
+def generate_piper_audio(text, output_path):
+    """Generate audio using Piper TTS"""
+    try:
+        # First generate WAV with Piper
+        wav_path = output_path
+        
+        # Check if model exists
+        if not os.path.exists(PIPER_MODEL_PATH):
+            print(f"Piper model not found: {PIPER_MODEL_PATH}")
+            return None
+        
+        # Run Piper
+        cmd = [
+            "python3", "-m", "piper",
+            "--model", PIPER_MODEL_PATH,
+            "--output_file", wav_path
+        ]
+        
+        print(f"Running Piper TTS: {' '.join(cmd)}")
+        
+        process = subprocess.Popen(
+            cmd,
+            stdin=subprocess.PIPE,
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            text=True
+        )
+        
+        stdout, stderr = process.communicate(input=text)
+        
+        if process.returncode != 0:
+            print(f"Piper TTS failed: {stderr}")
+            return None
+        
+        if not os.path.exists(wav_path):
+            print(f"Piper output file not created: {wav_path}")
+            return None
+        
+        # Convert WAV to MP3 for better compatibility
+        mp3_path = wav_path.replace('.wav', '.mp3')
+        ffmpeg_cmd = [
+            "ffmpeg", "-y", "-i", wav_path,
+            "-ar", "44100", "-ac", "2",
+            "-af", "volume=9dB,apad=pad_dur=0.5",
+            "-codec:a", "libmp3lame", "-q:a", "3",
+            mp3_path
+        ]
+        
+        result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
+        if result.returncode != 0:
+            print(f"FFmpeg conversion failed: {result.stderr}")
+            return wav_path  # Return WAV if MP3 conversion fails
+        
+        # Clean up WAV file
+        try:
+            os.remove(wav_path)
+        except:
+            pass
+        
+        print(f"Generated Piper audio: {mp3_path}")
+        return mp3_path
+        
+    except Exception as e:
+        print(f"Piper TTS error: {e}")
+        return None
+
+def generate_elevenlabs_audio(text, output_path):
+    """Generate audio using ElevenLabs API"""
+    try:
+        if not ELEVENLABS_API_KEY or not ELEVENLABS_VOICE_ID:
+            print("ElevenLabs API key or voice ID not configured")
+            return None
+        
+        url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}"
+        
+        headers = {
+            "Accept": "audio/mpeg",
+            "Content-Type": "application/json",
+            "xi-api-key": ELEVENLABS_API_KEY
+        }
+        
+        data = {
+            "text": text,
+            "model_id": "eleven_monolingual_v1",
+            "voice_settings": {
+                "stability": 0.5,
+                "similarity_boost": 0.5
+            }
+        }
+        
+        print(f"Calling ElevenLabs API for: {text[:50]}...")
+        
+        response = requests.post(url, json=data, headers=headers, timeout=30)
+        
+        if response.status_code != 200:
+            print(f"ElevenLabs API error: {response.status_code} - {response.text}")
+            return None
+        
+        # Save the audio
+        mp3_path = output_path.replace('.wav', '.mp3')
+        with open(mp3_path, 'wb') as f:
+            f.write(response.content)
+        
+        print(f"Generated ElevenLabs audio: {mp3_path}")
+        return mp3_path
+        
+    except Exception as e:
+        print(f"ElevenLabs TTS error: {e}")
+        return None
+
+def queue_audio_in_liquidsoap(audio_file):
+    """Queue audio file in Liquidsoap TTS queue"""
+    try:
+        if not audio_file or not os.path.exists(audio_file):
+            print(f"Audio file not found: {audio_file}")
+            return False
+        
+        # Create file URI
+        file_uri = f"file://{os.path.abspath(audio_file)}"
+        
+        # Queue in Liquidsoap via telnet
+        cmd = f"tts.push {file_uri}"
+        result = telnet_cmd(cmd, timeout=2)
+        
+        print(f"Queued in Liquidsoap: {file_uri}")
+        print(f"Liquidsoap response: {result}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"Error queuing audio in Liquidsoap: {e}")
+        return False
+
+# MODIFY your existing generate_dj_line function to include audio generation
+def generate_dj_line_with_audio(title="Unknown", artist="Unknown Artist", album=""):
+    """Generate a DJ line with both text and audio"""
+    # Generate the text
+    dj_text = generate_dj_line(title, artist, album)
+    
+    # Generate audio file
+    audio_file = generate_dj_audio(dj_text, provider=TTS_PROVIDER)
+    
+    audio_url = None
+    if audio_file:
+        # Queue in Liquidsoap
+        if queue_audio_in_liquidsoap(audio_file):
+            # Create URL for web access
+            filename = os.path.basename(audio_file)
+            audio_url = f"/api/tts-file/{filename}"
+        
+    return dj_text, audio_url
 
 # ADD THIS after your existing State section (around line 35)
 last_dj_time = 0
@@ -631,7 +816,7 @@ def push_event(ev: dict):
     HISTORY.insert(0, ev)
     del HISTORY[MAX_HISTORY:]
     
-    # Save DJ lines to file if enabled (MOVE THIS BEFORE save_history())
+    # Save DJ lines to file if enabled
     if ev.get("type") == "dj" and dj_config.get("save_to_file", True):
         try:
             dj_text = ev.get("text", "")
@@ -656,7 +841,7 @@ def push_event(ev: dict):
         def delayed_dj():
             time.sleep(3)  # Wait a bit for the song to start
             try:
-                dj_text = generate_dj_line(
+                dj_text, audio_url = generate_dj_line_with_audio(
                     title=ev.get("title", "Unknown"),
                     artist=ev.get("artist", "Unknown Artist"),
                     album=ev.get("album", "")
@@ -666,12 +851,12 @@ def push_event(ev: dict):
                     "type": "dj",
                     "text": dj_text,
                     "time": int(time.time() * 1000),
-                    "audio_url": None,
+                    "audio_url": audio_url,
                     "auto_generated": True
                 }
                 
                 push_event(dj_event)
-                print(f"Auto-generated DJ line: {dj_text}")
+                print(f"Auto-generated DJ line with audio: {dj_text}")
             except Exception as e:
                 print(f"Error generating automatic DJ line: {e}")
         
@@ -924,6 +1109,38 @@ def tts_queue_post():
     push_event({"type": "dj", "text": text, "audio_url": None, "time": int(time.time()*1000)})
     return jsonify({"ok": True})
 
+# ADD configuration endpoint for TTS settings
+@app.get("/api/dj/tts-config")
+def get_tts_config():
+    """Get TTS configuration"""
+    return jsonify({
+        "provider": TTS_PROVIDER,
+        "piper_model_path": PIPER_MODEL_PATH,
+        "elevenlabs_configured": bool(ELEVENLABS_API_KEY and ELEVENLABS_VOICE_ID),
+        "output_directory": TTS_OUTPUT_DIR
+    })
+
+@app.post("/api/dj/tts-config")
+def update_tts_config():
+    """Update TTS configuration"""
+    global TTS_PROVIDER, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID
+    
+    try:
+        data = request.get_json(force=True, silent=True) or {}
+        
+        if "provider" in data and data["provider"] in ["piper", "elevenlabs"]:
+            TTS_PROVIDER = data["provider"]
+        
+        if "elevenlabs_api_key" in data:
+            ELEVENLABS_API_KEY = data["elevenlabs_api_key"]
+        
+        if "elevenlabs_voice_id" in data:
+            ELEVENLABS_VOICE_ID = data["elevenlabs_voice_id"]
+        
+        return jsonify({"ok": True, "provider": TTS_PROVIDER})
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 @app.post("/api/skip")
 def api_skip():
     try:
@@ -952,24 +1169,24 @@ def log_event():
 
 @app.post("/api/dj-now")
 def api_dj_now():
-    """Generate a DJ line for the current track and save it to timeline"""
+    """Generate a DJ line with audio for the current track and save it to timeline"""
     try:
         # Get current track info
         now_data = read_now() or {}
         
-        # Generate DJ text
+        # Generate DJ text and audio
         artist = now_data.get("artist", "Unknown Artist")
         title = now_data.get("title", "Unknown Track")
         album = now_data.get("album", "")
         
-        dj_text = generate_dj_line(title=title, artist=artist, album=album)
+        dj_text, audio_url = generate_dj_line_with_audio(title=title, artist=artist, album=album)
         
         # Save to timeline
         dj_event = {
             "type": "dj",
             "text": dj_text,
             "time": int(time.time() * 1000),
-            "audio_url": None,
+            "audio_url": audio_url,
             "manual_generated": True
         }
         
@@ -978,6 +1195,7 @@ def api_dj_now():
         return jsonify({
             "ok": True, 
             "text": dj_text,
+            "audio_url": audio_url,
             "event": dj_event
         })
         
@@ -1159,6 +1377,20 @@ def debug_import():
             result["imports"][module_name] = {"success": False, "error": str(e)}
     
     return jsonify(result)
+
+# ADD this new route to serve TTS files
+@app.route("/api/tts-file/<filename>")
+def serve_tts_file(filename):
+    """Serve generated TTS files"""
+    try:
+        # Security: only allow files from TTS directory
+        safe_path = os.path.join(TTS_OUTPUT_DIR, os.path.basename(filename))
+        if os.path.exists(safe_path) and safe_path.startswith(TTS_OUTPUT_DIR):
+            return send_file(safe_path, mimetype="audio/mpeg")
+        else:
+            return abort(404)
+    except Exception:
+        return abort(404)
 
 # ── Startup ─────────────────────────────────────────────────────
 load_history()
