@@ -620,57 +620,69 @@ def monitor_track_changes():
             time.sleep(10)
 
 def read_next(max_items=5):
-    """
-    Read request queue with better error handling.
-    """
+    """Simple, safe version that won't crash the app."""
     out = []
     try:
+        # Get request list
         rids_text = telnet_cmd("request.all", timeout=2)
-        rid_line = rids_text.splitlines()[0] if rids_text else ""
-        rids = [x for x in re.findall(r'\d+', rid_line)]
+        if not rids_text:
+            return out
         
-        now_fn = (read_now() or {}).get("filename","")
+        # Find numbers in the response
+        rids = re.findall(r'\d+', rids_text)
         
+        # Process first few requests
         for rid in rids[:max_items]:
             try:
+                # Get metadata
                 meta_raw = telnet_cmd(f"request.metadata {rid}", timeout=2)
-                m = parse_kv_block(meta_raw)
+                if not meta_raw:
+                    continue
                 
-                filename = m.get("filename") or m.get("file") or ""
-                title = m.get("title", "")
-                artist = m.get("artist", "")
+                # Simple parsing
+                metadata = {}
+                for line in meta_raw.split('\n'):
+                    if '=' in line and '"' in line:
+                        try:
+                            key = line.split('=')[0].strip()
+                            value = line.split('"')[1] if '"' in line else ""
+                            metadata[key] = value
+                        except:
+                            continue
                 
-                # Extract from filename if no metadata
-                if not title and not artist and filename:
+                # Extract basic info
+                title = metadata.get("title", "")
+                artist = metadata.get("artist", "")
+                filename = metadata.get("filename", "") or metadata.get("initial_uri", "")
+                
+                # Extract from filename if needed
+                if not title and filename:
                     basename = os.path.basename(filename)
-                    name_without_ext = os.path.splitext(basename)[0]
-                    if ' - ' in name_without_ext:
-                        parts = name_without_ext.split(' - ', 1)
+                    title = os.path.splitext(basename)[0]
+                    # Remove track numbers
+                    title = re.sub(r'^\d+\s*[-\.\s]*', '', title)
+                    if ' - ' in title:
+                        parts = title.split(' - ', 1)
                         artist = parts[0].strip()
                         title = parts[1].strip()
-                    else:
-                        title = name_without_ext
                 
-                ev = {
-                    "type": "song",
-                    "time": int(time.time() * 1000) + len(out),  # Slight offset for ordering
-                    "title": title or "Unknown",
-                    "artist": artist or "Unknown Artist",
-                    "album": m.get("album", ""),
-                    "filename": filename,
-                }
-                
-                # Skip if it's the currently playing track
-                if now_fn and filename and filename == now_fn:
-                    continue
+                # Add if we have a title
+                if title and title.strip():
+                    track = {
+                        "type": "song",
+                        "time": int(time.time() * 1000),
+                        "title": title,
+                        "artist": artist or "Unknown Artist",
+                        "album": metadata.get("album", ""),
+                        "filename": filename
+                    }
+                    out.append(track)
                     
-                out.append(ev)
-            except Exception as e:
-                print(f"Error reading request {rid}: {e}")
+            except Exception:
                 continue
                 
-    except Exception as e:
-        print(f"Error reading queue: {e}")
+    except Exception:
+        pass
     
     return out
 
