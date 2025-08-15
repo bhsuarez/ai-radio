@@ -1,18 +1,17 @@
-# Prefer ffmpeg over mad for decoding MP3/metadata with embedded images
-set("decoder.mad", false)
-set("decoder.ffmpeg", true)
-set("decoder.faad", true)
+# Decoder preferences (updated for Liquidsoap 2.3.x)
+settings.decoder.priorities.ffmpeg := 10
+settings.decoder.priorities.mad := 1
 
-# --- Core / logging -----------------------------------------------------------
-settings.init.allow_root.set(true)
+# Core / logging
+settings.init.allow_root := true
 
-# Reduce log noise (INFO=3). Set to WARN so server connect/disconnect msgs vanish.
-settings.log.level.set(4)
+# Reduce log noise - set to WARN level
+settings.log.level := 4
 
 # Telnet control (needed for tts queue pushes)
-settings.server.telnet.set(true)
-settings.server.telnet.bind_addr.set("127.0.0.1")
-settings.server.telnet.port.set(1234)
+settings.server.telnet := true
+settings.server.telnet.bind_addr := "127.0.0.1"
+settings.server.telnet.port := 1234
 
 # --- Sources -----------------------------------------------------------------
 # Queue for TTS intros (id="tts" exposes telnet commands: tts.push / tts.skip / tts.queue)
@@ -116,18 +115,12 @@ end
 music = metadata.map(update_metadata, smooth_music)
 
 # DJ queue source - strip silence and make sure it's properly configured
-dj = strip_blank(max_blank=0.1, tts_q)
+dj = blank.strip(max_blank=0.1, tts_q)
 
 # Create the main radio source with proper fallback hierarchy
 # DJ fills have priority, then music, then sine as emergency fallback
 radio = fallback(
-  track_sensitive=true,
-  transitions=[
-    # Smooth transition between DJ and music
-    fun (a,b) -> fade.initial(duration=0.3, b),
-    # Smooth transition between music tracks  
-    fun (a,b) -> fade.initial(duration=0.3, b)
-  ],
+  track_sensitive=false,
   [dj, music, sine_src]
 )
 
