@@ -126,7 +126,7 @@ radio = fallback(
 
 # --- Output -------------------------------------------------------------------
 output.icecast(
-  %mp3,
+  %mp3(id3v2=true),
   host="127.0.0.1",
   port=8000,
   user="source",
