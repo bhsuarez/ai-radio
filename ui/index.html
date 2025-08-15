@@ -160,21 +160,25 @@ document.addEventListener('DOMContentLoaded', () => {
       ]);
 
       // treat an all-empty payload as a backend hiccup; keep current DOM
-      const isHiccup =
-        (!history || history.length === 0) &&
-        (!next || next.length === 0) &&
-        (!tts || tts.length === 0) &&
-        (!now || !now.filename); // no current track
+      // treat an all-empty payload as a backend hiccup
+const hasNow = now && (now.filename || now.title || now.artist);
+const isHiccup =
+  (!history || history.length === 0) &&
+  (!next || next.length === 0) &&
+  (!tts || tts.length === 0) &&
+  !hasNow;
 
-      if (isHiccup) {
-        return; // don't clear or re-render; keep existing images
-      }
-
-      // mark LIVE NOW by filename
       const nowFile = now && now.filename ? now.filename : null;
-      (history || []).forEach(ev => {
-        if (ev.type === 'song' && nowFile && ev.filename === nowFile) ev.liveNow = true;
-      });
+const nowSig  = (now?.title || '').toLowerCase() + '|' + (now?.artist || '').toLowerCase();
+
+(history || []).forEach(ev => {
+  if (ev.type !== 'song') return;
+  const byFile = nowFile && ev.filename && ev.filename === nowFile;
+  const byTag  = !nowFile && (
+    ((ev.title||'').toLowerCase() + '|' + (ev.artist||'').toLowerCase()) === nowSig
+  );
+  if (byFile || byTag) ev.liveNow = true;
+});
 
       // assemble events
       const events = [...(history||[])];
