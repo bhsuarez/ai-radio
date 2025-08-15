@@ -216,7 +216,7 @@ async function enrichEventsWithArtwork(events) {
     });
   }
 
-// Enhanced DJ event handling in loadTimeline
+// Enhanced upcoming section with artwork enrichment
 async function loadTimeline() {
   try {
     console.log('Loading timeline...');
@@ -265,7 +265,7 @@ async function loadTimeline() {
 
     console.log('Live track:', live?.title, 'by', live?.artist);
 
-    // Build upcoming with better deduplication
+    // Build upcoming with artwork enrichment
     let upcoming = (next || [])
       .filter(s => !sameTrack(s, live))
       .map(s => ({
@@ -277,6 +277,28 @@ async function loadTimeline() {
         filename: s.filename || '',
         artwork_url: s.artwork_url || getCover(s)
       }));
+
+    // ENHANCED: Try to get artwork for upcoming tracks that don't have filenames
+    for (const track of upcoming) {
+      if (!track.artwork_url || track.artwork_url === '/static/station-cover.jpg') {
+        if (track.title && track.artist && track.title !== 'Unknown title') {
+          try {
+            console.log(`Searching for artwork: ${track.title} by ${track.artist}`);
+            const response = await fetch(`/api/test_find?title=${encodeURIComponent(track.title)}&artist=${encodeURIComponent(track.artist)}`);
+            if (response.ok) {
+              const result = await response.json();
+              if (result.found_file && result.has_artwork) {
+                track.artwork_url = result.artwork_url;
+                track.filename = result.found_file; // Cache the filename too
+                console.log(`Found artwork for upcoming track: ${track.title}`);
+              }
+            }
+          } catch (error) {
+            console.warn(`Failed to find artwork for ${track.title}:`, error);
+          }
+        }
+      }
+    }
 
     // Remove duplicates from upcoming list
     const seenUpcoming = new Set();
@@ -292,7 +314,8 @@ async function loadTimeline() {
 
     console.log(`Upcoming tracks after dedup: ${upcoming.length}`);
 
-    // Assemble events for history - ENHANCED DJ HANDLING
+    // Rest of the function stays the same...
+    // Assemble events for history
     const events = [...(history || [])];
 
     // Add TTS/DJ events with better deduplication
@@ -301,15 +324,13 @@ async function loadTimeline() {
       const dj = { 
         ...t, 
         type: 'dj',
-        // Ensure we have a proper timestamp
         time: t.time || Date.now()
       };
       
-      // Better DJ deduplication - check for similar DJ events
       const existingDJ = events.find(e => 
         e.type === 'dj' && 
         e.text === dj.text && 
-        Math.abs((e.time || 0) - (dj.time || 0)) < 60000 // Within 1 minute
+        Math.abs((e.time || 0) - (dj.time || 0)) < 60000
       );
       
       if (!existingDJ) {
@@ -336,20 +357,16 @@ async function loadTimeline() {
     
     console.log('Artwork enrichment complete');
 
-    // Better deduplication for history - remove duplicates of live track and upcoming tracks
+    // Better deduplication for history
     const played = allEvents.filter(e => {
-      // Always keep DJ events
       if (e.type === 'dj') return true;
       
-      // For songs, check duplicates
       if (e.type === 'song') {
-        // Don't show if it's the same as live track
         if (live && sameTrack(e, live)) {
           console.log(`Removing from history (matches live): ${e.title} by ${e.artist}`);
           return false;
         }
         
-        // Don't show if it's in upcoming
         const matchesUpcoming = upcoming.some(u => sameTrack(e, u));
         if (matchesUpcoming) {
           console.log(`Removing from history (matches upcoming): ${e.title} by ${e.artist}`);
@@ -360,13 +377,11 @@ async function loadTimeline() {
       return true;
     });
 
-    // Also deduplicate within the played list itself (songs only)
+    // Deduplicate within played list
     const seenPlayed = new Set();
     const dedupedPlayed = played.filter(track => {
-      // Always keep DJ events
       if (track.type === 'dj') return true;
       
-      // Deduplicate songs only
       if (track.type === 'song') {
         const key = `${(track.title || '').toLowerCase()}|${(track.artist || '').toLowerCase()}`;
         if (seenPlayed.has(key)) {
@@ -391,7 +406,7 @@ async function loadTimeline() {
       Math.floor((e.time || 0) / 60000)
     ].join('|'));
     const sig = sigParts.join('||') + 
-                upcoming.map(u => `up:${u.title}|${u.artist}`).join('||') +
+                upcoming.map(u => `up:${u.title}|${u.artist}|${u.artwork_url}`).join('||') +
                 (live ? `|live:${live.title}|${live.artist}|${live.artwork_url}` : '');
 
     window._lastSig = window._lastSig || '';
@@ -401,19 +416,7 @@ async function loadTimeline() {
     }
     window._lastSig = sig;
 
-    // Merge with cache, persist (songs only)
-    const songsForCache = dedupedPlayed.filter(e => e.type === 'song');
-    const merged = mergeWithCache(songsForCache);
-    
-    // Recombine with DJ events for final display
-    const finalEvents = [
-      ...merged,
-      ...dedupedPlayed.filter(e => e.type === 'dj')
-    ].sort((a, b) => new Date(b.time) - new Date(a.time));
-    
-    saveCache(merged); // Only cache songs
-
-    // ---------- Grouped render in NEW ORDER ----------
+    // Continue with rendering...
     const box = $('timeline');
     box.innerHTML = '';
 
@@ -447,7 +450,7 @@ async function loadTimeline() {
       return null;
     }
 
-    // 1. UPCOMING (First)
+    // 1. UPCOMING (First) - with enhanced artwork
     if (upcoming.length) {
       const sec = section('⏭️ UPCOMING');
       for (const ev of upcoming.slice(0, 10)) {
@@ -502,9 +505,9 @@ async function loadTimeline() {
     }
 
     // 3. JUST PLAYED (Third) - INCLUDING DJ EVENTS
-    if (finalEvents.length) {
+    if (dedupedPlayed.length) {
       const sec = section('📀 JUST PLAYED');
-      for (const ev of finalEvents) {
+      for (const ev of dedupedPlayed) {
         const div = h('div', `event ${ev.type || 'song'}`);
         if (ev.type === 'dj') {
           // Enhanced DJ event display
@@ -539,7 +542,7 @@ async function loadTimeline() {
       box.appendChild(sec);
     }
 
-    console.log('Timeline rendered successfully with DJ events');
+    console.log('Timeline rendered successfully with enhanced upcoming artwork');
 
   } catch (e) {
     console.error('Timeline load error:', e);
