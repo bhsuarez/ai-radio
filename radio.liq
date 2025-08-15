@@ -53,8 +53,6 @@ end
 # (re)attach the hook
 all_music = source.on_metadata(all_music, announce_song)
 
-
-
 # Simple log when sine fallback is active (kept tiny)
 def log_sine(_)
   log("Sine wave fallback active.")
@@ -83,22 +81,13 @@ def after_song(m)
   ))
 end
 
-# Attach the hook to your music source (do this once, after you define the source)
-#all_music = source.on_metadata(all_music, after_song)
-
 # --- Chain / processing -------------------------------------------------------
-# Smooth transitions so the mount never drops between items
+# Apply smooth crossfade to music
 smooth_music = crossfade(all_music)
 
-# 1) song event -> Flask UI
+# Attach metadata handlers to the smooth music
 smooth_music = source.on_metadata(smooth_music, announce_song)
-
-# 2) DJ intro generator (non‑blocking)
 smooth_music = source.on_metadata(smooth_music, after_song)
-
-# Main fallback: play TTS inserts when present, else music, else sine
-# radio = fallback(track_sensitive=false, [tts_q, smooth_music, sine_src])   <-- remove this
-radio = smooth_music
 
 # Remove all entries for key k from association-list m
 def rm_key(m, k)
@@ -123,20 +112,24 @@ def update_metadata(m)
   m
 end
 
-# Keep your original radio pipeline with metadata
-radio = metadata.map(update_metadata, radio)
+# Apply metadata updates to music
+music = metadata.map(update_metadata, smooth_music)
 
-# Preserve your final music pipeline (with metadata applied)
-music = radio
-
-# DJ queue source (trim any leading/ending silence so it fires cleanly)
+# DJ queue source - strip silence and make sure it's properly configured
 dj = strip_blank(max_blank=0.1, tts_q)
 
-# Primary (song + DJ) should be track-sensitive between themselves
-primary = fallback(track_sensitive=true, [dj, music])
-
-# Sine only as a last resort, but NOT track-sensitive so we can bail out instantly
-radio = fallback(track_sensitive=false, [primary, sine_src])
+# Create the main radio source with proper fallback hierarchy
+# DJ fills have priority, then music, then sine as emergency fallback
+radio = fallback(
+  track_sensitive=true,
+  transitions=[
+    # Smooth transition between DJ and music
+    fun (a,b) -> fade.initial(duration=0.3, b),
+    # Smooth transition between music tracks  
+    fun (a,b) -> fade.initial(duration=0.3, b)
+  ],
+  [dj, music, sine_src]
+)
 
 # --- Output -------------------------------------------------------------------
 output.icecast(
