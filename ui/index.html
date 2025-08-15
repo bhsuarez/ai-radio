@@ -216,7 +216,7 @@ async function enrichEventsWithArtwork(events) {
     });
   }
 
-// Enhanced loadTimeline with artwork enrichment
+// Enhanced DJ event handling in loadTimeline
 async function loadTimeline() {
   try {
     console.log('Loading timeline...');
@@ -235,13 +235,27 @@ async function loadTimeline() {
       historyCount: history?.length 
     });
 
-    // Helper: decide if two tracks are the same
+    // Enhanced helper: decide if two tracks are the same
     function sameTrack(a, b) {
       if (!a || !b) return false;
-      if (a.filename && b.filename) return a.filename === b.filename;
-      const ta = (a.title || '').toLowerCase(), aa = (a.artist || '').toLowerCase();
-      const tb = (b.title || '').toLowerCase(), ab = (b.artist || '').toLowerCase();
-      return ta === tb && aa === ab && ta !== '';
+      
+      // First try filename comparison
+      if (a.filename && b.filename && a.filename === b.filename) {
+        return true;
+      }
+      
+      // Then try title + artist comparison (case insensitive)
+      const ta = (a.title || '').toLowerCase().trim();
+      const aa = (a.artist || '').toLowerCase().trim();
+      const tb = (b.title || '').toLowerCase().trim();
+      const ab = (b.artist || '').toLowerCase().trim();
+      
+      // Both must have meaningful titles to compare
+      if (ta && tb && ta.length > 2 && tb.length > 2) {
+        return ta === tb && aa === ab;
+      }
+      
+      return false;
     }
 
     // Build LIVE directly from /api/now
@@ -249,8 +263,10 @@ async function loadTimeline() {
       ? { ...now, type: 'song', liveNow: true }
       : null;
 
-    // Filter /api/next so we don't show the live track in "upcoming"
-    const upcoming = (next || [])
+    console.log('Live track:', live?.title, 'by', live?.artist);
+
+    // Build upcoming with better deduplication
+    let upcoming = (next || [])
       .filter(s => !sameTrack(s, live))
       .map(s => ({
         type: 'upcoming',
@@ -262,14 +278,45 @@ async function loadTimeline() {
         artwork_url: s.artwork_url || getCover(s)
       }));
 
-    // Assemble events for history
+    // Remove duplicates from upcoming list
+    const seenUpcoming = new Set();
+    upcoming = upcoming.filter(track => {
+      const key = `${track.title.toLowerCase()}|${track.artist.toLowerCase()}`;
+      if (seenUpcoming.has(key)) {
+        console.log(`Removing duplicate upcoming track: ${track.title} by ${track.artist}`);
+        return false;
+      }
+      seenUpcoming.add(key);
+      return true;
+    });
+
+    console.log(`Upcoming tracks after dedup: ${upcoming.length}`);
+
+    // Assemble events for history - ENHANCED DJ HANDLING
     const events = [...(history || [])];
 
-    // Add TTS/DJ events
+    // Add TTS/DJ events with better deduplication
+    console.log(`Processing ${tts?.length || 0} TTS/DJ events`);
     (tts || []).forEach(t => {
-      const dj = { ...t, type: 'dj' };
-      if (!events.find(e => e.type === 'dj' && e.text === dj.text && e.time === dj.time)) {
+      const dj = { 
+        ...t, 
+        type: 'dj',
+        // Ensure we have a proper timestamp
+        time: t.time || Date.now()
+      };
+      
+      // Better DJ deduplication - check for similar DJ events
+      const existingDJ = events.find(e => 
+        e.type === 'dj' && 
+        e.text === dj.text && 
+        Math.abs((e.time || 0) - (dj.time || 0)) < 60000 // Within 1 minute
+      );
+      
+      if (!existingDJ) {
+        console.log(`Adding DJ event: ${dj.text?.substring(0, 50)}...`);
         events.push(dj);
+      } else {
+        console.log(`Skipping duplicate DJ event: ${dj.text?.substring(0, 30)}...`);
       }
     });
 
@@ -278,20 +325,74 @@ async function loadTimeline() {
 
     console.log('Processed events:', events.length, 'Live track:', live?.title);
 
-    // IMPORTANT: Enrich events with artwork
-    const enrichedEvents = await enrichEventsWithArtwork(events);
+    // IMPORTANT: Enrich SONG events with artwork (not DJ events)
+    const enrichedEvents = await enrichEventsWithArtwork(events.filter(e => e.type === 'song'));
+    
+    // Re-combine with DJ events
+    const allEvents = [
+      ...enrichedEvents,
+      ...events.filter(e => e.type === 'dj')
+    ].sort((a, b) => new Date(b.time) - new Date(a.time));
+    
     console.log('Artwork enrichment complete');
 
+    // Better deduplication for history - remove duplicates of live track and upcoming tracks
+    const played = allEvents.filter(e => {
+      // Always keep DJ events
+      if (e.type === 'dj') return true;
+      
+      // For songs, check duplicates
+      if (e.type === 'song') {
+        // Don't show if it's the same as live track
+        if (live && sameTrack(e, live)) {
+          console.log(`Removing from history (matches live): ${e.title} by ${e.artist}`);
+          return false;
+        }
+        
+        // Don't show if it's in upcoming
+        const matchesUpcoming = upcoming.some(u => sameTrack(e, u));
+        if (matchesUpcoming) {
+          console.log(`Removing from history (matches upcoming): ${e.title} by ${e.artist}`);
+          return false;
+        }
+      }
+      
+      return true;
+    });
+
+    // Also deduplicate within the played list itself (songs only)
+    const seenPlayed = new Set();
+    const dedupedPlayed = played.filter(track => {
+      // Always keep DJ events
+      if (track.type === 'dj') return true;
+      
+      // Deduplicate songs only
+      if (track.type === 'song') {
+        const key = `${(track.title || '').toLowerCase()}|${(track.artist || '').toLowerCase()}`;
+        if (seenPlayed.has(key)) {
+          console.log(`Removing duplicate from history: ${track.title} by ${track.artist}`);
+          return false;
+        }
+        seenPlayed.add(key);
+      }
+      
+      return true;
+    });
+
+    console.log(`History events after dedup: ${dedupedPlayed.length} (${dedupedPlayed.filter(e => e.type === 'dj').length} DJ events)`);
+
     // Change signature to avoid pointless re-rendering
-    const sigParts = enrichedEvents.map(e => [
+    const sigParts = dedupedPlayed.map(e => [
       e.type || 'song',
-      e.filename || '',
+      e.type === 'dj' ? (e.text || '').substring(0, 50) : e.filename || '',
       e.title || '',
       e.artist || '',
       e.artwork_url || '',
       Math.floor((e.time || 0) / 60000)
     ].join('|'));
-    const sig = sigParts.join('||') + (live ? `|live:${live.title}|${live.artist}|${live.artwork_url}` : '');
+    const sig = sigParts.join('||') + 
+                upcoming.map(u => `up:${u.title}|${u.artist}`).join('||') +
+                (live ? `|live:${live.title}|${live.artist}|${live.artwork_url}` : '');
 
     window._lastSig = window._lastSig || '';
     if (sig === window._lastSig) {
@@ -300,11 +401,19 @@ async function loadTimeline() {
     }
     window._lastSig = sig;
 
-    // Merge with cache, persist
-    const merged = mergeWithCache(enrichedEvents);
-    saveCache(merged);
+    // Merge with cache, persist (songs only)
+    const songsForCache = dedupedPlayed.filter(e => e.type === 'song');
+    const merged = mergeWithCache(songsForCache);
+    
+    // Recombine with DJ events for final display
+    const finalEvents = [
+      ...merged,
+      ...dedupedPlayed.filter(e => e.type === 'dj')
+    ].sort((a, b) => new Date(b.time) - new Date(a.time));
+    
+    saveCache(merged); // Only cache songs
 
-    // ---------- Grouped render ----------
+    // ---------- Grouped render in NEW ORDER ----------
     const box = $('timeline');
     box.innerHTML = '';
 
@@ -338,9 +447,25 @@ async function loadTimeline() {
       return null;
     }
 
-    const played = merged.filter(e => e.type !== 'upcoming' && !sameTrack(e, live));
+    // 1. UPCOMING (First)
+    if (upcoming.length) {
+      const sec = section('⏭️ UPCOMING');
+      for (const ev of upcoming.slice(0, 10)) {
+        const div = h('div', 'event upcoming song');
+        div.innerHTML = `
+          <img alt="Album artwork" loading="lazy" decoding="async" style="background: #0b0d12;">
+          <div class="event-details">
+            <div class="event-meta"><span>${fmtTime(ev.time)}</span><span class="voice-chip">Upcoming</span></div>
+            <div class="event-title">${ev.title || 'Unknown title'}</div>
+            <div class="event-sub">${[ev.artist, ev.album].filter(Boolean).join(' • ') || 'Unknown artist'}</div>
+          </div>`;
+        sec.appendChild(div);
+        setCoverOnce(div.querySelector('img'), ev);
+      }
+      box.appendChild(sec);
+    }
 
-    // LIVE NOW
+    // 2. LIVE NOW (Second)
     if (live) {
       const sec = section('🔴 LIVE NOW');
       const card = h('div', `event song`);
@@ -376,35 +501,21 @@ async function loadTimeline() {
       }
     }
 
-    // Coming Up Next…
-    if (upcoming.length) {
-      const sec = section('⏭️ UPCOMING');
-      for (const ev of upcoming.slice(0, 10)) {
-        const div = h('div', 'event upcoming song');
-        div.innerHTML = `
-          <img alt="Album artwork" loading="lazy" decoding="async" style="background: #0b0d12;">
-          <div class="event-details">
-            <div class="event-meta"><span>${fmtTime(ev.time)}</span><span class="voice-chip">Upcoming</span></div>
-            <div class="event-title">${ev.title || 'Unknown title'}</div>
-            <div class="event-sub">${[ev.artist, ev.album].filter(Boolean).join(' • ') || 'Unknown artist'}</div>
-          </div>`;
-        sec.appendChild(div);
-        setCoverOnce(div.querySelector('img'), ev);
-      }
-      box.appendChild(sec);
-    }
-
-    // Just Played
-    if (played.length) {
+    // 3. JUST PLAYED (Third) - INCLUDING DJ EVENTS
+    if (finalEvents.length) {
       const sec = section('📀 JUST PLAYED');
-      for (const ev of played) {
+      for (const ev of finalEvents) {
         const div = h('div', `event ${ev.type || 'song'}`);
         if (ev.type === 'dj') {
+          // Enhanced DJ event display
           div.innerHTML = `
             <div class="event-details" style="width:100%">
-              <div class="event-meta"><span>${fmtTime(ev.time)}</span></div>
+              <div class="event-meta">
+                <span>${fmtTime(ev.time)}</span>
+                <span class="voice-chip">DJ Intro</span>
+              </div>
               <div class="event-title">🎙️ ${ev.text || '(DJ line)'}</div>
-              ${ev.audio_url ? `<audio controls preload="none" src="${ev.audio_url}"></audio>` : ''}
+              ${ev.audio_url ? `<audio controls preload="none" src="${ev.audio_url}" style="margin-top: 8px; width: 100%;"></audio>` : ''}
             </div>`;
         } else {
           div.innerHTML = `
@@ -428,16 +539,45 @@ async function loadTimeline() {
       box.appendChild(sec);
     }
 
-    console.log('Timeline rendered successfully');
+    console.log('Timeline rendered successfully with DJ events');
 
   } catch (e) {
     console.error('Timeline load error:', e);
-    // ... fallback code remains the same
+    // ... rest of error handling stays the same
   }
 }
 
   $('skipBtn').onclick = async () => { try{ await j('/api/skip',{method:'POST'}); loadTimeline(); } catch(e){} };
-  $('genBtn').onclick = async () => { try{ await j('/api/dj-now',{method:'POST'}); setTimeout(loadTimeline,3000); } catch(e){} };
+  // Enhanced DJ button handler
+$('genBtn').onclick = async () => {
+  try {
+    console.log('Generating DJ line...');
+    $('genBtn').disabled = true;
+    $('genBtn').textContent = 'Generating...';
+    
+    // Call the DJ generation endpoint
+    const result = await j('/api/dj-now', { method: 'POST' });
+    console.log('DJ generation result:', result);
+    
+    // Force timeline refresh immediately (don't wait)
+    window._lastSig = ''; // Force refresh
+    setTimeout(() => {
+      loadTimeline();
+    }, 1000);
+    
+    // And refresh again after a few seconds to catch the DJ event
+    setTimeout(() => {
+      window._lastSig = ''; // Force refresh
+      loadTimeline();
+    }, 5000);
+    
+  } catch (e) {
+    console.error('DJ generation error:', e);
+  } finally {
+    $('genBtn').disabled = false;
+    $('genBtn').textContent = '✨ Generate DJ Line';
+  }
+};
 
   loadTimeline();
   setInterval(loadTimeline, 10000);
