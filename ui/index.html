@@ -619,6 +619,8 @@ async function loadTimeline() {
 
 // Enhanced DJ button handler that doesn't break the timeline
 // Simple DJ button handler
+// Update your manual DJ button handler in index.html:
+
 $('genBtn').onclick = async () => {
   try {
     console.log('Generating DJ line...');
@@ -630,16 +632,28 @@ $('genBtn').onclick = async () => {
     const result = await j('/api/dj-now', { method: 'POST' });
     console.log('DJ generation result:', result);
 
-    // Show success
-    $('genBtn').textContent = 'Generated!';
-    $('genBtn').style.backgroundColor = '#3ddc97';
+    if (result.skipped) {
+      // Show that we skipped because one was recently generated
+      $('genBtn').textContent = 'Already Generated!';
+      $('genBtn').style.backgroundColor = '#ffb020'; // Warning color
+      
+      console.log(`Skipped: ${result.message}`);
+      console.log(`Recent DJ line: ${result.recent_dj}`);
+    } else {
+      // Show success for new generation
+      $('genBtn').textContent = 'Generated!';
+      $('genBtn').style.backgroundColor = '#3ddc97'; // Success color
+      
+      // Immediately refresh the timeline to show the new DJ line
+      loadTimeline();
+    }
 
-    // Reset after 2 seconds
+    // Reset after 3 seconds
     setTimeout(() => {
       $('genBtn').disabled = false;
       $('genBtn').textContent = originalText;
       $('genBtn').style.backgroundColor = '';
-    }, 2000);
+    }, 3000);
 
   } catch (e) {
     console.error('DJ generation error:', e);
@@ -651,7 +665,7 @@ $('genBtn').onclick = async () => {
       $('genBtn').disabled = false;
       $('genBtn').textContent = '✨ Generate DJ Line';
       $('genBtn').style.backgroundColor = '';
-    }, 2000);
+    }, 3000);
   }
 };
 

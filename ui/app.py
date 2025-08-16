@@ -853,7 +853,7 @@ def push_event(ev: dict):
         ev["time"] = now_ms
 
     # normalize song fields
-    if ev.get("type") == "song":
+    if ev.get("type") == "song" and dj_config.get("auto_dj_enabled", False):
         title  = (ev.get("title") or "").strip()
         artist = (ev.get("artist") or "").strip()
         album  = (ev.get("album") or "").strip()
@@ -918,7 +918,7 @@ def push_event(ev: dict):
     save_history()
 
     # SIMPLIFIED: Generate DJ line after EVERY song, no probability/timing logic
-    if ev.get("type") == "song":
+    if ev.get("type") == "song" and dj_config.get("auto_dj_enabled", False):
         print(f"FORCE DJ: Generating DJ line for: {ev.get('title')} by {ev.get('artist')}")
         
         # Generate DJ line immediately in a separate thread
@@ -1264,10 +1264,30 @@ def log_event():
         return jsonify({"ok": True, "event": ev})
     return jsonify({"ok": False, "error": "No title or filename provided"}), 400
 
+# Update your api_dj_now function in app.py to check for recent DJ lines:
+
 @app.post("/api/dj-now")
 def api_dj_now():
     """Generate a DJ line with audio for the current track and save it to timeline"""
     try:
+        # Check if there's already a recent DJ line (within last 30 seconds)
+        current_time = int(time.time() * 1000)
+        recent_dj_lines = [
+            event for event in HISTORY[:5] 
+            if event.get("type") == "dj" and 
+            (current_time - event.get("time", 0)) < 30000  # 30 seconds
+        ]
+        
+        if recent_dj_lines:
+            recent_dj = recent_dj_lines[0]
+            time_diff = (current_time - recent_dj.get("time", 0)) // 1000
+            return jsonify({
+                "ok": True,
+                "message": f"DJ line already generated {time_diff} seconds ago",
+                "recent_dj": recent_dj.get("text", ""),
+                "skipped": True
+            })
+
         # Get current track info
         now_data = read_now() or {}
 
@@ -1282,7 +1302,7 @@ def api_dj_now():
         dj_event = {
             "type": "dj",
             "text": dj_text,
-            "time": int(time.time() * 1000),
+            "time": current_time,
             "audio_url": audio_url,
             "manual_generated": True
         }
