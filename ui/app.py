@@ -140,6 +140,33 @@ def generate_ai_dj_line(title, artist, timeout=20):
         print(f"DJ: Unexpected error calling AI script: {e}")
         return None
 
+def generate_dj_line_with_audio(title="Unknown", artist="Unknown Artist", album=""):
+    """Generate a DJ line with both text and audio - AI first"""
+    # Generate the text using AI directly (don't call generate_dj_line which has template fallback)
+    dj_text = generate_ai_dj_line(title, artist)
+    
+    # If AI failed, then fall back to templates
+    if not dj_text:
+        print("DJ: AI generation failed, using template fallback")
+        dj_text = generate_dj_line(title, artist, album)
+    
+    if not dj_text:
+        print("DJ: No DJ line generated, skipping audio generation")
+        return None, None
+
+    # Generate audio file
+    audio_file = generate_dj_audio(dj_text, provider=TTS_PROVIDER)
+
+    audio_url = None
+    if audio_file:
+        # Queue in Liquidsoap
+        if queue_audio_in_liquidsoap(audio_file):
+            # Create URL for web access
+            filename = os.path.basename(audio_file)
+            audio_url = f"/api/tts-file/{filename}"
+
+    return dj_text, audio_url
+
 def generate_dj_line(title="Unknown", artist="Unknown Artist", album=""):
     """Generate a DJ line using AI script with template fallback"""
     
@@ -321,25 +348,6 @@ def queue_audio_in_liquidsoap(audio_file):
     except Exception as e:
         print(f"Error queuing audio in Liquidsoap: {e}")
         return False
-
-# MODIFY your existing generate_dj_line function to include audio generation
-def generate_dj_line_with_audio(title="Unknown", artist="Unknown Artist", album=""):
-    """Generate a DJ line with both text and audio"""
-    # Generate the text
-    dj_text = generate_dj_line(title, artist, album)
-
-    # Generate audio file
-    audio_file = generate_dj_audio(dj_text, provider=TTS_PROVIDER)
-
-    audio_url = None
-    if audio_file:
-        # Queue in Liquidsoap
-        if queue_audio_in_liquidsoap(audio_file):
-            # Create URL for web access
-            filename = os.path.basename(audio_file)
-            audio_url = f"/api/tts-file/{filename}"
-
-    return dj_text, audio_url
 
 # ADD THIS after your existing State section (around line 35)
 last_dj_time = 0
@@ -828,19 +836,6 @@ def should_trigger_dj():
             print(f"DJ: Not triggering DJ line (chance: {chance} > {probability})")
 
     return False
-
-def generate_dj_line(title="Unknown", artist="Unknown Artist", album=""):
-    """Generate a DJ line using templates"""
-    templates = dj_config.get("dj_templates", DEFAULT_DJ_CONFIG["dj_templates"])
-    template = random.choice(templates)
-
-    try:
-        dj_text = template.format(title=title, artist=artist, album=album)
-    except Exception:
-        # Fallback if template formatting fails
-        dj_text = f"That was {title} by {artist}, and you're listening to AI Radio!"
-
-    return dj_text
 
 # Replace the end of your push_event function with this simplified version:
 def push_event(ev: dict):
