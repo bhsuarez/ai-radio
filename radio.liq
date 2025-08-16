@@ -1,22 +1,24 @@
-# Prefer ffmpeg over mad for decoding MP3/metadata with embedded images
-set("decoder.mad", false)
-set("decoder.ffmpeg", true)
-set("decoder.faad", true)
+# Decoder preferences (updated for Liquidsoap 2.3.x)
+settings.decoder.priorities.ffmpeg := 10
+settings.decoder.priorities.mad := 1
 
-# --- Core / logging -----------------------------------------------------------
-settings.init.allow_root.set(true)
+# Core / logging
+settings.init.allow_root := true
 
-# Reduce log noise (INFO=3). Set to WARN so server connect/disconnect msgs vanish.
-settings.log.level.set(4)
+# Reduce log noise - set to WARN level
+settings.log.level := 4
 
 # Telnet control (needed for tts queue pushes)
-settings.server.telnet.set(true)
-settings.server.telnet.bind_addr.set("127.0.0.1")
-settings.server.telnet.port.set(1234)
+settings.server.telnet := true
+settings.server.telnet.bind_addr := "127.0.0.1"
+settings.server.telnet.port := 1234
 
 # --- Sources -----------------------------------------------------------------
-# Queue for TTS intros (id="tts" exposes telnet commands: tts.push / tts.skip / tts.queue)
+# TTS queue with proper command exposure
 tts_q = request.queue(id="tts")
+
+# Make sure the queue commands are available via telnet
+# (This should happen automatically with id="tts" but let's be explicit)
 
 # Load everything from the folder
 all_music = playlist(
@@ -53,52 +55,19 @@ end
 # (re)attach the hook
 all_music = source.on_metadata(all_music, announce_song)
 
-
-
 # Simple log when sine fallback is active (kept tiny)
 def log_sine(_)
   log("Sine wave fallback active.")
 end
 sine_src = source.on_metadata(sine(), log_sine)
 
-# --- Non-blocking Auto-DJ scheduled for NEXT transition ----------------------
-def after_song(m)
-  artist = if list.mem("artist", list.map(fst, m)) then m["artist"] else "Unknown Artist" end
-  title  = if list.mem("title",  list.map(fst, m)) then m["title"]  else "Unknown Title"  end
-  dur_s  = if list.mem("duration", list.map(fst, m)) then float_of_string(m["duration"]) else 0. end
-
-  # fire ~3s before end (or 1s if duration missing)
-  lead   = 3.0
-  wait_s = if dur_s > lead then dur_s - lead else 1.0 end
-
-  # DEBUG: write a log line every time the hook schedules
-  log("AUTO-DJ scheduling in " ^ string_of(int_of_float(wait_s)) ^
-      "s for next track intro: " ^ title ^ " — " ^ artist)
-
-  # run enqueue script in the background and log its output
-  ignore(process.run(
-    "bash -lc \"(sleep " ^ string_of(int_of_float(wait_s)) ^
-    "; /opt/ai-radio/dj_enqueue.sh \\\"" ^ artist ^ "\\\" \\\"" ^ title ^ "\\\" " ^
-    ">>/var/tmp/dj_enqueue.log 2>&1) &\""
-  ))
-end
-
-# Attach the hook to your music source (do this once, after you define the source)
-#all_music = source.on_metadata(all_music, after_song)
-
 # --- Chain / processing -------------------------------------------------------
-# Smooth transitions so the mount never drops between items
+# Apply smooth crossfade to music
 smooth_music = crossfade(all_music)
 
-# 1) song event -> Flask UI
+# Attach metadata handlers to the smooth music
 smooth_music = source.on_metadata(smooth_music, announce_song)
-
-# 2) DJ intro generator (non‑blocking)
-smooth_music = source.on_metadata(smooth_music, after_song)
-
-# Main fallback: play TTS inserts when present, else music, else sine
-# radio = fallback(track_sensitive=false, [tts_q, smooth_music, sine_src])   <-- remove this
-radio = smooth_music
+#smooth_music = source.on_metadata(smooth_music, after_song)
 
 # Remove all entries for key k from association-list m
 def rm_key(m, k)
@@ -123,24 +92,22 @@ def update_metadata(m)
   m
 end
 
-# Keep your original radio pipeline with metadata
-radio = metadata.map(update_metadata, radio)
+# Apply metadata updates to music
+music = metadata.map(update_metadata, smooth_music)
 
-# Preserve your final music pipeline (with metadata applied)
-music = radio
+# DJ queue source - strip silence and make sure it's properly configured
+dj = blank.strip(max_blank=0.1, tts_q)
 
-# DJ queue source (trim any leading/ending silence so it fires cleanly)
-dj = strip_blank(max_blank=0.1, tts_q)
-
-# Primary (song + DJ) should be track-sensitive between themselves
-primary = fallback(track_sensitive=true, [dj, music])
-
-# Sine only as a last resort, but NOT track-sensitive so we can bail out instantly
-radio = fallback(track_sensitive=false, [primary, sine_src])
+# Create the main radio source with proper fallback hierarchy
+# DJ fills have priority, then music, then sine as emergency fallback
+radio = fallback(
+  track_sensitive=false,
+  [dj, music, sine_src]
+)
 
 # --- Output -------------------------------------------------------------------
 output.icecast(
-  %mp3,
+  %mp3(id3v2=true),
   host="127.0.0.1",
   port=8000,
   user="source",
