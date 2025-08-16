@@ -61,4 +61,3 @@ PY
 case "$PROVIDER" in
   openai) run_openai ;;
   *)      run_ollama ;;
-esac
