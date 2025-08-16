@@ -14,8 +14,11 @@ settings.server.telnet.bind_addr := "127.0.0.1"
 settings.server.telnet.port := 1234
 
 # --- Sources -----------------------------------------------------------------
-# Queue for TTS intros (id="tts" exposes telnet commands: tts.push / tts.skip / tts.queue)
+# TTS queue with proper command exposure
 tts_q = request.queue(id="tts")
+
+# Make sure the queue commands are available via telnet
+# (This should happen automatically with id="tts" but let's be explicit)
 
 # Load everything from the folder
 all_music = playlist(
@@ -58,36 +61,13 @@ def log_sine(_)
 end
 sine_src = source.on_metadata(sine(), log_sine)
 
-
-def after_song(m)
-  artist = if list.mem("artist", list.map(fst, m)) then m["artist"] else "Unknown Artist" end
-  title  = if list.mem("title",  list.map(fst, m)) then m["title"]  else "Unknown Title"  end
-  dur_s  = if list.mem("duration", list.map(fst, m)) then float_of_string(m["duration"]) else 0. end
-
-  # Schedule DJ generation EARLY - 30 seconds before song ends (or 5s minimum)
-  lead   = 30.0
-  wait_s = if dur_s > lead then dur_s - lead else 5.0 end
-
-  # DEBUG: write a log line every time the hook schedules
-  log("AUTO-DJ scheduling in " ^ string_of(int_of_float(wait_s)) ^
-      "s for DJ line after: " ^ title ^ " — " ^ artist)
-
-  # FIXED: Call Python API directly to generate DJ line for the track that just played
-  ignore(process.run(
-    "bash -lc \"(sleep " ^ string_of(int_of_float(wait_s)) ^
-    "; curl -X POST http://127.0.0.1:5055/api/dj-now " ^
-    "-H 'Content-Type: application/json' " ^
-    ">>/var/tmp/dj_enqueue.log 2>&1) &\""
-  ))
-end
-
 # --- Chain / processing -------------------------------------------------------
 # Apply smooth crossfade to music
 smooth_music = crossfade(all_music)
 
 # Attach metadata handlers to the smooth music
 smooth_music = source.on_metadata(smooth_music, announce_song)
-smooth_music = source.on_metadata(smooth_music, after_song)
+#smooth_music = source.on_metadata(smooth_music, after_song)
 
 # Remove all entries for key k from association-list m
 def rm_key(m, k)

@@ -83,20 +83,20 @@ def generate_ai_dj_line(title, artist, timeout=20):
     """Generate AI DJ line using the external script"""
     try:
         script_path = dj_config.get("ai_script_path", "/opt/ai-radio/gen_ai_dj_line.sh")
-        
+
         # Check if script exists and is executable
         if not os.path.exists(script_path):
             print(f"DJ: AI script not found at {script_path}")
             return None
-            
+
         if not os.access(script_path, os.X_OK):
             print(f"DJ: AI script not executable: {script_path}")
             return None
-        
+
         # Run the AI script with title and artist
         print(f"DJ: Calling AI script for '{title}' by '{artist}'")
         start_time = time.time()
-        
+
         result = subprocess.run(
             [script_path, title, artist],
             capture_output=True,
@@ -108,19 +108,19 @@ def generate_ai_dj_line(title, artist, timeout=20):
                 'OLLAMA_MODELS': '/mnt/music/ai-dj/ollama'
             })
         )
-        
+
         elapsed = time.time() - start_time
         print(f"DJ: AI script completed in {elapsed:.2f}s")
         print(f"DJ: AI script return code: {result.returncode}")
         print(f"DJ: AI script stdout: '{result.stdout.strip()}'")
         print(f"DJ: AI script stderr: '{result.stderr.strip()}'")
-        
+
         if result.returncode == 0:
             ai_line = result.stdout.strip()
             # Remove quotes if the script returns quoted output
             if ai_line.startswith('"') and ai_line.endswith('"'):
                 ai_line = ai_line[1:-1]
-            
+
             if ai_line and len(ai_line) > 10:  # Basic validation
                 print(f"DJ: AI generated: {ai_line}")
                 return ai_line
@@ -132,7 +132,7 @@ def generate_ai_dj_line(title, artist, timeout=20):
             if result.stderr:
                 print(f"DJ: AI script stderr: {result.stderr}")
             return None
-            
+
     except subprocess.TimeoutExpired:
         print(f"DJ: AI script timed out after {timeout} seconds")
         return None
@@ -144,12 +144,12 @@ def generate_dj_line_with_audio(title="Unknown", artist="Unknown Artist", album=
     """Generate a DJ line with both text and audio - AI first"""
     # Generate the text using AI directly (don't call generate_dj_line which has template fallback)
     dj_text = generate_ai_dj_line(title, artist)
-    
+
     # If AI failed, then fall back to templates
     if not dj_text:
         print("DJ: AI generation failed, using template fallback")
         dj_text = generate_dj_line(title, artist, album)
-    
+
     if not dj_text:
         print("DJ: No DJ line generated, skipping audio generation")
         return None, None
@@ -169,7 +169,7 @@ def generate_dj_line_with_audio(title="Unknown", artist="Unknown Artist", album=
 
 def generate_dj_line(title="Unknown", artist="Unknown Artist", album=""):
     """Generate a DJ line using AI script with template fallback"""
-    
+
     # Always try AI-generated line first
     ai_line = generate_ai_dj_line(title, artist)
     if ai_line:
@@ -177,11 +177,11 @@ def generate_dj_line(title="Unknown", artist="Unknown Artist", album=""):
         return ai_line
     else:
         print("DJ: AI generation failed, falling back to templates")
-    
+
     # Fallback to template-based lines only if AI fails
     templates = dj_config.get("dj_templates", DEFAULT_DJ_CONFIG["dj_templates"])
     template = random.choice(templates)
-    
+
     try:
         dj_text = template.format(title=title, artist=artist, album=album)
         print(f"DJ: Using template fallback: {dj_text}")
@@ -844,42 +844,42 @@ def api_dj_pregenerate():
     try:
         # Get next few tracks
         next_tracks = read_next(max_items=3)
-        
+
         if not next_tracks:
             return jsonify({
                 "ok": False,
                 "error": "No upcoming tracks found"
             })
-        
+
         generated = []
-        
+
         for track in next_tracks:
             title = track.get("title", "Unknown")
             artist = track.get("artist", "Unknown Artist")
             album = track.get("album", "")
-            
+
             print(f"Pre-generating intro for: {title} by {artist}")
-            
+
             # Generate DJ line and audio
             dj_text, audio_url = generate_dj_line_with_audio(
                 title=title,
                 artist=artist,
                 album=album
             )
-            
+
             if dj_text:
                 generated.append({
                     "track": f"{title} by {artist}",
                     "dj_text": dj_text,
                     "audio_url": audio_url
                 })
-        
+
         return jsonify({
             "ok": True,
             "generated_count": len(generated),
             "intros": generated
         })
-        
+
     except Exception as e:
         return jsonify({
             "ok": False,
@@ -1200,11 +1200,11 @@ def api_dj_now():
         # Check if there's already a recent DJ line (within last 30 seconds)
         current_time = int(time.time() * 1000)
         recent_dj_lines = [
-            event for event in HISTORY[:5] 
-            if event.get("type") == "dj" and 
+            event for event in HISTORY[:5]
+            if event.get("type") == "dj" and
             (current_time - event.get("time", 0)) < 30000  # 30 seconds
         ]
-        
+
         if recent_dj_lines:
             recent_dj = recent_dj_lines[0]
             time_diff = (current_time - recent_dj.get("time", 0)) // 1000
@@ -1440,35 +1440,35 @@ def serve_tts_file(filename):
 def debug_dj():
     """Debug DJ generation step by step"""
     debug_log = "/tmp/dj_debug.log"
-    
+
     def log_debug(msg):
         with open(debug_log, "a") as f:
             f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {msg}\n")
         print(msg)  # Also print to console
-    
+
     log_debug("=== DEBUG DJ GENERATION ===")
-    
+
     # Test data
     title = "Bohemian Rhapsody"
     artist = "Queen"
-    
+
     try:
         log_debug(f"1. Testing generate_ai_dj_line with title='{title}', artist='{artist}'")
-        
+
         # Test the AI function directly
         ai_result = generate_ai_dj_line(title, artist)
         log_debug(f"2. AI result: {ai_result}")
-        
+
         # Test the full DJ line function
         log_debug(f"3. Testing generate_dj_line...")
         dj_result = generate_dj_line(title, artist)
         log_debug(f"4. DJ line result: {dj_result}")
-        
+
         # Test the full audio generation
         log_debug(f"5. Testing generate_dj_line_with_audio...")
         text, audio_url = generate_dj_line_with_audio(title, artist)
         log_debug(f"6. Full result - text: {text}, audio: {audio_url}")
-        
+
         return jsonify({
             "ai_result": ai_result,
             "dj_result": dj_result,
@@ -1477,12 +1477,135 @@ def debug_dj():
             "config": dj_config,
             "debug_log_file": debug_log
         })
-        
+
     except Exception as e:
         log_debug(f"ERROR in debug: {e}")
         import traceback
         log_debug(traceback.format_exc())
         return jsonify({"error": str(e), "debug_log_file": debug_log}), 500
+
+@app.route("/api/debug-dj-status")
+def debug_dj_status():
+    """Debug current DJ system status"""
+    try:
+        # Check recent DJ events in history
+        recent_dj_events = [
+            {
+                "type": event.get("type"),
+                "text": event.get("text", "")[:100] + "..." if len(event.get("text", "")) > 100 else event.get("text", ""),
+                "time": event.get("time"),
+                "audio_url": event.get("audio_url"),
+                "auto_generated": event.get("auto_generated", False),
+            }
+            for event in HISTORY[:10] if event.get("type") == "dj"
+        ]
+
+        # Check TTS directory
+        tts_files = []
+        if os.path.exists(TTS_OUTPUT_DIR):
+            tts_files = [f for f in os.listdir(TTS_OUTPUT_DIR) if f.endswith(('.mp3', '.wav'))]
+
+        # Test AI generation
+        test_result = None
+        try:
+            test_result = generate_ai_dj_line("Test Song", "Test Artist")
+        except Exception as e:
+            test_result = f"Error: {str(e)}"
+
+        # Test Liquidsoap queue
+        queue_status = None
+        try:
+            queue_status = telnet_cmd("tts.length", timeout=2)
+        except Exception as e:
+            queue_status = f"Error: {str(e)}"
+
+        return jsonify({
+            "config": {
+                "auto_dj_enabled": dj_config.get("auto_dj_enabled", False),
+                "script_path": dj_config.get("ai_script_path", ""),
+                "script_exists": os.path.exists(dj_config.get("ai_script_path", "")),
+                "script_executable": os.access(dj_config.get("ai_script_path", ""), os.X_OK) if os.path.exists(dj_config.get("ai_script_path", "")) else False,
+                "tts_provider": TTS_PROVIDER,
+                "piper_model_exists": os.path.exists(PIPER_MODEL_PATH)
+            },
+            "recent_dj_events": recent_dj_events,
+            "ai_test_result": test_result,
+            "tts_files": tts_files[:10],  # Last 10 files
+            "liquidsoap_queue_length": queue_status,
+            "history_count": len(HISTORY),
+            "song_events_count": len([e for e in HISTORY if e.get("type") == "song"])
+        })
+
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.post("/api/test-full-dj")
+def test_full_dj():
+    """Test the complete DJ generation and queueing process"""
+    try:
+        # Get current track
+        now_data = read_now() or {}
+        title = now_data.get("title", "Test Song")
+        artist = now_data.get("artist", "Test Artist")
+
+        print(f"=== TESTING FULL DJ PROCESS ===")
+        print(f"Title: {title}")
+        print(f"Artist: {artist}")
+
+        # Step 1: Test AI generation
+        print("Step 1: Testing AI generation...")
+        ai_text = generate_ai_dj_line(title, artist)
+        print(f"AI Result: {ai_text}")
+
+        # Step 2: Test audio generation
+        print("Step 2: Testing audio generation...")
+        if ai_text:
+            audio_file = generate_dj_audio(ai_text, provider=TTS_PROVIDER)
+            print(f"Audio file: {audio_file}")
+            print(f"Audio exists: {os.path.exists(audio_file) if audio_file else False}")
+
+            # Step 3: Test Liquidsoap queueing
+            print("Step 3: Testing Liquidsoap queueing...")
+            if audio_file and os.path.exists(audio_file):
+                queue_result = queue_audio_in_liquidsoap(audio_file)
+                print(f"Queue result: {queue_result}")
+
+                # Check queue length
+                queue_length = telnet_cmd("tts.length", timeout=2)
+                print(f"Queue length after: {queue_length}")
+
+                return jsonify({
+                    "ok": True,
+                    "steps": {
+                        "ai_generation": ai_text,
+                        "audio_file": audio_file,
+                        "audio_exists": os.path.exists(audio_file),
+                        "queue_result": queue_result,
+                        "queue_length": queue_length
+                    }
+                })
+            else:
+                return jsonify({
+                    "ok": False,
+                    "error": "Audio file not created",
+                    "ai_text": ai_text,
+                    "audio_file": audio_file
+                })
+        else:
+            return jsonify({
+                "ok": False,
+                "error": "AI generation failed",
+                "ai_text": ai_text
+            })
+
+    except Exception as e:
+        print(f"Test error: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify({
+            "ok": False,
+            "error": str(e)
+        }), 500
 # ── Startup ─────────────────────────────────────────────────────
 load_history()
 
