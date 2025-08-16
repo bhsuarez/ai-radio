@@ -837,127 +837,54 @@ def should_trigger_dj():
 
     return False
 
-# Replace the end of your push_event function with this simplified version:
-def push_event(ev: dict):
-    """Insert newest-first with light de-duplication and persist."""
-    now_ms = int(time.time() * 1000)
-
-    # normalize timestamp (s→ms if needed)
-    t = ev.get("time")
-    if isinstance(t, (int, float)):
-        t = int(t)
-        if t < 10_000_000_000:
-            t *= 1000
-        ev["time"] = t
-    else:
-        ev["time"] = now_ms
-
-    # normalize song fields
-    if ev.get("type") == "song" and dj_config.get("auto_dj_enabled", False):
-        title  = (ev.get("title") or "").strip()
-        artist = (ev.get("artist") or "").strip()
-        album  = (ev.get("album") or "").strip()
-        fn     = ev.get("filename") or ""
-
-        if not title and fn:
-            # Extract title/artist from filename
-            basename = os.path.basename(fn)
-            name_without_ext = os.path.splitext(basename)[0]
-
-            # Try "Artist - Title" format
-            if ' - ' in name_without_ext:
-                parts = name_without_ext.split(' - ', 1)
-                if not artist:
-                    artist = parts[0].strip()
-                if not title:
-                    title = parts[1].strip()
-            else:
-                if not title:
-                    title = name_without_ext
-
-        ev["artist"] = artist or "Unknown Artist"
-        ev["title"]  = title  or "Unknown"
-        ev["album"]  = album  or ""
-
-        # Add artwork URL if not present
-        if not ev.get("artwork_url") and fn:
-            artwork_url = extract_cover_art(fn)
-            if artwork_url:
-                ev["artwork_url"] = artwork_url
-
-    # dedupe vs recent entries (check last 3 entries)
-    for recent in HISTORY[:3]:
-        if ev.get("type") == recent.get("type") == "song":
-            same = (
-                (ev.get("title") or "") == (recent.get("title") or "") and
-                (ev.get("artist") or "") == (recent.get("artist") or "") and
-                (ev.get("filename") or "") == (recent.get("filename") or "")
-            )
-            if same and (now_ms - int(recent.get("time", now_ms))) < DEDUP_WINDOW_MS:
-                print(f"Skipping duplicate: {ev.get('title')} by {ev.get('artist')}")
-                return
-
-    print(f"Adding to history: {ev.get('title')} by {ev.get('artist')}")
-    HISTORY.insert(0, ev)
-    del HISTORY[MAX_HISTORY:]
-
-    # Save DJ lines to file if enabled
-    if ev.get("type") == "dj" and dj_config.get("save_to_file", True):
-        try:
-            dj_text = ev.get("text", "")
-            timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
-            line = f"{timestamp} - {dj_text}\n"
-
-            Path(DJ_LINES_FILE).parent.mkdir(parents=True, exist_ok=True)
-            with open(DJ_LINES_FILE, "a", encoding="utf-8") as f:
-                f.write(line)
-            print(f"Saved DJ line to file: {dj_text}")
-        except Exception as e:
-            print(f"Error saving DJ line to file: {e}")
-
-    save_history()
-
-    # SIMPLIFIED: Generate DJ line after EVERY song, no probability/timing logic
-    if ev.get("type") == "song" and dj_config.get("auto_dj_enabled", False):
-        print(f"FORCE DJ: Generating DJ line for: {ev.get('title')} by {ev.get('artist')}")
+# Add this new function for manual pre-generation of intros:
+@app.post("/api/dj-pregenerate")
+def api_dj_pregenerate():
+    """Pre-generate DJ intros for upcoming tracks"""
+    try:
+        # Get next few tracks
+        next_tracks = read_next(max_items=3)
         
-        # Generate DJ line immediately in a separate thread
-        def generate_dj_now():
-            try:
-                print(f"DJ Thread: Starting generation for {ev.get('title')} by {ev.get('artist')}")
-                
-                dj_text, audio_url = generate_dj_line_with_audio(
-                    title=ev.get("title", "Unknown"),
-                    artist=ev.get("artist", "Unknown Artist"),
-                    album=ev.get("album", "")
-                )
-
-                if dj_text:
-                    dj_event = {
-                        "type": "dj",
-                        "text": dj_text,
-                        "time": int(time.time() * 1000),
-                        "audio_url": audio_url,
-                        "auto_generated": True
-                    }
-
-                    # Add to history without triggering another DJ line
-                    print(f"DJ Thread: Adding DJ event to history: {dj_text}")
-                    HISTORY.insert(0, dj_event)
-                    del HISTORY[MAX_HISTORY:]
-                    save_history()
-                    
-                    print(f"DJ Thread: Successfully generated DJ line: {dj_text}")
-                else:
-                    print("DJ Thread: No DJ text generated")
-                    
-            except Exception as e:
-                print(f"DJ Thread: Error generating DJ line: {e}")
-                import traceback
-                traceback.print_exc()
-
-        # Start the DJ generation in a separate thread
-        threading.Thread(target=generate_dj_now, daemon=True).start()
+        if not next_tracks:
+            return jsonify({
+                "ok": False,
+                "error": "No upcoming tracks found"
+            })
+        
+        generated = []
+        
+        for track in next_tracks:
+            title = track.get("title", "Unknown")
+            artist = track.get("artist", "Unknown Artist")
+            album = track.get("album", "")
+            
+            print(f"Pre-generating intro for: {title} by {artist}")
+            
+            # Generate DJ line and audio
+            dj_text, audio_url = generate_dj_line_with_audio(
+                title=title,
+                artist=artist,
+                album=album
+            )
+            
+            if dj_text:
+                generated.append({
+                    "track": f"{title} by {artist}",
+                    "dj_text": dj_text,
+                    "audio_url": audio_url
+                })
+        
+        return jsonify({
+            "ok": True,
+            "generated_count": len(generated),
+            "intros": generated
+        })
+        
+    except Exception as e:
+        return jsonify({
+            "ok": False,
+            "error": str(e)
+        }), 500
 
 def _build_art_url(path: str) -> str:
     if path and os.path.isabs(path) and os.path.exists(path):
