@@ -82,20 +82,20 @@ def generate_dj_audio(text, provider="piper"):
     try:
         # Create output directory
         Path(TTS_OUTPUT_DIR).mkdir(parents=True, exist_ok=True)
-        
+
         # Generate unique filename
         timestamp = int(time.time())
         safe_text = re.sub(r'[^\w\s-]', '', text)[:50]  # Safe filename
         filename = f"dj_{timestamp}_{safe_text.replace(' ', '_')}.wav"
         output_path = os.path.join(TTS_OUTPUT_DIR, filename)
-        
+
         if provider == "piper":
             return generate_piper_audio(text, output_path)
         elif provider == "elevenlabs":
             return generate_elevenlabs_audio(text, output_path)
         else:
             raise ValueError(f"Unknown TTS provider: {provider}")
-            
+
     except Exception as e:
         print(f"Error generating DJ audio: {e}")
         return None
@@ -105,21 +105,21 @@ def generate_piper_audio(text, output_path):
     try:
         # First generate WAV with Piper
         wav_path = output_path
-        
+
         # Check if model exists
         if not os.path.exists(PIPER_MODEL_PATH):
             print(f"Piper model not found: {PIPER_MODEL_PATH}")
             return None
-        
+
         # Run Piper
         cmd = [
             "python3", "-m", "piper",
             "--model", PIPER_MODEL_PATH,
             "--output_file", wav_path
         ]
-        
+
         print(f"Running Piper TTS: {' '.join(cmd)}")
-        
+
         process = subprocess.Popen(
             cmd,
             stdin=subprocess.PIPE,
@@ -127,17 +127,17 @@ def generate_piper_audio(text, output_path):
             stderr=subprocess.PIPE,
             text=True
         )
-        
+
         stdout, stderr = process.communicate(input=text)
-        
+
         if process.returncode != 0:
             print(f"Piper TTS failed: {stderr}")
             return None
-        
+
         if not os.path.exists(wav_path):
             print(f"Piper output file not created: {wav_path}")
             return None
-        
+
         # Convert WAV to MP3 for better compatibility
         mp3_path = wav_path.replace('.wav', '.mp3')
         ffmpeg_cmd = [
@@ -147,21 +147,21 @@ def generate_piper_audio(text, output_path):
             "-codec:a", "libmp3lame", "-q:a", "3",
             mp3_path
         ]
-        
+
         result = subprocess.run(ffmpeg_cmd, capture_output=True, text=True)
         if result.returncode != 0:
             print(f"FFmpeg conversion failed: {result.stderr}")
             return wav_path  # Return WAV if MP3 conversion fails
-        
+
         # Clean up WAV file
         try:
             os.remove(wav_path)
         except:
             pass
-        
+
         print(f"Generated Piper audio: {mp3_path}")
         return mp3_path
-        
+
     except Exception as e:
         print(f"Piper TTS error: {e}")
         return None
@@ -172,15 +172,15 @@ def generate_elevenlabs_audio(text, output_path):
         if not ELEVENLABS_API_KEY or not ELEVENLABS_VOICE_ID:
             print("ElevenLabs API key or voice ID not configured")
             return None
-        
+
         url = f"https://api.elevenlabs.io/v1/text-to-speech/{ELEVENLABS_VOICE_ID}"
-        
+
         headers = {
             "Accept": "audio/mpeg",
             "Content-Type": "application/json",
             "xi-api-key": ELEVENLABS_API_KEY
         }
-        
+
         data = {
             "text": text,
             "model_id": "eleven_monolingual_v1",
@@ -189,23 +189,23 @@ def generate_elevenlabs_audio(text, output_path):
                 "similarity_boost": 0.5
             }
         }
-        
+
         print(f"Calling ElevenLabs API for: {text[:50]}...")
-        
+
         response = requests.post(url, json=data, headers=headers, timeout=30)
-        
+
         if response.status_code != 200:
             print(f"ElevenLabs API error: {response.status_code} - {response.text}")
             return None
-        
+
         # Save the audio
         mp3_path = output_path.replace('.wav', '.mp3')
         with open(mp3_path, 'wb') as f:
             f.write(response.content)
-        
+
         print(f"Generated ElevenLabs audio: {mp3_path}")
         return mp3_path
-        
+
     except Exception as e:
         print(f"ElevenLabs TTS error: {e}")
         return None
@@ -216,19 +216,19 @@ def queue_audio_in_liquidsoap(audio_file):
         if not audio_file or not os.path.exists(audio_file):
             print(f"Audio file not found: {audio_file}")
             return False
-        
+
         # Create file URI
         file_uri = f"file://{os.path.abspath(audio_file)}"
-        
+
         # Queue in Liquidsoap via telnet
         cmd = f"tts.push {file_uri}"
         result = telnet_cmd(cmd, timeout=2)
-        
+
         print(f"Queued in Liquidsoap: {file_uri}")
         print(f"Liquidsoap response: {result}")
-        
+
         return True
-        
+
     except Exception as e:
         print(f"Error queuing audio in Liquidsoap: {e}")
         return False
@@ -238,10 +238,10 @@ def generate_dj_line_with_audio(title="Unknown", artist="Unknown Artist", album=
     """Generate a DJ line with both text and audio"""
     # Generate the text
     dj_text = generate_dj_line(title, artist, album)
-    
+
     # Generate audio file
     audio_file = generate_dj_audio(dj_text, provider=TTS_PROVIDER)
-    
+
     audio_url = None
     if audio_file:
         # Queue in Liquidsoap
@@ -249,7 +249,7 @@ def generate_dj_line_with_audio(title="Unknown", artist="Unknown Artist", album=
             # Create URL for web access
             filename = os.path.basename(audio_file)
             audio_url = f"/api/tts-file/{filename}"
-        
+
     return dj_text, audio_url
 
 # ADD THIS after your existing State section (around line 35)
@@ -280,25 +280,25 @@ def find_file_by_metadata_fast(title, artist, music_root="/mnt/music"):
     """Enhanced fast file search with track number handling."""
     search_start = time.time()
     print(f"DEBUG: Starting search for title='{title}' artist='{artist}'")
-    
+
     if not title and not artist:
         print("DEBUG: No title or artist provided")
         return None
-    
+
     # Clean the search terms
     clean_title = clean_for_search(title)
     clean_artist = clean_for_search(artist)
     print(f"DEBUG: Cleaned terms - title='{clean_title}' artist='{clean_artist}'")
-    
+
     audio_extensions = ['.mp3', '.flac', '.m4a', '.mp4', '.ogg', '.opus']
-    
+
     # Strategy 1: Quick artist directory search
     if clean_artist and len(clean_artist) > 2:
         print(f"DEBUG: Searching artist directories for '{clean_artist}'...")
         try:
             music_path = Path(music_root)
             artist_dirs = []
-            
+
             # Check direct subdirectories first
             for item in music_path.iterdir():
                 if item.is_dir() and clean_artist.lower() in item.name.lower():
@@ -306,7 +306,7 @@ def find_file_by_metadata_fast(title, artist, music_root="/mnt/music"):
                     print(f"DEBUG: Found potential artist dir: {item}")
                     if len(artist_dirs) >= 3:  # Check more artist dirs
                         break
-            
+
             # Also check one level deeper
             if len(artist_dirs) < 2:
                 print("DEBUG: Checking subdirectories...")
@@ -322,19 +322,19 @@ def find_file_by_metadata_fast(title, artist, music_root="/mnt/music"):
                         count += 1
                     if len(artist_dirs) >= 3:
                         break
-            
+
             # Search in found artist directories
             for artist_dir in artist_dirs:
                 print(f"DEBUG: Searching in artist directory: {artist_dir}")
                 if clean_title:
                     # Look for files matching the title
                     for audio_file in artist_dir.rglob("*"):
-                        if (audio_file.is_file() and 
+                        if (audio_file.is_file() and
                             any(audio_file.name.lower().endswith(ext) for ext in audio_extensions)):
-                            
+
                             filename_lower = audio_file.name.lower()
                             clean_title_lower = clean_title.lower()
-                            
+
                             # Enhanced title matching
                             title_matches = (
                                 clean_title_lower in filename_lower or
@@ -345,33 +345,33 @@ def find_file_by_metadata_fast(title, artist, music_root="/mnt/music"):
                                 # Try partial match (first few words)
                                 any(word in filename_lower for word in clean_title_lower.split()[:2] if len(word) > 2)
                             )
-                            
+
                             if title_matches:
                                 elapsed = time.time() - search_start
                                 print(f"DEBUG: Found match in {elapsed:.2f}s: {audio_file}")
                                 return str(audio_file)
-                            
+
                             # Early termination if taking too long
                             if time.time() - search_start > 3:
                                 print("DEBUG: Artist directory search timeout")
                                 break
-                        
+
                         if time.time() - search_start > 3:
                             break
-                    
+
                     if time.time() - search_start > 3:
                         break
-                        
+
         except Exception as e:
             print(f"DEBUG: Artist directory search failed: {e}")
-    
+
     # Strategy 2: Enhanced pattern search for difficult cases
     if time.time() - search_start < 2:
         print("DEBUG: Trying enhanced pattern search...")
-        
+
         # Build more flexible search patterns
         search_patterns = []
-        
+
         if clean_title and len(clean_title) > 3:
             # Original patterns
             if clean_artist:
@@ -379,7 +379,7 @@ def find_file_by_metadata_fast(title, artist, music_root="/mnt/music"):
                     f"*{clean_artist}*{clean_title}*",
                     f"*{clean_title}*{clean_artist}*",
                 ])
-            
+
             # Patterns that handle track numbers
             title_words = clean_title.split()
             if len(title_words) >= 2:
@@ -389,24 +389,24 @@ def find_file_by_metadata_fast(title, artist, music_root="/mnt/music"):
                     f"*{short_title}*",
                     f"*[0-9]*{short_title}*",  # Match track numbers
                 ])
-            
+
             # Single word patterns for short titles
             if len(title_words) == 1 and len(clean_title) > 4:
                 search_patterns.append(f"*{clean_title}*")
-        
+
         for pattern in search_patterns[:5]:  # Limit patterns
             try:
                 print(f"DEBUG: Trying pattern: {pattern}")
                 pattern_start = time.time()
-                
+
                 # Search deeper for difficult tracks
                 search_path = os.path.join(music_root, "**", pattern)
                 matches = glob.glob(search_path, recursive=True)
-                
+
                 # Filter to audio files
                 audio_matches = [m for m in matches[:15]  # Check more matches
                                if any(m.lower().endswith(ext) for ext in audio_extensions)]
-                
+
                 if audio_matches:
                     # Sort by how well the filename matches
                     def match_score(filepath):
@@ -421,22 +421,22 @@ def find_file_by_metadata_fast(title, artist, music_root="/mnt/music"):
                         if clean_title.lower() in cleaned_filename:
                             score += 5
                         return score
-                    
+
                     audio_matches.sort(key=match_score, reverse=True)
                     found_file = audio_matches[0]
                     elapsed = time.time() - search_start
                     print(f"DEBUG: Found by pattern in {elapsed:.2f}s: {found_file}")
                     return found_file
-                
+
                 # Timeout check
                 if time.time() - pattern_start > 1.5:
                     print(f"DEBUG: Pattern '{pattern}' timeout")
                     break
-                    
+
             except Exception as e:
                 print(f"DEBUG: Pattern search failed: {e}")
                 continue
-    
+
     elapsed = time.time() - search_start
     print(f"DEBUG: Search completed in {elapsed:.2f}s - no file found for title='{title}' artist='{artist}'")
     return None
@@ -516,49 +516,49 @@ def save_history():
 def extract_cover_art(audio_file):
     """Enhanced cover art extraction with proper M4A/MP4 support."""
     print(f"DEBUG: extract_cover_art called with: {audio_file}")
-    
+
     if not audio_file or not os.path.exists(audio_file):
         print(f"DEBUG: Audio file not found: {audio_file}")
         return None
-    
+
     key = hashlib.sha1(audio_file.encode("utf-8")).hexdigest()
     cached = os.path.join(COVER_CACHE, key + ".jpg")
     print(f"DEBUG: Cache path: {cached}")
-    
+
     # Return cached version if it exists
     if os.path.exists(cached):
         print(f"DEBUG: Found cached cover art: {cached}")
         return f"/api/cover?file={quote(audio_file)}"
-    
+
     try:
         from mutagen import File as MFile
         from mutagen.id3 import APIC
         from mutagen.flac import FLAC
         from mutagen.mp4 import MP4, MP4Cover
-        
+
         print(f"DEBUG: Reading audio file...")
         audio = MFile(audio_file)
         if not audio:
             print(f"DEBUG: Mutagen could not read audio file")
             return check_folder_art(audio_file, cached)
-        
+
         print(f"DEBUG: Audio file type: {type(audio).__name__}")
         cover_data = None
-        
+
         # MP4/M4A files (this is the important fix!)
         if isinstance(audio, MP4):
             print(f"DEBUG: Processing MP4/M4A file")
             print(f"DEBUG: Available tags: {list(audio.tags.keys()) if audio.tags else 'No tags'}")
-            
+
             if audio.tags and 'covr' in audio.tags:
                 cover_list = audio.tags['covr']
                 print(f"DEBUG: Found 'covr' tag with {len(cover_list)} cover(s)")
-                
+
                 if cover_list:
                     # Get the first cover
                     cover_item = cover_list[0]
                     print(f"DEBUG: Cover item type: {type(cover_item)}")
-                    
+
                     if isinstance(cover_item, MP4Cover):
                         cover_data = bytes(cover_item)
                         print(f"DEBUG: Extracted MP4Cover, size: {len(cover_data)} bytes")
@@ -568,18 +568,18 @@ def extract_cover_art(audio_file):
                         print(f"DEBUG: Got raw cover data, size: {len(cover_data)} bytes")
             else:
                 print("DEBUG: No 'covr' tag found in MP4 file")
-        
+
         # MP3 ID3 tags
         elif hasattr(audio, 'tags') and audio.tags:
             print(f"DEBUG: Processing MP3 file with {len(audio.tags)} tags")
-            
+
             # Look for APIC frames
             for tag_name, tag_value in audio.tags.items():
                 if isinstance(tag_value, APIC):
                     print(f"DEBUG: Found APIC frame: {tag_name}, size: {len(tag_value.data)} bytes")
                     cover_data = tag_value.data
                     break
-            
+
             if not cover_data:
                 # Check common APIC tag names
                 for apic_key in ['APIC:', 'APIC:Cover (front)', 'APIC:Cover', 'APIC:Front Cover']:
@@ -589,7 +589,7 @@ def extract_cover_art(audio_file):
                             cover_data = tag_value.data
                             print(f"DEBUG: Found cover in {apic_key}, size: {len(cover_data)} bytes")
                             break
-        
+
         # FLAC files
         elif isinstance(audio, FLAC):
             print(f"DEBUG: Processing FLAC file")
@@ -597,20 +597,20 @@ def extract_cover_art(audio_file):
                 picture = audio.pictures[0]
                 cover_data = picture.data
                 print(f"DEBUG: FLAC picture found, size: {len(cover_data)} bytes")
-        
+
         else:
             print(f"DEBUG: Unsupported audio type: {type(audio)}")
-        
+
         # Save cover art if we found any
         if cover_data and len(cover_data) > 100:
             try:
                 # Ensure cache directory exists
                 os.makedirs(os.path.dirname(cached), exist_ok=True)
-                
+
                 print(f"DEBUG: Saving {len(cover_data)} bytes to {cached}")
                 with open(cached, 'wb') as f:
                     f.write(cover_data)
-                
+
                 # Verify the file was saved
                 if os.path.exists(cached):
                     cached_size = os.path.getsize(cached)
@@ -627,7 +627,7 @@ def extract_cover_art(audio_file):
                 print(f"DEBUG: Cover data too small: {len(cover_data)} bytes")
             else:
                 print("DEBUG: No cover data found")
-    
+
     except ImportError as e:
         print(f"DEBUG: Import error: {e}")
         return check_folder_art(audio_file, cached)
@@ -635,7 +635,7 @@ def extract_cover_art(audio_file):
         print(f"DEBUG: Extraction error: {e}")
         import traceback
         traceback.print_exc()
-    
+
     # Fallback to folder art
     print("DEBUG: Falling back to folder art")
     return check_folder_art(audio_file, cached)
@@ -643,11 +643,11 @@ def extract_cover_art(audio_file):
 def check_folder_art(audio_file, cached_path):
     """Check for folder-based album art."""
     folder = os.path.dirname(audio_file)
-    
+
     # Common album art filenames (including MusicBrainz Picard defaults)
     art_filenames = [
         "cover.jpg", "cover.jpeg", "cover.png",
-        "folder.jpg", "folder.jpeg", "folder.png", 
+        "folder.jpg", "folder.jpeg", "folder.png",
         "front.jpg", "front.jpeg", "front.png",
         "album.jpg", "album.jpeg", "album.png",
         "AlbumArt.jpg", "AlbumArtSmall.jpg",
@@ -655,7 +655,7 @@ def check_folder_art(audio_file, cached_path):
         # MusicBrainz Picard sometimes uses these
         "cover-front.jpg", "cover-front.png"
     ]
-    
+
     for art_name in art_filenames:
         art_path = os.path.join(folder, art_name)
         if os.path.exists(art_path):
@@ -666,7 +666,7 @@ def check_folder_art(audio_file, cached_path):
                 return f"/api/cover?file={quote(audio_file)}"
             except Exception as e:
                 print(f"Error copying folder art: {e}")
-    
+
     print(f"No album art found for: {audio_file}")
     return None
 
@@ -677,13 +677,13 @@ def debug_cover():
     fpath = request.args.get("file", "")
     if not fpath:
         return jsonify({"error": "No file specified"}), 400
-    
+
     if not os.path.exists(fpath):
         return jsonify({"error": "File not found"}), 404
-    
+
     try:
         from mutagen import File as MFile
-        
+
         audio = MFile(fpath)
         info = {
             "file": fpath,
@@ -694,7 +694,7 @@ def debug_cover():
             "cover_extraction_result": extract_cover_art(fpath),
             "folder_contents": []
         }
-        
+
         # List folder contents to check for art files
         folder = os.path.dirname(fpath)
         try:
@@ -702,9 +702,9 @@ def debug_cover():
             info["folder_contents"] = folder_files
         except:
             pass
-        
+
         return jsonify(info)
-        
+
     except ImportError:
         return jsonify({"error": "Mutagen not installed"}), 500
     except Exception as e:
@@ -714,21 +714,21 @@ def debug_cover():
 def should_trigger_dj():
     """Determine if we should trigger a DJ line based on probability and timing"""
     global last_dj_time
-    
+
     if not dj_config.get("auto_dj_enabled", True):
         return False
-    
+
     current_time = time.time()
     time_since_last = current_time - last_dj_time
     min_interval = dj_config.get("min_interval_minutes", 5) * 60
     max_interval = dj_config.get("max_interval_minutes", 15) * 60
     probability = dj_config.get("dj_probability", 30)
-    
+
     # Force DJ line if too much time has passed
     if time_since_last > max_interval:
         print(f"DJ: Forcing DJ line after {time_since_last/60:.1f} minutes")
         return True
-    
+
     # Check probability if enough time has passed
     if time_since_last > min_interval:
         chance = random.randint(1, 100)
@@ -737,20 +737,20 @@ def should_trigger_dj():
             return True
         else:
             print(f"DJ: Not triggering DJ line (chance: {chance} > {probability})")
-    
+
     return False
 
 def generate_dj_line(title="Unknown", artist="Unknown Artist", album=""):
     """Generate a DJ line using templates"""
     templates = dj_config.get("dj_templates", DEFAULT_DJ_CONFIG["dj_templates"])
     template = random.choice(templates)
-    
+
     try:
         dj_text = template.format(title=title, artist=artist, album=album)
     except Exception:
         # Fallback if template formatting fails
         dj_text = f"That was {title} by {artist}, and you're listening to AI Radio!"
-    
+
     return dj_text
 
 def push_event(ev: dict):
@@ -773,12 +773,12 @@ def push_event(ev: dict):
         artist = (ev.get("artist") or "").strip()
         album  = (ev.get("album") or "").strip()
         fn     = ev.get("filename") or ""
-        
+
         if not title and fn:
             # Extract title/artist from filename
             basename = os.path.basename(fn)
             name_without_ext = os.path.splitext(basename)[0]
-            
+
             # Try "Artist - Title" format
             if ' - ' in name_without_ext:
                 parts = name_without_ext.split(' - ', 1)
@@ -789,11 +789,11 @@ def push_event(ev: dict):
             else:
                 if not title:
                     title = name_without_ext
-        
+
         ev["artist"] = artist or "Unknown Artist"
         ev["title"]  = title  or "Unknown"
         ev["album"]  = album  or ""
-        
+
         # Add artwork URL if not present
         if not ev.get("artwork_url") and fn:
             artwork_url = extract_cover_art(fn)
@@ -815,28 +815,28 @@ def push_event(ev: dict):
     print(f"Adding to history: {ev.get('title')} by {ev.get('artist')}")
     HISTORY.insert(0, ev)
     del HISTORY[MAX_HISTORY:]
-    
+
     # Save DJ lines to file if enabled
     if ev.get("type") == "dj" and dj_config.get("save_to_file", True):
         try:
             dj_text = ev.get("text", "")
             timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
             line = f"{timestamp} - {dj_text}\n"
-            
+
             Path(DJ_LINES_FILE).parent.mkdir(parents=True, exist_ok=True)
             with open(DJ_LINES_FILE, "a", encoding="utf-8") as f:
                 f.write(line)
             print(f"Saved DJ line to file: {dj_text}")
         except Exception as e:
             print(f"Error saving DJ line to file: {e}")
-    
+
     save_history()
-    
+
     # Check if we should trigger automatic DJ after song events
     if ev.get("type") == "song" and should_trigger_dj():
         global last_dj_time
         last_dj_time = time.time()
-        
+
         # Generate DJ line in a separate thread to avoid blocking
         def delayed_dj():
             time.sleep(3)  # Wait a bit for the song to start
@@ -846,7 +846,7 @@ def push_event(ev: dict):
                     artist=ev.get("artist", "Unknown Artist"),
                     album=ev.get("album", "")
                 )
-                
+
                 dj_event = {
                     "type": "dj",
                     "text": dj_text,
@@ -854,12 +854,12 @@ def push_event(ev: dict):
                     "audio_url": audio_url,
                     "auto_generated": True
                 }
-                
+
                 push_event(dj_event)
                 print(f"Auto-generated DJ line with audio: {dj_text}")
             except Exception as e:
                 print(f"Error generating automatic DJ line: {e}")
-        
+
         threading.Thread(target=delayed_dj, daemon=True).start()
 
 def _build_art_url(path: str) -> str:
@@ -874,19 +874,19 @@ def read_now() -> dict:
     try:
         print("DEBUG: Getting metadata from Liquidsoap...")
         start_time = time.time()
-        
+
         raw = telnet_cmd("output.icecast.metadata", timeout=2)
         blk = first_block(raw)
         m = parse_kv_block(blk)
-        
+
         elapsed = time.time() - start_time
         print(f"DEBUG: Liquidsoap query took {elapsed:.2f}s, got: {m}")
-        
+
         filename = m.get("filename") or m.get("file") or ""
         title = m.get("title", "")
         artist = m.get("artist", "")
         album = m.get("album", "")
-        
+
         # Only search for file if we don't have one and have meaningful metadata
         if not filename and title and len(title) > 2:
             print("DEBUG: No filename, starting file search...")
@@ -894,7 +894,7 @@ def read_now() -> dict:
             filename = find_file_by_metadata_fast(title, artist)
             search_elapsed = time.time() - search_start
             print(f"DEBUG: File search took {search_elapsed:.2f}s")
-        
+
         return {
             "title": title,
             "artist": artist,
@@ -908,23 +908,23 @@ def read_now() -> dict:
 def monitor_track_changes():
     """Background thread to monitor track changes and auto-log them."""
     global current_track, last_poll_time
-    
+
     while True:
         try:
             now_data = read_now()
             current_time = time.time()
-            
+
             if now_data.get("filename") or now_data.get("title"):
                 # Create a signature for the current track
                 track_sig = f"{now_data.get('filename', '')}:{now_data.get('title', '')}:{now_data.get('artist', '')}"
-                
+
                 # If this is a new track and enough time has passed
-                if (current_track != track_sig and 
+                if (current_track != track_sig and
                     current_time - last_poll_time > 10):  # At least 10 seconds between tracks
-                    
+
                     if current_track is not None:  # Not the first track
                         print(f"Track change detected: {now_data.get('title')} by {now_data.get('artist')}")
-                        
+
                         # Auto-log the new track
                         event = {
                             "type": "song",
@@ -935,12 +935,12 @@ def monitor_track_changes():
                             "filename": now_data.get("filename", ""),
                         }
                         push_event(event)
-                    
+
                     current_track = track_sig
                     last_poll_time = current_time
-            
+
             time.sleep(5)  # Check every 5 seconds
-            
+
         except Exception as e:
             print(f"Monitor error: {e}")
             time.sleep(10)
@@ -953,10 +953,10 @@ def read_next(max_items=5):
         rids_text = telnet_cmd("request.all", timeout=2)
         if not rids_text:
             return out
-        
+
         # Find numbers in the response
         rids = re.findall(r'\d+', rids_text)
-        
+
         # Process first few requests
         for rid in rids[:max_items]:
             try:
@@ -964,7 +964,7 @@ def read_next(max_items=5):
                 meta_raw = telnet_cmd(f"request.metadata {rid}", timeout=2)
                 if not meta_raw:
                     continue
-                
+
                 # Simple parsing
                 metadata = {}
                 for line in meta_raw.split('\n'):
@@ -975,12 +975,12 @@ def read_next(max_items=5):
                             metadata[key] = value
                         except:
                             continue
-                
+
                 # Extract basic info
                 title = metadata.get("title", "")
                 artist = metadata.get("artist", "")
                 filename = metadata.get("filename", "") or metadata.get("initial_uri", "")
-                
+
                 # Extract from filename if needed
                 if not title and filename:
                     basename = os.path.basename(filename)
@@ -991,7 +991,7 @@ def read_next(max_items=5):
                         parts = title.split(' - ', 1)
                         artist = parts[0].strip()
                         title = parts[1].strip()
-                
+
                 # Add if we have a title
                 if title and title.strip():
                     track = {
@@ -1003,13 +1003,13 @@ def read_next(max_items=5):
                         "filename": filename
                     }
                     out.append(track)
-                    
+
             except Exception:
                 continue
-                
+
     except Exception:
         pass
-    
+
     return out
 
 # ── Routes ──────────────────────────────────────────────────────
@@ -1045,22 +1045,22 @@ def api_event_compat():
 def api_now():
     print("DEBUG: api_now called")
     start_time = time.time()
-    
+
     now_ms = int(time.time() * 1000)
-    
+
     # Get live data
     data = read_now() or {}
     if not (data.get("filename") or data.get("title")):
         print("DEBUG: No data from read_now")
         return jsonify({"title": "Nothing Playing", "artist": "", "type": "song"})
-    
+
     filename = data.get("filename", "")
     title = data.get("title") or "Unknown"
     artist = data.get("artist") or "Unknown Artist"
     album = data.get("album") or ""
-    
+
     print(f"DEBUG: Processing - title='{title}', filename='{filename}'")
-    
+
     # Build artwork URL
     artwork_url = "/static/station-cover.jpg"  # Default
     if filename and os.path.exists(filename):
@@ -1069,7 +1069,7 @@ def api_now():
         extracted_url = extract_cover_art(filename)
         artwork_elapsed = time.time() - artwork_start
         print(f"DEBUG: Artwork extraction took {artwork_elapsed:.2f}s")
-        
+
         if extracted_url:
             artwork_url = extracted_url
             print(f"DEBUG: Using extracted artwork: {artwork_url}")
@@ -1077,7 +1077,7 @@ def api_now():
             print(f"DEBUG: No artwork extracted from: {filename}")
     else:
         print(f"DEBUG: No valid filename for artwork: '{filename}'")
-    
+
     ev = {
         "type": "song",
         "time": now_ms,
@@ -1087,7 +1087,7 @@ def api_now():
         "filename": filename or "",
         "artwork_url": artwork_url,
     }
-    
+
     total_elapsed = time.time() - start_time
     print(f"DEBUG: api_now completed in {total_elapsed:.2f}s")
     return jsonify(ev)
@@ -1124,19 +1124,19 @@ def get_tts_config():
 def update_tts_config():
     """Update TTS configuration"""
     global TTS_PROVIDER, ELEVENLABS_API_KEY, ELEVENLABS_VOICE_ID
-    
+
     try:
         data = request.get_json(force=True, silent=True) or {}
-        
+
         if "provider" in data and data["provider"] in ["piper", "elevenlabs"]:
             TTS_PROVIDER = data["provider"]
-        
+
         if "elevenlabs_api_key" in data:
             ELEVENLABS_API_KEY = data["elevenlabs_api_key"]
-        
+
         if "elevenlabs_voice_id" in data:
             ELEVENLABS_VOICE_ID = data["elevenlabs_voice_id"]
-        
+
         return jsonify({"ok": True, "provider": TTS_PROVIDER})
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
@@ -1173,14 +1173,14 @@ def api_dj_now():
     try:
         # Get current track info
         now_data = read_now() or {}
-        
+
         # Generate DJ text and audio
         artist = now_data.get("artist", "Unknown Artist")
         title = now_data.get("title", "Unknown Track")
         album = now_data.get("album", "")
-        
+
         dj_text, audio_url = generate_dj_line_with_audio(title=title, artist=artist, album=album)
-        
+
         # Save to timeline
         dj_event = {
             "type": "dj",
@@ -1189,19 +1189,19 @@ def api_dj_now():
             "audio_url": audio_url,
             "manual_generated": True
         }
-        
+
         push_event(dj_event)
-        
+
         return jsonify({
-            "ok": True, 
+            "ok": True,
             "text": dj_text,
             "audio_url": audio_url,
             "event": dj_event
         })
-        
+
     except Exception as e:
         return jsonify({
-            "ok": False, 
+            "ok": False,
             "error": str(e)
         }), 500
 
@@ -1219,7 +1219,7 @@ def update_dj_config():
         for key, value in data.items():
             if key in DEFAULT_DJ_CONFIG:
                 dj_config[key] = value
-        
+
         save_dj_config(dj_config)
         return jsonify({"ok": True, "config": dj_config})
     except Exception as e:
@@ -1244,28 +1244,28 @@ def test_dj_template():
 def api_cover():
     fpath = request.args.get("file", "")
     default_cover_path = os.path.join(BASE_DIR, "static", "station-cover.jpg")
-    
+
     if not fpath or not os.path.isabs(fpath) or not os.path.exists(fpath):
         if os.path.exists(default_cover_path):
             return send_file(default_cover_path, mimetype="image/jpeg", conditional=True)
         return abort(404)
-    
+
     # Check cache
     key = hashlib.sha1(fpath.encode("utf-8")).hexdigest()
     cached = os.path.join(COVER_CACHE, key + ".jpg")
-    
+
     if os.path.exists(cached):
         return send_file(cached, mimetype="image/jpeg", conditional=True)
-    
+
     # Try to extract cover art
     artwork_url = extract_cover_art(fpath)
     if artwork_url and os.path.exists(cached):
         return send_file(cached, mimetype="image/jpeg", conditional=True)
-    
+
     # Default fallback
     if os.path.exists(default_cover_path):
         return send_file(default_cover_path, mimetype="image/jpeg", conditional=True)
-    
+
     return abort(404)
 
 @app.get("/api/debug_liquidsoap")
@@ -1274,18 +1274,18 @@ def debug_liquidsoap():
     try:
         # Get raw telnet response
         raw = telnet_cmd("output.icecast.metadata", timeout=2)
-        
+
         # Parse it
         blk = first_block(raw)
         parsed = parse_kv_block(blk)
-        
+
         # Also try getting the current request info
         try:
             request_raw = telnet_cmd("request.metadata 0", timeout=2)
             request_parsed = parse_kv_block(request_raw)
         except:
             request_parsed = {}
-        
+
         return jsonify({
             "raw_response": raw,
             "first_block": blk,
@@ -1301,16 +1301,16 @@ def test_find():
     """Test endpoint to search for a specific track with timing."""
     title = request.args.get("title", "")
     artist = request.args.get("artist", "")
-    
+
     if not title and not artist:
         return jsonify({"error": "Provide title and/or artist parameters"}), 400
-    
+
     print(f"DEBUG: test_find called with title='{title}' artist='{artist}'")
     start_time = time.time()
-    
+
     filename = find_file_by_metadata_fast(title, artist)
     search_elapsed = time.time() - start_time
-    
+
     result = {
         "search_title": title,
         "search_artist": artist,
@@ -1318,19 +1318,19 @@ def test_find():
         "file_exists": os.path.exists(filename) if filename else False,
         "search_time_seconds": round(search_elapsed, 2)
     }
-    
+
     if filename and os.path.exists(filename):
         artwork_start = time.time()
         artwork_url = extract_cover_art(filename)
         artwork_elapsed = time.time() - artwork_start
-        
+
         result["artwork_url"] = artwork_url
         result["has_artwork"] = bool(artwork_url and artwork_url != "/static/station-cover.jpg")
         result["artwork_extraction_time"] = round(artwork_elapsed, 2)
-    
+
     total_elapsed = time.time() - start_time
     result["total_time_seconds"] = round(total_elapsed, 2)
-    
+
     return jsonify(result)
 
 @app.get("/api/debug_import")
@@ -1338,7 +1338,7 @@ def debug_import():
     """Debug endpoint to test imports and Python environment."""
     import sys
     import os
-    
+
     result = {
         "python_executable": sys.executable,
         "python_version": sys.version,
@@ -1347,7 +1347,7 @@ def debug_import():
         "user": os.getenv('USER', 'unknown'),
         "imports": {}
     }
-    
+
     # Test mutagen import
     try:
         import mutagen
@@ -1366,7 +1366,7 @@ def debug_import():
             "success": False,
             "error": f"Unexpected error: {str(e)}"
         }
-    
+
     # Test specific mutagen modules
     mutagen_modules = ['mutagen.id3', 'mutagen.flac', 'mutagen.mp4']
     for module_name in mutagen_modules:
@@ -1375,7 +1375,7 @@ def debug_import():
             result["imports"][module_name] = {"success": True}
         except ImportError as e:
             result["imports"][module_name] = {"success": False, "error": str(e)}
-    
+
     return jsonify(result)
 
 # ADD this new route to serve TTS files
