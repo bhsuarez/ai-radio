@@ -58,24 +58,25 @@ def log_sine(_)
 end
 sine_src = source.on_metadata(sine(), log_sine)
 
-# --- Non-blocking Auto-DJ scheduled for NEXT transition ----------------------
+
 def after_song(m)
   artist = if list.mem("artist", list.map(fst, m)) then m["artist"] else "Unknown Artist" end
   title  = if list.mem("title",  list.map(fst, m)) then m["title"]  else "Unknown Title"  end
   dur_s  = if list.mem("duration", list.map(fst, m)) then float_of_string(m["duration"]) else 0. end
 
-  # fire ~3s before end (or 1s if duration missing)
-  lead   = 3.0
-  wait_s = if dur_s > lead then dur_s - lead else 1.0 end
+  # Schedule DJ generation EARLY - 30 seconds before song ends (or 5s minimum)
+  lead   = 30.0
+  wait_s = if dur_s > lead then dur_s - lead else 5.0 end
 
   # DEBUG: write a log line every time the hook schedules
   log("AUTO-DJ scheduling in " ^ string_of(int_of_float(wait_s)) ^
-      "s for next track intro: " ^ title ^ " — " ^ artist)
+      "s for DJ line after: " ^ title ^ " — " ^ artist)
 
-  # run enqueue script in the background and log its output
+  # FIXED: Call Python API directly to generate DJ line for the track that just played
   ignore(process.run(
     "bash -lc \"(sleep " ^ string_of(int_of_float(wait_s)) ^
-    "; /opt/ai-radio/dj_enqueue.sh \\\"" ^ artist ^ "\\\" \\\"" ^ title ^ "\\\" " ^
+    "; curl -X POST http://127.0.0.1:5055/api/dj-now " ^
+    "-H 'Content-Type: application/json' " ^
     ">>/var/tmp/dj_enqueue.log 2>&1) &\""
   ))
 end

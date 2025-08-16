@@ -29,9 +29,12 @@ COVER_CACHE = Path("/opt/ai-radio/cache/covers"); COVER_CACHE.mkdir(parents=True
 # ADD THIS DJ CONFIGURATION SECTION after the COVER_CACHE line (around line 25)
 DEFAULT_DJ_CONFIG = {
     "auto_dj_enabled": True,
-    "dj_probability": 30,  # 30% chance after each track
-    "min_interval_minutes": 5,  # Minimum 5 minutes between DJ lines
-    "max_interval_minutes": 15, # Force DJ line after 15 minutes
+    "dj_probability": 100,  # 100% chance after each track - AI DJ every time!
+    "min_interval_minutes": 0,  # No minimum interval - DJ after every track
+    "max_interval_minutes": 15, # Force DJ line after 15 minutes (backup)
+    "use_ai_dj": True,  # Always use AI-generated lines
+    "ai_dj_probability": 100,  # 100% chance to use AI (only fall back to templates on failure)
+    "ai_script_path": "/opt/ai-radio/gen_ai_dj_line.sh",  # Path to your AI script
     "dj_templates": [
         "That was {title} by {artist}, keeping the vibes flowing here on AI Radio!",
         "You just heard {title} from {artist}, and we've got more great music coming up!",
@@ -75,6 +78,92 @@ def save_dj_config(config):
             json.dump(config, f, indent=2)
     except Exception:
         pass
+
+def generate_ai_dj_line(title, artist, timeout=20):
+    """Generate AI DJ line using the external script"""
+    try:
+        script_path = dj_config.get("ai_script_path", "/opt/ai-radio/gen_ai_dj_line.sh")
+        
+        # Check if script exists and is executable
+        if not os.path.exists(script_path):
+            print(f"DJ: AI script not found at {script_path}")
+            return None
+            
+        if not os.access(script_path, os.X_OK):
+            print(f"DJ: AI script not executable: {script_path}")
+            return None
+        
+        # Run the AI script with title and artist
+        print(f"DJ: Calling AI script for '{title}' by '{artist}'")
+        start_time = time.time()
+        
+        result = subprocess.run(
+            [script_path, title, artist],
+            capture_output=True,
+            text=True,
+            timeout=timeout,
+            env=dict(os.environ, **{
+                'PATH': '/usr/local/bin:/usr/bin:/bin:/sbin:/usr/sbin',
+                'HOME': '/root',
+                'OLLAMA_MODELS': '/mnt/music/ai-dj/ollama'
+            })
+        )
+        
+        elapsed = time.time() - start_time
+        print(f"DJ: AI script completed in {elapsed:.2f}s")
+        print(f"DJ: AI script return code: {result.returncode}")
+        print(f"DJ: AI script stdout: '{result.stdout.strip()}'")
+        print(f"DJ: AI script stderr: '{result.stderr.strip()}'")
+        
+        if result.returncode == 0:
+            ai_line = result.stdout.strip()
+            # Remove quotes if the script returns quoted output
+            if ai_line.startswith('"') and ai_line.endswith('"'):
+                ai_line = ai_line[1:-1]
+            
+            if ai_line and len(ai_line) > 10:  # Basic validation
+                print(f"DJ: AI generated: {ai_line}")
+                return ai_line
+            else:
+                print(f"DJ: AI output too short or empty: '{ai_line}'")
+                return None
+        else:
+            print(f"DJ: AI script failed with code {result.returncode}")
+            if result.stderr:
+                print(f"DJ: AI script stderr: {result.stderr}")
+            return None
+            
+    except subprocess.TimeoutExpired:
+        print(f"DJ: AI script timed out after {timeout} seconds")
+        return None
+    except Exception as e:
+        print(f"DJ: Unexpected error calling AI script: {e}")
+        return None
+
+def generate_dj_line(title="Unknown", artist="Unknown Artist", album=""):
+    """Generate a DJ line using AI script with template fallback"""
+    
+    # Always try AI-generated line first
+    ai_line = generate_ai_dj_line(title, artist)
+    if ai_line:
+        print(f"DJ: Using AI-generated line: {ai_line}")
+        return ai_line
+    else:
+        print("DJ: AI generation failed, falling back to templates")
+    
+    # Fallback to template-based lines only if AI fails
+    templates = dj_config.get("dj_templates", DEFAULT_DJ_CONFIG["dj_templates"])
+    template = random.choice(templates)
+    
+    try:
+        dj_text = template.format(title=title, artist=artist, album=album)
+        print(f"DJ: Using template fallback: {dj_text}")
+        return dj_text
+    except Exception:
+        # Ultimate fallback
+        fallback = f"That was {title} by {artist}, and you're listening to AI Radio!"
+        print(f"DJ: Using ultimate fallback: {fallback}")
+        return fallback
 
 # Add this function after your existing DJ functions
 def generate_dj_audio(text, provider="piper"):
@@ -753,6 +842,7 @@ def generate_dj_line(title="Unknown", artist="Unknown Artist", album=""):
 
     return dj_text
 
+# Replace the end of your push_event function with this simplified version:
 def push_event(ev: dict):
     """Insert newest-first with light de-duplication and persist."""
     now_ms = int(time.time() * 1000)
@@ -832,35 +922,47 @@ def push_event(ev: dict):
 
     save_history()
 
-    # Check if we should trigger automatic DJ after song events
-    if ev.get("type") == "song" and should_trigger_dj():
-        global last_dj_time
-        last_dj_time = time.time()
-
-        # Generate DJ line in a separate thread to avoid blocking
-        def delayed_dj():
-            time.sleep(3)  # Wait a bit for the song to start
+    # SIMPLIFIED: Generate DJ line after EVERY song, no probability/timing logic
+    if ev.get("type") == "song":
+        print(f"FORCE DJ: Generating DJ line for: {ev.get('title')} by {ev.get('artist')}")
+        
+        # Generate DJ line immediately in a separate thread
+        def generate_dj_now():
             try:
+                print(f"DJ Thread: Starting generation for {ev.get('title')} by {ev.get('artist')}")
+                
                 dj_text, audio_url = generate_dj_line_with_audio(
                     title=ev.get("title", "Unknown"),
                     artist=ev.get("artist", "Unknown Artist"),
                     album=ev.get("album", "")
                 )
 
-                dj_event = {
-                    "type": "dj",
-                    "text": dj_text,
-                    "time": int(time.time() * 1000),
-                    "audio_url": audio_url,
-                    "auto_generated": True
-                }
+                if dj_text:
+                    dj_event = {
+                        "type": "dj",
+                        "text": dj_text,
+                        "time": int(time.time() * 1000),
+                        "audio_url": audio_url,
+                        "auto_generated": True
+                    }
 
-                push_event(dj_event)
-                print(f"Auto-generated DJ line with audio: {dj_text}")
+                    # Add to history without triggering another DJ line
+                    print(f"DJ Thread: Adding DJ event to history: {dj_text}")
+                    HISTORY.insert(0, dj_event)
+                    del HISTORY[MAX_HISTORY:]
+                    save_history()
+                    
+                    print(f"DJ Thread: Successfully generated DJ line: {dj_text}")
+                else:
+                    print("DJ Thread: No DJ text generated")
+                    
             except Exception as e:
-                print(f"Error generating automatic DJ line: {e}")
+                print(f"DJ Thread: Error generating DJ line: {e}")
+                import traceback
+                traceback.print_exc()
 
-        threading.Thread(target=delayed_dj, daemon=True).start()
+        # Start the DJ generation in a separate thread
+        threading.Thread(target=generate_dj_now, daemon=True).start()
 
 def _build_art_url(path: str) -> str:
     if path and os.path.isabs(path) and os.path.exists(path):
@@ -1392,6 +1494,53 @@ def serve_tts_file(filename):
     except Exception:
         return abort(404)
 
+@app.route("/api/debug-dj")
+def debug_dj():
+    """Debug DJ generation step by step"""
+    debug_log = "/tmp/dj_debug.log"
+    
+    def log_debug(msg):
+        with open(debug_log, "a") as f:
+            f.write(f"{time.strftime('%Y-%m-%d %H:%M:%S')} - {msg}\n")
+        print(msg)  # Also print to console
+    
+    log_debug("=== DEBUG DJ GENERATION ===")
+    
+    # Test data
+    title = "Bohemian Rhapsody"
+    artist = "Queen"
+    
+    try:
+        log_debug(f"1. Testing generate_ai_dj_line with title='{title}', artist='{artist}'")
+        
+        # Test the AI function directly
+        ai_result = generate_ai_dj_line(title, artist)
+        log_debug(f"2. AI result: {ai_result}")
+        
+        # Test the full DJ line function
+        log_debug(f"3. Testing generate_dj_line...")
+        dj_result = generate_dj_line(title, artist)
+        log_debug(f"4. DJ line result: {dj_result}")
+        
+        # Test the full audio generation
+        log_debug(f"5. Testing generate_dj_line_with_audio...")
+        text, audio_url = generate_dj_line_with_audio(title, artist)
+        log_debug(f"6. Full result - text: {text}, audio: {audio_url}")
+        
+        return jsonify({
+            "ai_result": ai_result,
+            "dj_result": dj_result,
+            "full_text": text,
+            "audio_url": audio_url,
+            "config": dj_config,
+            "debug_log_file": debug_log
+        })
+        
+    except Exception as e:
+        log_debug(f"ERROR in debug: {e}")
+        import traceback
+        log_debug(traceback.format_exc())
+        return jsonify({"error": str(e), "debug_log_file": debug_log}), 500
 # ── Startup ─────────────────────────────────────────────────────
 load_history()
 
