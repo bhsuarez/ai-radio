@@ -12,6 +12,41 @@ mkdir -p "$TTSDIR"
 
 echo "DJ_ENQUEUE: Starting at $(date)" >> /var/tmp/dj_enqueue.log
 
+# ---------- NEW: Check for recent DJ activity ----------
+echo "DJ_ENQUEUE: Checking for recent DJ activity..." >> /var/tmp/dj_enqueue.log
+
+# Get recent history to check for DJ lines
+history_json="$(curl -fsS "$BASE/api/history" 2>/dev/null || echo '[]')"
+
+# Check if there's a recent DJ line (within last 45 seconds)
+has_recent_dj="$(python3 - <<'PY' "$history_json"
+import json, sys, time
+try:
+    history = json.loads(sys.argv[1] or '[]')
+except:
+    history = []
+
+current_time = int(time.time() * 1000)
+recent_threshold = 45000  # 45 seconds
+
+for event in history[:5]:  # Check last 5 events
+    if event.get("type") == "dj":
+        event_time = event.get("time", 0)
+        if (current_time - event_time) < recent_threshold:
+            print("yes")
+            sys.exit(0)
+print("no")
+PY
+)"
+
+if [[ "$has_recent_dj" == "yes" ]]; then
+    echo "DJ_ENQUEUE: Recent DJ line found, skipping generation to avoid duplicates" >> /var/tmp/dj_enqueue.log
+    echo "DJ_ENQUEUE: Skipping - recent DJ activity detected"
+    exit 0
+fi
+
+echo "DJ_ENQUEUE: No recent DJ activity, proceeding with generation" >> /var/tmp/dj_enqueue.log
+
 # ---------- 1) get upcoming track (robust to list/single/empty) ----------
 json="$(curl -fsS "$BASE/api/next" 2>/dev/null || echo '[]')"
 echo "DJ_ENQUEUE: Got JSON: $json" >> /var/tmp/dj_enqueue.log
@@ -47,6 +82,12 @@ PY
 )"
 
 echo "DJ_ENQUEUE: Artist='$ARTIST', Title='$TITLE'" >> /var/tmp/dj_enqueue.log
+
+# Skip if we don't have meaningful track info
+if [[ "$TITLE" == "Unknown Title" && "$ARTIST" == "Unknown Artist" ]]; then
+    echo "DJ_ENQUEUE: No meaningful track info, skipping" >> /var/tmp/dj_enqueue.log
+    exit 0
+fi
 
 # ---------- 2) build the line FIRST ----------
 LINE="$(/opt/ai-radio/gen_ai_dj_line.sh "$TITLE" "$ARTIST" 2>/dev/null || true)"
@@ -110,6 +151,23 @@ echo "DJ_ENQUEUE: Pushing to queue: $URI" >> /var/tmp/dj_enqueue.log
     printf 'quit\n'
     sleep 1
 } | telnet "$QUEUE_HOST" "$QUEUE_PORT" >> /var/tmp/dj_enqueue.log 2>&1
+
+# ---------- 6) NEW: Notify Flask about the DJ line for timeline ----------
+echo "DJ_ENQUEUE: Notifying Flask about DJ line..." >> /var/tmp/dj_enqueue.log
+
+# Create the audio URL for the web interface
+AUDIO_URL="/api/tts-file/$(basename "$OUT")"
+
+# Send the DJ event to Flask
+curl -fsS -X POST "$BASE/api/tts_queue" \
+  -H "Content-Type: application/json" \
+  -d @- <<EOF >> /var/tmp/dj_enqueue.log 2>&1
+{
+  "text": "$LINE",
+  "audio_url": "$AUDIO_URL",
+  "external_generated": true
+}
+EOF
 
 echo "DJ_ENQUEUE: Queued DJ intro for: $TITLE — $ARTIST -> $OUT" >> /var/tmp/dj_enqueue.log
 echo "Queued DJ intro for: $TITLE — $ARTIST -> $OUT"
