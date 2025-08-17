@@ -434,27 +434,27 @@ def api_dj_now():
     artist = "Unknown Artist"
     
     try:
-    print("DEBUG: Getting track data directly (not via HTTP)")
-    
-    # FIRST try live metadata (most current)
-    print("DEBUG: Reading live metadata first")
-    track_data = read_now()
-    print(f"DEBUG: Live metadata: {track_data}")
-    
-    if track_data and track_data.get("title") and track_data.get("title") != "Unknown title":
-        title = track_data.get("title", "Unknown Title")
-        artist = track_data.get("artist", "Unknown Artist")
-        print(f"DEBUG: Using live metadata - Title: '{title}', Artist: '{artist}'")
-    else:
-        # Fallback to history only if live data is incomplete
-        print("DEBUG: Live metadata incomplete, checking history")
-        for ev in HISTORY:
-            if ev.get("type") == "song":
-                title = ev.get("title", "Unknown Title")
-                artist = ev.get("artist", "Unknown Artist")
-                print(f"DEBUG: Using history fallback - Title: '{title}', Artist: '{artist}'")
-                break
-            
+        print("DEBUG: Getting track data directly (not via HTTP)")
+        
+        # FIRST try live metadata (most current)
+        print("DEBUG: Reading live metadata first")
+        track_data = read_now()
+        print(f"DEBUG: Live metadata: {track_data}")
+        
+        if track_data and track_data.get("title") and track_data.get("title") != "Unknown title":
+            title = track_data.get("title", "Unknown Title")
+            artist = track_data.get("artist", "Unknown Artist")
+            print(f"DEBUG: Using live metadata - Title: '{title}', Artist: '{artist}'")
+        else:
+            # Fallback to history only if live data is incomplete
+            print("DEBUG: Live metadata incomplete, checking history")
+            for ev in HISTORY:
+                if ev.get("type") == "song":
+                    title = ev.get("title", "Unknown Title")
+                    artist = ev.get("artist", "Unknown Artist")
+                    print(f"DEBUG: Using history fallback - Title: '{title}', Artist: '{artist}'")
+                    break
+                
     except Exception as e:
         print(f"DEBUG: Error getting track data: {e}")
         import traceback
@@ -559,7 +559,7 @@ def api_dj_now():
                 ["nc", "127.0.0.1", "1234"],
                 input=f"tts.push {uri}\n".encode(),
                 capture_output=True,
-                timeout=3,
+                timeout=1,
                 check=False
             )
             print(f"DEBUG: Liquidsoap push result: {liq_result.returncode}")
