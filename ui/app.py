@@ -434,30 +434,26 @@ def api_dj_now():
     artist = "Unknown Artist"
     
     try:
-        print("DEBUG: Getting track data directly (not via HTTP)")
-        
-        # Use the same logic as the /api/now endpoint
-        track_data = None
-        
-        # First try to get from HISTORY (newest song event)
+    print("DEBUG: Getting track data directly (not via HTTP)")
+    
+    # FIRST try live metadata (most current)
+    print("DEBUG: Reading live metadata first")
+    track_data = read_now()
+    print(f"DEBUG: Live metadata: {track_data}")
+    
+    if track_data and track_data.get("title") and track_data.get("title") != "Unknown title":
+        title = track_data.get("title", "Unknown Title")
+        artist = track_data.get("artist", "Unknown Artist")
+        print(f"DEBUG: Using live metadata - Title: '{title}', Artist: '{artist}'")
+    else:
+        # Fallback to history only if live data is incomplete
+        print("DEBUG: Live metadata incomplete, checking history")
         for ev in HISTORY:
             if ev.get("type") == "song":
-                track_data = ev
-                print(f"DEBUG: Found track in history: {track_data}")
+                title = ev.get("title", "Unknown Title")
+                artist = ev.get("artist", "Unknown Artist")
+                print(f"DEBUG: Using history fallback - Title: '{title}', Artist: '{artist}'")
                 break
-        
-        # If no track in history, read live metadata
-        if not track_data:
-            print("DEBUG: No track in history, reading live metadata")
-            track_data = read_now()
-            print(f"DEBUG: Live metadata: {track_data}")
-        
-        if track_data:
-            title = track_data.get("title", "Unknown Title")
-            artist = track_data.get("artist", "Unknown Artist")
-            print(f"DEBUG: Extracted - Title: '{title}', Artist: '{artist}'")
-        else:
-            print("DEBUG: No track data found anywhere")
             
     except Exception as e:
         print(f"DEBUG: Error getting track data: {e}")
