@@ -552,12 +552,12 @@ def api_dj_now():
         try:
             audio_filename = os.path.basename(audio_url.replace('/tts/', ''))
             full_path = os.path.join(TTS_DIR, audio_filename)
-            uri = f"file://{full_path}"
+            uri = full_path
             print(f"DEBUG: Pushing to Liquidsoap: {uri}")
             
             liq_result = subprocess.run(
                 ["nc", "127.0.0.1", "1234"],
-                input=f"tts.push {uri}\n".encode(),
+                input=f"tts.push {uri}\nquit\n".encode(),
                 capture_output=True,
                 timeout=5,
                 check=False
