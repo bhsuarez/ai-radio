@@ -403,59 +403,77 @@ def api_dj_now():
     os.makedirs(TTS_DIR, exist_ok=True)
     ts = int(time.time())
 
-    # 1) What's next? (fall back to what's playing)
+    # 1) Try to get the next track first
+    cand = {}
     try:
         base = request.host_url.rstrip('/')
         nxt = requests.get(f"{base}/api/next", timeout=3).json()
         if isinstance(nxt, list) and nxt:
-            cand = nxt[0]
+            cand = nxt[0]  # first upcoming track
         elif isinstance(nxt, dict):
             cand = nxt
-        else:
-            cand = {}
     except Exception:
-        cand = {}
+        pass
 
-    # Fallback to "now" if we didn't get anything for next
-    if not cand:
+    # 2) If no next track, use current track (for "that was..." style intros)
+    if not cand or not cand.get("title"):
         try:
+            base = request.host_url.rstrip('/')
             now = requests.get(f"{base}/api/now", timeout=3).json()
+            if now and now.get("title"):
+                cand = now
         except Exception:
-            now = {}
-        cand = now or {}
+            pass
 
-    title  = cand.get("title")  or "Unknown Title"
-    artist = cand.get("artist") or "Unknown Artist"
+    # 3) Extract track info with better fallbacks
+    title = (cand.get("title") or "").strip()
+    artist = (cand.get("artist") or "").strip()
+    
+    # If we still don't have good data, try parsing the filename
+    if not title and not artist:
+        filename = cand.get("filename", "")
+        if filename:
+            # Extract from filename like "Artist - Title.mp3"
+            basename = os.path.splitext(os.path.basename(filename))[0]
+            if " - " in basename:
+                parts = basename.split(" - ", 1)
+                artist = artist or parts[0].strip()
+                title = title or parts[1].strip()
+    
+    # Final fallbacks
+    title = title or "Unknown Title"
+    artist = artist or "Unknown Artist"
 
-    # 2) Generate a DJ line (using the text-only version of your script)
+    print(f"DEBUG: Generating DJ line for: '{title}' by '{artist}'")
+
+    # 4) Generate a DJ line
     try:
         out = subprocess.check_output(
-            ["/opt/ai-radio/gen_ai_dj_line_elevenlabs.sh", title, artist],
+            ["/opt/ai-radio/gen_ai_dj_line.sh", title, artist],
             stderr=subprocess.DEVNULL, timeout=60
         ).decode("utf-8", "ignore").strip()
-    except Exception:
-        out = f"That was '{title}' by {artist}."
+    except Exception as e:
+        print(f"DEBUG: DJ script failed: {e}")
+        # Create a contextual fallback based on whether we have next or current
+        if cand.get("type") == "song":  # This is current track
+            out = f"That was '{title}' by {artist}."
+        else:  # This should be next track
+            out = f"Coming up next, '{title}' by {artist}."
 
     line = ANSI.sub('', out)  # strip any ANSI control codes
+    print(f"DEBUG: Generated line: '{line}'")
 
-    # 3) TTS via ElevenLabs → MP3
+    # 5) TTS synthesis (your existing ElevenLabs/Piper code)
     mp3 = os.path.join(TTS_DIR, f"intro_{ts}.mp3")
     audio_url = None
     
     try:
-        # Use ElevenLabs for synthesis
-        if synthesize_with_elevenlabs(line, mp3):
+        # Use ElevenLabs for synthesis (if you've set it up)
+        if 'ELEVENLABS_API_KEY' in os.environ and synthesize_with_elevenlabs(line, mp3):
             audio_url = f"/tts/{os.path.basename(mp3)}"
-            
-            # Push to Liquidsoap
-            uri = f"file://{mp3}"
-            subprocess.run(
-                ["nc", "127.0.0.1", "1234"],
-                input=f"tts.push {uri}\n".encode(),
-                check=True
-            )
+            print(f"DEBUG: ElevenLabs synthesis successful: {audio_url}")
         else:
-            # Fallback to Piper if ElevenLabs fails
+            # Fallback to Piper
             wav = os.path.join(TTS_DIR, f"intro_{ts}.wav")
             subprocess.check_call(
                 ["piper", "--model", VOICE, "--output_file", wav],
@@ -467,22 +485,27 @@ def api_dj_now():
                     stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60
                 )
                 audio_url = f"/tts/{os.path.basename(mp3)}"
-                uri = f"file://{mp3}"
+                print(f"DEBUG: Piper + ffmpeg synthesis successful: {audio_url}")
             except Exception:
                 audio_url = f"/tts/{os.path.basename(wav)}"
-                uri = f"file://{wav}"
-            
+                print(f"DEBUG: Piper synthesis successful (WAV): {audio_url}")
+        
+        # Push to Liquidsoap
+        if audio_url:
+            full_path = os.path.join(TTS_DIR, os.path.basename(audio_url.replace('/tts/', '')))
+            uri = f"file://{full_path}"
             subprocess.run(
                 ["nc", "127.0.0.1", "1234"],
                 input=f"tts.push {uri}\n".encode(),
                 check=True
             )
+            print(f"DEBUG: Pushed to Liquidsoap: {uri}")
             
     except Exception as e:
-        print(f"TTS synthesis failed: {e}")
+        print(f"DEBUG: TTS synthesis failed: {e}")
         pass  # fall back to text-only event
 
-    # 4) Show it in the UI timeline immediately
+    # 6) Show it in the UI timeline immediately
     push_event({
         "type": "dj",
         "text": line,
