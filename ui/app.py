@@ -137,18 +137,45 @@ def read_now() -> dict:
         except Exception:
             pass
 
-    # Fallback: Liquidsoap telnet (namespaced command)
+    # Fallback: Liquidsoap telnet - FIXED VERSION
     if not data.get("title"):
         try:
-            raw = telnet_cmd("AI_Plex_DJ.metadata")
-            kv = parse_kv_text(raw)
-            data["title"]     = kv.get("title") or kv.get("song") or data.get("title") or "Unknown title"
-            data["artist"]    = kv.get("artist") or data.get("artist") or "Unknown artist"
-            data["album"]     = kv.get("album") or data.get("album") or ""
-            data["filename"]  = kv.get("filename") or kv.get("file") or data.get("filename") or ""
-            data["artwork_url"] = data.get("artwork_url") or ""
-        except Exception:
-            pass
+            # Use the correct telnet command
+            raw = telnet_cmd("output.icecast.metadata")
+            print(f"DEBUG: Raw telnet response: {raw}")
+            
+            # Parse the response - look for "--- 1 ---" section (current track)
+            lines = raw.split('\n')
+            current_track = {}
+            in_current = False
+            
+            for line in lines:
+                line = line.strip()
+                if line == "--- 1 ---":
+                    in_current = True
+                    continue
+                elif line.startswith("--- ") and line != "--- 1 ---":
+                    in_current = False
+                    continue
+                elif in_current and "=" in line:
+                    key, value = line.split("=", 1)
+                    current_track[key.strip()] = value.strip().strip('"')
+            
+            print(f"DEBUG: Parsed current track: {current_track}")
+            
+            if current_track:
+                data["title"] = current_track.get("title") or data.get("title") or "Unknown title"
+                data["artist"] = current_track.get("artist") or data.get("artist") or "Unknown artist"
+                data["album"] = current_track.get("album") or data.get("album") or ""
+                data["date"] = current_track.get("date") or ""
+                data["filename"] = ""  # Not available from telnet
+                data["artwork_url"] = data.get("artwork_url") or ""
+                print(f"DEBUG: Final telnet metadata: {data}")
+            else:
+                print("DEBUG: No current track found in telnet response")
+                
+        except Exception as e:
+            print(f"DEBUG: Telnet metadata failed: {e}")
 
     data.setdefault("title", "Unknown title")
     data.setdefault("artist", "Unknown artist")
@@ -379,7 +406,7 @@ def tts_queue_post():
 @app.post("/api/skip")
 def api_skip():
     try:
-        telnet_cmd("AI_Plex_DJ.skip")
+        telnet_cmd("icecast.output.skip")
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}, 500
