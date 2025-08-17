@@ -467,7 +467,7 @@ def api_dj_now():
         print(f"DEBUG: Running DJ script: /opt/ai-radio/gen_ai_dj_line.sh '{title}' '{artist}'")
         result = subprocess.run(
             ["/opt/ai-radio/gen_ai_dj_line.sh", title, artist],
-            capture_output=True, text=True, timeout=15
+            capture_output=True, text=True, timeout=35
         )
         print(f"DEBUG: DJ script return code: {result.returncode}")
         print(f"DEBUG: DJ script stdout: '{result.stdout.strip()}'")
