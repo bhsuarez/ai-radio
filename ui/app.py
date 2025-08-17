@@ -402,35 +402,63 @@ def api_dj_now():
     os.makedirs(TTS_DIR, exist_ok=True)
     ts = int(time.time())
 
-    # Simple approach: just get the current track from /api/now
+    # Instead of making an HTTP call to ourselves, use the same logic as /api/now directly
     title = "Unknown Title"
     artist = "Unknown Artist"
     
     try:
-        now_response = requests.get("http://127.0.0.1:5055/api/now", timeout=3)
-        if now_response.ok:
-            track = now_response.json()
-            title = track.get("title", "Unknown Title")
-            artist = track.get("artist", "Unknown Artist")
-            print(f"DEBUG: Got track data - Title: '{title}', Artist: '{artist}'")
+        print("DEBUG: Getting track data directly (not via HTTP)")
+        
+        # Use the same logic as the /api/now endpoint
+        track_data = None
+        
+        # First try to get from HISTORY (newest song event)
+        for ev in HISTORY:
+            if ev.get("type") == "song":
+                track_data = ev
+                print(f"DEBUG: Found track in history: {track_data}")
+                break
+        
+        # If no track in history, read live metadata
+        if not track_data:
+            print("DEBUG: No track in history, reading live metadata")
+            track_data = read_now()
+            print(f"DEBUG: Live metadata: {track_data}")
+        
+        if track_data:
+            title = track_data.get("title", "Unknown Title")
+            artist = track_data.get("artist", "Unknown Artist")
+            print(f"DEBUG: Extracted - Title: '{title}', Artist: '{artist}'")
         else:
-            print(f"DEBUG: /api/now failed with status {now_response.status_code}")
+            print("DEBUG: No track data found anywhere")
+            
     except Exception as e:
-        print(f"DEBUG: Error getting current track: {e}")
+        print(f"DEBUG: Error getting track data: {e}")
+        import traceback
+        traceback.print_exc()
+
+    print(f"DEBUG: Final track data - Title: '{title}', Artist: '{artist}'")
 
     # Generate DJ line
     try:
-        print(f"DEBUG: Running DJ script with: '{title}' by '{artist}'")
+        print(f"DEBUG: Running DJ script: /opt/ai-radio/gen_ai_dj_line.sh '{title}' '{artist}'")
         result = subprocess.run(
             ["/opt/ai-radio/gen_ai_dj_line.sh", title, artist],
             capture_output=True, text=True, timeout=15
         )
+        print(f"DEBUG: DJ script return code: {result.returncode}")
+        print(f"DEBUG: DJ script stdout: '{result.stdout.strip()}'")
+        print(f"DEBUG: DJ script stderr: '{result.stderr.strip()}'")
+        
         if result.returncode == 0 and result.stdout.strip():
             line = ANSI.sub('', result.stdout.strip())
-            print(f"DEBUG: DJ script output: '{line}'")
+            print(f"DEBUG: Using DJ script output: '{line}'")
         else:
             line = f"That was '{title}' by {artist}."
             print(f"DEBUG: DJ script failed, using fallback: '{line}'")
+    except subprocess.TimeoutExpired:
+        line = f"That was '{title}' by {artist}."
+        print(f"DEBUG: DJ script timed out, using fallback: '{line}'")
     except Exception as e:
         line = f"That was '{title}' by {artist}."
         print(f"DEBUG: DJ script error: {e}, using fallback: '{line}'")
@@ -441,40 +469,60 @@ def api_dj_now():
     
     try:
         # Check if ElevenLabs is available
-        if os.getenv("ELEVENLABS_API_KEY") and 'synthesize_with_elevenlabs' in globals():
+        api_key = os.getenv("ELEVENLABS_API_KEY")
+        print(f"DEBUG: ElevenLabs API key present: {bool(api_key)}")
+        
+        if api_key and 'synthesize_with_elevenlabs' in globals():
+            print("DEBUG: Trying ElevenLabs synthesis")
             if synthesize_with_elevenlabs(line, mp3):
                 audio_url = f"/tts/{os.path.basename(mp3)}"
-                print(f"DEBUG: ElevenLabs synthesis successful")
+                print(f"DEBUG: ElevenLabs synthesis successful: {audio_url}")
             else:
-                print(f"DEBUG: ElevenLabs failed, trying Piper")
+                print("DEBUG: ElevenLabs failed, falling back to Piper")
                 raise Exception("ElevenLabs failed")
         else:
-            print(f"DEBUG: No ElevenLabs, using Piper")
+            print("DEBUG: No ElevenLabs available, using Piper")
             raise Exception("No ElevenLabs")
             
-    except Exception:
+    except Exception as e:
+        print(f"DEBUG: ElevenLabs exception: {e}, trying Piper")
         # Piper fallback
         try:
             wav = os.path.join(TTS_DIR, f"intro_{ts}.wav")
-            subprocess.run(
-                ["piper", "--model", VOICE, "--output_file", wav],
-                input=line.encode("utf-8"), timeout=30, check=True
-            )
+            print(f"DEBUG: Running Piper to create {wav}")
             
-            # Try to convert to MP3
-            try:
-                subprocess.run(
-                    ["ffmpeg", "-nostdin", "-y", "-i", wav, "-codec:a", "libmp3lame", "-q:a", "3", mp3],
-                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=15, check=True
-                )
-                audio_url = f"/tts/{os.path.basename(mp3)}"
-                print(f"DEBUG: Piper + ffmpeg successful")
-            except:
-                audio_url = f"/tts/{os.path.basename(wav)}"
-                print(f"DEBUG: Piper successful (WAV only)")
+            piper_result = subprocess.run(
+                ["piper", "--model", VOICE, "--output_file", wav],
+                input=line.encode("utf-8"), 
+                capture_output=True,
+                timeout=30
+            )
+            print(f"DEBUG: Piper return code: {piper_result.returncode}")
+            if piper_result.stderr:
+                print(f"DEBUG: Piper stderr: {piper_result.stderr.decode()}")
+            
+            if piper_result.returncode == 0:
+                # Try to convert to MP3
+                try:
+                    print("DEBUG: Converting WAV to MP3")
+                    ffmpeg_result = subprocess.run(
+                        ["ffmpeg", "-nostdin", "-y", "-i", wav, "-codec:a", "libmp3lame", "-q:a", "3", mp3],
+                        capture_output=True, timeout=15
+                    )
+                    if ffmpeg_result.returncode == 0:
+                        audio_url = f"/tts/{os.path.basename(mp3)}"
+                        print(f"DEBUG: MP3 conversion successful: {audio_url}")
+                    else:
+                        audio_url = f"/tts/{os.path.basename(wav)}"
+                        print(f"DEBUG: MP3 conversion failed, using WAV: {audio_url}")
+                except Exception as ffmpeg_error:
+                    audio_url = f"/tts/{os.path.basename(wav)}"
+                    print(f"DEBUG: FFmpeg error: {ffmpeg_error}, using WAV: {audio_url}")
+            else:
+                print("DEBUG: Piper synthesis failed")
                 
-        except Exception as e:
-            print(f"DEBUG: TTS completely failed: {e}")
+        except Exception as piper_error:
+            print(f"DEBUG: Piper completely failed: {piper_error}")
     
     # Push to Liquidsoap (best effort)
     if audio_url:
@@ -482,12 +530,18 @@ def api_dj_now():
             audio_filename = os.path.basename(audio_url.replace('/tts/', ''))
             full_path = os.path.join(TTS_DIR, audio_filename)
             uri = f"file://{full_path}"
-            subprocess.run(
+            print(f"DEBUG: Pushing to Liquidsoap: {uri}")
+            
+            liq_result = subprocess.run(
                 ["nc", "127.0.0.1", "1234"],
                 input=f"tts.push {uri}\n".encode(),
+                capture_output=True,
                 timeout=3
             )
-            print(f"DEBUG: Pushed to Liquidsoap: {uri}")
+            print(f"DEBUG: Liquidsoap push result: {liq_result.returncode}")
+            if liq_result.stdout:
+                print(f"DEBUG: Liquidsoap stdout: {liq_result.stdout.decode()}")
+                
         except Exception as e:
             print(f"DEBUG: Liquidsoap push failed: {e}")
 
