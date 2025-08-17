@@ -113,7 +113,7 @@ radio = metadata.map(update_metadata, radio)
 music = radio
 
 # DJ queue source (trim any leading/ending silence so it fires cleanly)
-dj = tts_q
+dj = strip_blank(max_blank=0.1, tts_q)
 
 # Primary (song + DJ) should be track-sensitive between themselves
 primary = fallback(track_sensitive=true, [dj, music])
