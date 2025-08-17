@@ -536,7 +536,8 @@ def api_dj_now():
                 ["nc", "127.0.0.1", "1234"],
                 input=f"tts.push {uri}\n".encode(),
                 capture_output=True,
-                timeout=3
+                timeout=3,
+                check=False
             )
             print(f"DEBUG: Liquidsoap push result: {liq_result.returncode}")
             if liq_result.stdout:
