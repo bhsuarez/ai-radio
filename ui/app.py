@@ -259,6 +259,54 @@ def _fetch_online_cover(artist, album, title, size=600, timeout=6):
 
     return None
 
+import requests
+import os
+
+def synthesize_with_elevenlabs(text, output_path):
+    """
+    Synthesize speech using ElevenLabs API
+    Returns True if successful, False otherwise
+    """
+    api_key = os.getenv("ELEVENLABS_API_KEY")
+    voice_id = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # Default to Rachel
+    model = os.getenv("ELEVENLABS_MODEL", "eleven_monolingual_v1")
+    
+    if not api_key:
+        raise ValueError("ELEVENLABS_API_KEY environment variable is required")
+    
+    url = f"https://api.elevenlabs.io/v1/text-to-speech/{voice_id}"
+    
+    headers = {
+        "Accept": "audio/mpeg",
+        "Content-Type": "application/json",
+        "xi-api-key": api_key
+    }
+    
+    data = {
+        "text": text,
+        "model_id": model,
+        "voice_settings": {
+            "stability": 0.5,
+            "similarity_boost": 0.5,
+            "style": 0.0,
+            "use_speaker_boost": True
+        }
+    }
+    
+    try:
+        response = requests.post(url, json=data, headers=headers, timeout=30)
+        response.raise_for_status()
+        
+        # Write the audio content to file
+        with open(output_path, 'wb') as f:
+            f.write(response.content)
+        
+        return True
+        
+    except requests.exceptions.RequestException as e:
+        print(f"ElevenLabs API error: {e}")
+        return False
+
 # ── Routes ──────────────────────────────────────────────────────
 def _build_art_url(path: str) -> str:
     """Return a URL that always resolves to cover art (or your default)."""
@@ -357,11 +405,11 @@ def api_dj_now():
 
     # 1) What's next? (fall back to what's playing)
     try:
-        base = request.host_url.rstrip('/')  # respects your real port
-        nxt = requests.get(f"{base}/api/next", timeout=3).json()  # typically a list
+        base = request.host_url.rstrip('/')
+        nxt = requests.get(f"{base}/api/next", timeout=3).json()
         if isinstance(nxt, list) and nxt:
-            cand = nxt[0]  # first upcoming track
-        elif isinstance(nxt, dict):  # if your /api/next returns a single dict
+            cand = nxt[0]
+        elif isinstance(nxt, dict):
             cand = nxt
         else:
             cand = {}
@@ -379,10 +427,10 @@ def api_dj_now():
     title  = cand.get("title")  or "Unknown Title"
     artist = cand.get("artist") or "Unknown Artist"
 
-    # 2) Generate a DJ line (Ollama/OpenAI is inside your script)
+    # 2) Generate a DJ line (using the text-only version of your script)
     try:
         out = subprocess.check_output(
-            ["/opt/ai-radio/gen_ai_dj_line.sh", title, artist],
+            ["/opt/ai-radio/gen_ai_dj_line_elevenlabs.sh", title, artist],
             stderr=subprocess.DEVNULL, timeout=60
         ).decode("utf-8", "ignore").strip()
     except Exception:
@@ -390,46 +438,55 @@ def api_dj_now():
 
     line = ANSI.sub('', out)  # strip any ANSI control codes
 
-    # 3) TTS via Piper → WAV → MP3 (if ffmpeg available)
-    wav = os.path.join(TTS_DIR, f"intro_{ts}.wav")
+    # 3) TTS via ElevenLabs → MP3
     mp3 = os.path.join(TTS_DIR, f"intro_{ts}.mp3")
     audio_url = None
+    
     try:
-        subprocess.check_call(
-            ["piper", "--model", VOICE, "--output_file", wav],
-            input=line.encode("utf-8"), timeout=60
-        )
-        try:
-            subprocess.check_call(
-                ["ffmpeg", "-nostdin", "-y", "-i", wav, "-codec:a", "libmp3lame", "-q:a", "3", mp3],
-                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60
-            )
+        # Use ElevenLabs for synthesis
+        if synthesize_with_elevenlabs(line, mp3):
             audio_url = f"/tts/{os.path.basename(mp3)}"
-
-            # NEW — push to Liquidsoap
+            
+            # Push to Liquidsoap
             uri = f"file://{mp3}"
             subprocess.run(
                 ["nc", "127.0.0.1", "1234"],
                 input=f"tts.push {uri}\n".encode(),
                 check=True
             )
-
-        except Exception:
-            audio_url = f"/tts/{os.path.basename(wav)}"
-            uri = f"file://{wav}"
+        else:
+            # Fallback to Piper if ElevenLabs fails
+            wav = os.path.join(TTS_DIR, f"intro_{ts}.wav")
+            subprocess.check_call(
+                ["piper", "--model", VOICE, "--output_file", wav],
+                input=line.encode("utf-8"), timeout=60
+            )
+            try:
+                subprocess.check_call(
+                    ["ffmpeg", "-nostdin", "-y", "-i", wav, "-codec:a", "libmp3lame", "-q:a", "3", mp3],
+                    stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=60
+                )
+                audio_url = f"/tts/{os.path.basename(mp3)}"
+                uri = f"file://{mp3}"
+            except Exception:
+                audio_url = f"/tts/{os.path.basename(wav)}"
+                uri = f"file://{wav}"
+            
             subprocess.run(
                 ["nc", "127.0.0.1", "1234"],
                 input=f"tts.push {uri}\n".encode(),
                 check=True
             )
-    except Exception:
+            
+    except Exception as e:
+        print(f"TTS synthesis failed: {e}")
         pass  # fall back to text-only event
 
     # 4) Show it in the UI timeline immediately
     push_event({
         "type": "dj",
         "text": line,
-        "audio_url": audio_url,   # UI will render <audio> if present
+        "audio_url": audio_url,
         "time": int(time.time() * 1000),
     })
 
