@@ -167,6 +167,33 @@ def generate_dj_line_with_audio(title="Unknown", artist="Unknown Artist", album=
 
     return dj_text, audio_url
 
+def queue_audio_in_liquidsoap(audio_file):
+    """Queue audio file in Liquidsoap TTS queue"""
+    try:
+        if not audio_file or not os.path.exists(audio_file):
+            print(f"Audio file not found: {audio_file}")
+            return False
+
+        # Create file URI with full absolute path
+        file_uri = f"file://{os.path.abspath(audio_file)}"
+
+        # Queue in Liquidsoap via telnet
+        cmd = f"tts.push {file_uri}"
+        result = telnet_cmd(cmd, timeout=2)
+
+        print(f"Queued in Liquidsoap: {file_uri}")
+        print(f"Liquidsoap response: {result}")
+
+        # Check if it was actually queued
+        queue_check = telnet_cmd("tts.queue", timeout=2)
+        print(f"Queue contents after push: {queue_check}")
+
+        return True
+
+    except Exception as e:
+        print(f"Error queuing audio in Liquidsoap: {e}")
+        return False
+
 def generate_dj_line(title="Unknown", artist="Unknown Artist", album=""):
     """Generate a DJ line using AI script with template fallback"""
 
@@ -766,6 +793,98 @@ def check_folder_art(audio_file, cached_path):
 
     print(f"No album art found for: {audio_file}")
     return None
+
+def push_event(ev: dict):
+    """Insert newest-first with light de-duplication and persist."""
+    now_ms = int(time.time() * 1000)
+
+    # ... existing normalization code ...
+
+    # dedupe vs recent entries (check last 3 entries)
+    for recent in HISTORY[:3]:
+        if ev.get("type") == recent.get("type") == "song":
+            same = (
+                (ev.get("title") or "") == (recent.get("title") or "") and
+                (ev.get("artist") or "") == (recent.get("artist") or "") and
+                (ev.get("filename") or "") == (recent.get("filename") or "")
+            )
+            if same and (now_ms - int(recent.get("time", now_ms))) < DEDUP_WINDOW_MS:
+                print(f"Skipping duplicate: {ev.get('title')} by {ev.get('artist')}")
+                return
+
+    print(f"Adding to history: {ev.get('title')} by {ev.get('artist')}")
+    HISTORY.insert(0, ev)
+    del HISTORY[MAX_HISTORY:]
+
+    # Save DJ lines to file if enabled
+    if ev.get("type") == "dj" and dj_config.get("save_to_file", True):
+        try:
+            dj_text = ev.get("text", "")
+            timestamp = time.strftime('%Y-%m-%d %H:%M:%S')
+            line = f"{timestamp} - {dj_text}\n"
+
+            Path(DJ_LINES_FILE).parent.mkdir(parents=True, exist_ok=True)
+            with open(DJ_LINES_FILE, "a", encoding="utf-8") as f:
+                f.write(line)
+            print(f"Saved DJ line to file: {dj_text}")
+        except Exception as e:
+            print(f"Error saving DJ line to file: {e}")
+
+    save_history()
+
+    # IMPROVED: Only generate DJ if no recent DJ lines and auto-DJ enabled
+    if ev.get("type") == "song" and dj_config.get("auto_dj_enabled", False):
+        
+        # Check for recent DJ lines (within last 45 seconds)
+        recent_dj_lines = [
+            event for event in HISTORY[:5] 
+            if event.get("type") == "dj" and 
+            (now_ms - event.get("time", 0)) < 45000  # 45 seconds
+        ]
+        
+        if recent_dj_lines:
+            print(f"DJ: Skipping auto-generation, found recent DJ line: {recent_dj_lines[0].get('text', '')[:50]}...")
+            return
+        
+        print(f"DJ: No recent DJ lines found, generating for: {ev.get('title')} by {ev.get('artist')}")
+        
+        # Generate DJ line immediately in a separate thread
+        def generate_dj_now():
+            try:
+                print(f"DJ Thread: Starting generation for {ev.get('title')} by {ev.get('artist')}")
+                
+                dj_text, audio_url = generate_dj_line_with_audio(
+                    title=ev.get("title", "Unknown"),
+                    artist=ev.get("artist", "Unknown Artist"),
+                    album=ev.get("album", "")
+                )
+
+                if dj_text:
+                    dj_event = {
+                        "type": "dj",
+                        "text": dj_text,
+                        "time": int(time.time() * 1000),
+                        "audio_url": audio_url,
+                        "auto_generated": True
+                    }
+
+                    # Add to history without triggering another DJ line
+                    print(f"DJ Thread: Adding DJ event to history: {dj_text}")
+                    HISTORY.insert(0, dj_event)
+                    del HISTORY[MAX_HISTORY:]
+                    save_history()
+                    
+                    print(f"DJ Thread: Successfully generated DJ line: {dj_text}")
+                else:
+                    print("DJ Thread: No DJ text generated")
+                    
+            except Exception as e:
+                print(f"DJ Thread: Error generating DJ line: {e}")
+                import traceback
+                traceback.print_exc()
+
+        # Start the DJ generation in a separate thread
+        threading.Thread(target=generate_dj_now, daemon=True).start()
 
 # Add a diagnostic endpoint to check a specific file's metadata
 @app.get("/api/debug_cover")
@@ -1515,7 +1634,7 @@ def debug_dj_status():
         # Test Liquidsoap queue
         queue_status = None
         try:
-            queue_status = telnet_cmd("tts.length", timeout=2)
+            queue_status = telnet_cmd("tts.queue", timeout=2)
         except Exception as e:
             queue_status = f"Error: {str(e)}"
 
