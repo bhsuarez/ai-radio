@@ -268,7 +268,7 @@ def synthesize_with_elevenlabs(text, output_path):
     Returns True if successful, False otherwise
     """
     api_key = os.getenv("ELEVENLABS_API_KEY")
-    voice_id = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")  # Default to Rachel
+    voice_id = os.getenv("ELEVENLABS_VOICE_ID", "21m00Tcm4TlvDq8ikWAM")
     model = os.getenv("ELEVENLABS_MODEL", "eleven_monolingual_v1")
     
     if not api_key:
@@ -297,7 +297,6 @@ def synthesize_with_elevenlabs(text, output_path):
         response = requests.post(url, json=data, headers=headers, timeout=30)
         response.raise_for_status()
         
-        # Write the audio content to file
         with open(output_path, 'wb') as f:
             f.write(response.content)
         
