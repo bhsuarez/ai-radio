@@ -6,3 +6,7 @@ uv/.venv
 tts/*
 *.onnx
 *.b64
+/cache/*
+cache/*
+/cache
+cache/
