@@ -3,3 +3,4 @@
 uv/.venv
 *.mp3
 *.wav
+tts/*
