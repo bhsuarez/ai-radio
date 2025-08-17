@@ -58,7 +58,7 @@ HISTORY = []          # newest first
 UPCOMING = []         # optional future items
 
 # ── Helpers ─────────────────────────────────────────────────────
-def telnet_cmd(cmd: str, timeout=1.5) -> str:
+def telnet_cmd(cmd: str, timeout=5) -> str:
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(timeout)
     s.connect((TELNET_HOST, TELNET_PORT))
@@ -559,7 +559,7 @@ def api_dj_now():
                 ["nc", "127.0.0.1", "1234"],
                 input=f"tts.push {uri}\n".encode(),
                 capture_output=True,
-                timeout=1,
+                timeout=5,
                 check=False
             )
             print(f"DEBUG: Liquidsoap push result: {liq_result.returncode}")
