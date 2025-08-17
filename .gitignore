@@ -1,1 +1,5 @@
 .DS_Store
+/tts
+uv/.venv
+*.mp3
+*.wav
