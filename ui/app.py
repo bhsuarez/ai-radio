@@ -9,6 +9,8 @@ except Exception:
     requests = None  # online lookup disabled if requests isn't available
 from urllib.parse import quote
 
+HISTORY_PATH = "/opt/ai-radio/play_history.json"
+
 ICECAST_STATUS = "http://icecast.zorro.local:8000/status-json.xsl"
 MOUNT = "/stream.mp3"
 
@@ -348,12 +350,67 @@ def _build_art_url(path: str) -> str:
 def index():
     return send_from_directory(BASE_DIR, "index.html")
 
-@app.get("/api/history")
+def _normalize_history_item(ev):
+    """Map history file rows into what the UI expects."""
+    ev_type = ev.get("type", "song")
+    ts = (
+        ev.get("time")
+        or ev.get("played_at")
+        or int(time.time() * 1000)
+    )
+
+    if ev_type == "dj":
+        return {
+            "type": "dj",
+            "time": ts,
+            "text": ev.get("text") or ev.get("dj_text") or "",
+            "audio_url": ev.get("audio_url"),
+        }
+
+    # song
+    fn = ev.get("filename") or ev.get("file") or ""
+    art_url = f"/api/cover?file={quote(fn)}" if fn else ev.get("artwork_url")
+
+    return {
+        "type": "song",
+        "time": ts,
+        "title": ev.get("title") or "",
+        "artist": ev.get("artist") or "",
+        "album": ev.get("album") or "",
+        "filename": fn,
+        "artwork_url": art_url,
+    }
+
+
+def _load_history(limit=60):
+    try:
+        with open(HISTORY_PATH, "r") as f:
+            data = json.load(f)
+    except Exception:
+        return []
+
+    # take the newest items, normalize, sort desc by time, and dedupe
+    rows = [_normalize_history_item(x) for x in data[-(limit * 3):]]
+    rows.sort(key=lambda x: x.get("time", 0), reverse=True)
+
+    seen = set()
+    out = []
+    for r in rows:
+        # collapse duplicate songs by title+artist; keep all DJ lines
+        if r["type"] == "song":
+            key = (r.get("title", "").lower(), r.get("artist", "").lower())
+            if key in seen:
+                continue
+            seen.add(key)
+        out.append(r)
+        if len(out) >= limit:
+            break
+    return out
+
+
+@app.route("/api/history")
 def api_history():
-    # If memory empty, try to hydrate from disk
-    if not HISTORY and os.path.exists(HISTORY_FILE):
-        load_history()
-    return jsonify(HISTORY[:MAX_HISTORY])
+    return jsonify(_load_history(60))
 
 @app.route("/api/now")
 def api_now():
