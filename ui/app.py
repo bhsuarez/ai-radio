@@ -9,6 +9,9 @@ except Exception:
     requests = None  # online lookup disabled if requests isn't available
 from urllib.parse import quote
 
+ICECAST_STATUS = "http://icecast.zorro.local:8000/status-json.xsl"
+MOUNT = "/stream.mp3"
+
 # ── Config ──────────────────────────────────────────────────────
 HOST = "0.0.0.0"
 PORT = 5055
@@ -352,24 +355,33 @@ def api_history():
         load_history()
     return jsonify(HISTORY[:MAX_HISTORY])
 
-@app.get("/api/now")
+@app.route("/api/now")
 def api_now():
-    # Prefer the newest song event from memory
-    for ev in HISTORY:
-        if ev.get("type") == "song":
-            return jsonify(ev)
-    # Fallback to live metadata (works mid-track)
-    data = read_now()
-    ev = {
-        "type": "song",
-        "time": int(time.time() * 1000),
-        "title": data.get("title") or "Unknown",
-        "artist": data.get("artist") or "",
-        "album": data.get("album") or "",
-        "filename": data.get("filename") or "",
-        "artwork_url": data.get("artwork_url") or _build_art_url(data.get("filename"))
-    }
-    return jsonify(ev)
+    try:
+        r = requests.get(ICECAST_STATUS, timeout=2)
+        data = r.json()["icestats"]["source"]
+        if isinstance(data, list):
+            data = next((s for s in data if s.get("listenurl", "").endswith(MOUNT)), None)
+        # fallback if not found
+        if not data:
+            return jsonify({"title": "Unknown", "artist": "Unknown"}), 200
+
+        # Icecast sometimes puts artist+title in .title or .song
+        raw_title = data.get("title") or data.get("song", "")
+        if " - " in raw_title:
+            artist, title = raw_title.split(" - ", 1)
+        else:
+            artist, title = "", raw_title
+
+        return jsonify({
+            "title": title.strip() or "Unknown",
+            "artist": artist.strip() or "Unknown",
+            "listeners": data.get("listeners", 0),
+            "stream_start": data.get("stream_start_iso"),
+            "filename": None
+        })
+    except Exception as e:
+        return jsonify({"title": "Unknown", "artist": "Unknown", "error": str(e)}), 200
 
 @app.get("/api/next")
 def api_next():
