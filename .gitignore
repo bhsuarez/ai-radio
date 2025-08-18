@@ -1,1 +1,14 @@
 .DS_Store
+/tts
+ui/.venv
+ui/__pycache__
+*.mp3
+*.wav
+tts/*
+*.onnx
+*.b64
+/cache/*
+cache/*
+/cache
+cache/
+*.m3u
