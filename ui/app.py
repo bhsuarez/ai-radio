@@ -1,12 +1,8 @@
 #!/usr/bin/env python3
-import os, json, socket, time, hashlib, io, re, subprocess
+import os, json, socket, time, hashlib, io, re, requests, subprocess
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory, send_file, abort
-try:
-    import requests
-except Exception:
-    requests = None  # online lookup disabled if requests isn't available
 from urllib.parse import quote
 
 HISTORY_PATH = "/opt/ai-radio/play_history.json"
@@ -185,6 +181,20 @@ def read_now() -> dict:
     data.setdefault("title", "Unknown title")
     data.setdefault("artist", "Unknown artist")
     return data
+
+def _read_history():
+    try:
+        with open(HISTORY_PATH, "r") as f:
+            return json.load(f)
+    except Exception:
+        return []
+
+def _write_history(rows):
+    os.makedirs(os.path.dirname(HISTORY_PATH), exist_ok=True)
+    tmp = HISTORY_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(rows, f)
+    os.replace(tmp, HISTORY_PATH)
 
 def push_event(ev: dict):
     """Insert newest-first with light de-duplication and persist to disk."""
@@ -408,6 +418,36 @@ def _load_history(limit=60):
     return out
 
 
+@app.route("/api/event")
+def api_event():
+    """Ingest events from Liquidsoap (announce_song/after_song)."""
+    ev_type = request.args.get("type", "song")
+    now_ms = int(time.time() * 1000)
+
+    if ev_type == "song":
+        row = {
+            "type": "song",
+            "time": now_ms,  # always stamp
+            "title": request.args.get("title", "")[:512],
+            "artist": request.args.get("artist", "")[:512],
+            "album": request.args.get("album", "")[:512],
+            "filename": request.args.get("filename", ""),
+        }
+    elif ev_type == "dj":
+        row = {
+            "type": "dj",
+            "time": now_ms,
+            "text": request.args.get("text", "")[:2000],
+            "audio_url": request.args.get("audio_url"),
+        }
+    else:
+        return jsonify({"ok": False, "error": "unknown type"}), 400
+
+    hist = _read_history()
+    hist.append(row)
+    _write_history(hist)
+    return jsonify({"ok": True})
+
 @app.route("/api/history")
 def api_history():
     return jsonify(_load_history(60))
@@ -485,13 +525,6 @@ def log_event():
     data = request.get_json(force=True) or {}
     push_event(data)
     return {"ok": True}
-
-from flask import jsonify, request
-import os, time, re, subprocess, requests
-
-ANSI = re.compile(r'\x1B\[[0-9;?]*[ -/]*[@-~]')
-TTS_DIR = "/opt/ai-radio/tts"
-VOICE   = "/mnt/music/ai-dj/piper_voices/en/en_US/norman/medium/en_US-norman-medium.onnx"
 
 @app.post("/api/dj-now")
 def api_dj_now():
