@@ -36,7 +36,6 @@ def announce_song(m)
   ignore(process.run("python3 /opt/ai-radio/post_event.py \"" ^
                      artist ^ "\" \"" ^ title ^ "\" \"" ^ album ^ "\" \"" ^ file ^ "\""))
 end
-all_music = source.on_metadata(all_music, announce_song)
 
 # Simple log when sine fallback is active (kept tiny)
 def log_sine(_)
@@ -66,23 +65,6 @@ def after_song(m)
   ))
 end
 
-# Attach the hook to your music source (do this once, after you define the source)
-#all_music = source.on_metadata(all_music, after_song)
-
-# --- Chain / processing -------------------------------------------------------
-# Smooth transitions so the mount never drops between items
-smooth_music = crossfade(all_music)
-
-# 1) song event -> Flask UI
-smooth_music = source.on_metadata(smooth_music, announce_song)
-
-# 2) DJ intro generator (non‑blocking)
-smooth_music = source.on_metadata(smooth_music, after_song)
-
-# Main fallback: play TTS inserts when present, else music, else sine
-# radio = fallback(track_sensitive=false, [tts_q, smooth_music, sine_src])   <-- remove this
-radio = smooth_music
-
 # Remove all entries for key k from association-list m
 def rm_key(m, k)
   list.filter(fun (kv) -> fst(kv) != k, m)
@@ -106,19 +88,23 @@ def update_metadata(m)
   m
 end
 
-# Keep your original radio pipeline with metadata
-radio = metadata.map(update_metadata, radio)
+# --- Chain / processing -------------------------------------------------------
+# Apply metadata updates to music source
+all_music = metadata.map(update_metadata, all_music)
 
-# Preserve your final music pipeline (with metadata applied)
-music = radio
+# Add metadata announcements
+all_music = source.on_metadata(all_music, announce_song)
 
-# DJ queue source (trim any leading/ending silence so it fires cleanly)
-dj = tts_q
+# Add DJ intro generator (commented out for now to test basic functionality)
+# all_music = source.on_metadata(all_music, after_song)
 
-# Primary (song + DJ) should be track-sensitive between themselves
-primary = fallback(track_sensitive=true, [dj, music])
+# Smooth transitions so the mount never drops between items
+smooth_music = crossfade(all_music)
 
-# Sine only as a last resort, but NOT track-sensitive so we can bail out instantly
+# Primary source with DJ inserts
+primary = fallback(track_sensitive=true, [tts_q, smooth_music])
+
+# Final radio output with sine fallback
 radio = fallback(track_sensitive=false, [primary, sine_src])
 
 # --- Output -------------------------------------------------------------------
