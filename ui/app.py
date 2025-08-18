@@ -425,12 +425,15 @@ def synthesize_with_elevenlabs(text, output_path):
         return False
 
 # ── Routes ──────────────────────────────────────────────────────
-def _build_art_url(path: str) -> str:
+def _build_art_url(path: str, base_url: str = None) -> str:
     """Return a URL that always resolves to cover art (or your default)."""
+    if not base_url:
+        base_url = "http://localhost:5055"  # Default fallback
+    
     if path and os.path.isabs(path) and os.path.exists(path):
-        return request.url_root.rstrip("/") + "/api/cover?file=" + quote(path)
+        return base_url.rstrip("/") + "/api/cover?file=" + quote(path)
     # no valid file → use your station default
-    return request.url_root.rstrip("/") + "/static/station-cover.jpg"
+    return base_url.rstrip("/") + "/static/station-cover.jpg"
 
 @app.route("/")
 def index():
@@ -527,6 +530,14 @@ def api_next():
         if not track_data.get('filename'):
             return jsonify([])
         
+        # Build artwork URL safely
+        try:
+            # Try to use request context if available
+            artwork_url = _build_art_url(track_data.get('filename', ''))
+        except RuntimeError:
+            # Outside request context, use fallback
+            artwork_url = _build_art_url(track_data.get('filename', ''), "http://localhost:5055")
+        
         # Build next track info
         next_track = {
             "type": "upcoming",
@@ -536,7 +547,7 @@ def api_next():
             "year": track_data.get('year', ''),
             "genre": track_data.get('genre', ''),
             "filename": track_data.get('filename', ''),
-            "artwork_url": _build_art_url(track_data.get('filename', '')),
+            "artwork_url": artwork_url,
             "time": int(time.time() * 1000) + 30000,  # Rough estimate: 30s in future
             "request_id": next_rid,
             "status": track_data.get('status', 'ready')
@@ -1172,110 +1183,112 @@ def auto_dj_worker():
     
     while AUTO_DJ_ENABLED:
         try:
-            # Get current next track
-            next_response = api_next()
-            next_tracks = next_response.get_json() if hasattr(next_response, 'get_json') else []
-            
-            if not next_tracks:
-                time.sleep(5)  # No next track, wait and retry
-                continue
+            # Run within Flask app context to access request/url functions
+            with app.app_context():
+                # Get current next track
+                next_response = api_next()
+                next_tracks = next_response.get_json() if hasattr(next_response, 'get_json') else []
                 
-            next_track = next_tracks[0]
-            next_rid = next_track.get('request_id')
-            
-            # Check if we've already processed this request ID
-            if next_rid and next_rid != LAST_PROCESSED_RID:
-                print(f"🎵 New track detected: RID {next_rid} - {next_track.get('artist')} - {next_track.get('title')}")
+                if not next_tracks:
+                    time.sleep(5)  # No next track, wait and retry
+                    continue
+                    
+                next_track = next_tracks[0]
+                next_rid = next_track.get('request_id')
                 
-                # Generate and queue DJ line for this upcoming track
-                try:
-                    # Generate the DJ line
-                    title = next_track.get('title', 'Unknown Title')
-                    artist = next_track.get('artist', 'Unknown Artist')
+                # Check if we've already processed this request ID
+                if next_rid and next_rid != LAST_PROCESSED_RID:
+                    print(f"🎵 New track detected: RID {next_rid} - {next_track.get('artist')} - {next_track.get('title')}")
                     
-                    print(f"🎙️ Generating DJ line for: {artist} - {title}")
-                    
-                    # Use your existing DJ line generation
-                    ts = int(time.time())
-                    result = subprocess.run(
-                        ["/opt/ai-radio/gen_ai_dj_line.sh", title, artist],
-                        capture_output=True, text=True, timeout=35
-                    )
-                    
-                    if result.returncode == 0 and result.stdout.strip():
-                        line = result.stdout.strip()
-                    else:
-                        line = f"Coming up next: '{title}' by {artist}."
-                    
-                    print(f"🎙️ DJ line generated: {line[:100]}...")
-                    
-                    # Synthesize and queue the audio
-                    os.makedirs(TTS_DIR, exist_ok=True)
-                    mp3_path = os.path.join(TTS_DIR, f"auto_intro_{ts}.mp3")
-                    audio_url = None
-                    
-                    # Try ElevenLabs first, then Piper fallback
+                    # Generate and queue DJ line for this upcoming track
                     try:
-                        api_key = os.getenv("ELEVENLABS_API_KEY")
-                        if api_key and synthesize_with_elevenlabs(line, mp3_path):
-                            audio_url = f"/tts/{os.path.basename(mp3_path)}"
-                            print(f"🔊 ElevenLabs synthesis successful")
+                        # Generate the DJ line
+                        title = next_track.get('title', 'Unknown Title')
+                        artist = next_track.get('artist', 'Unknown Artist')
+                        
+                        print(f"🎙️ Generating DJ line for: {artist} - {title}")
+                        
+                        # Use your existing DJ line generation
+                        ts = int(time.time())
+                        result = subprocess.run(
+                            ["/opt/ai-radio/gen_ai_dj_line.sh", title, artist],
+                            capture_output=True, text=True, timeout=35
+                        )
+                        
+                        if result.returncode == 0 and result.stdout.strip():
+                            line = result.stdout.strip()
                         else:
-                            raise Exception("ElevenLabs not available")
-                    except Exception:
-                        # Piper fallback
-                        wav_path = os.path.join(TTS_DIR, f"auto_intro_{ts}.wav")
+                            line = f"Coming up next: '{title}' by {artist}."
+                        
+                        print(f"🎙️ DJ line generated: {line[:100]}...")
+                        
+                        # Synthesize and queue the audio
+                        os.makedirs(TTS_DIR, exist_ok=True)
+                        mp3_path = os.path.join(TTS_DIR, f"auto_intro_{ts}.mp3")
+                        audio_url = None
+                        
+                        # Try ElevenLabs first, then Piper fallback
                         try:
-                            piper_result = subprocess.run(
-                                ["piper", "--model", VOICE, "--output_file", wav_path],
-                                input=line.encode("utf-8"), 
-                                capture_output=True, timeout=30
-                            )
-                            if piper_result.returncode == 0:
-                                # Convert to MP3
-                                ffmpeg_result = subprocess.run(
-                                    ["ffmpeg", "-nostdin", "-y", "-i", wav_path, "-codec:a", "libmp3lame", "-q:a", "3", mp3_path],
-                                    capture_output=True, timeout=15
+                            api_key = os.getenv("ELEVENLABS_API_KEY")
+                            if api_key and synthesize_with_elevenlabs(line, mp3_path):
+                                audio_url = f"/tts/{os.path.basename(mp3_path)}"
+                                print(f"🔊 ElevenLabs synthesis successful")
+                            else:
+                                raise Exception("ElevenLabs not available")
+                        except Exception:
+                            # Piper fallback
+                            wav_path = os.path.join(TTS_DIR, f"auto_intro_{ts}.wav")
+                            try:
+                                piper_result = subprocess.run(
+                                    ["piper", "--model", VOICE, "--output_file", wav_path],
+                                    input=line.encode("utf-8"), 
+                                    capture_output=True, timeout=30
                                 )
-                                if ffmpeg_result.returncode == 0:
-                                    audio_url = f"/tts/{os.path.basename(mp3_path)}"
-                                    print(f"🔊 Piper synthesis successful")
-                        except Exception as e:
-                            print(f"🔊 TTS synthesis failed: {e}")
-                    
-                    # Queue in Liquidsoap for automatic playback
-                    if audio_url:
-                        try:
-                            full_path = os.path.join(TTS_DIR, os.path.basename(audio_url.replace('/tts/', '')))
-                            
-                            # Push to TTS queue in Liquidsoap
-                            subprocess.run(
-                                ["nc", "127.0.0.1", "1234"],
-                                input=f"tts.push file://{full_path}\nquit\n".encode(),
-                                capture_output=True, timeout=5, check=False
-                            )
-                            print(f"📻 Queued in Liquidsoap: {full_path}")
-                        except Exception as e:
-                            print(f"📻 Failed to queue in Liquidsoap: {e}")
-                    
-                    # Log the event
-                    push_event({
-                        "type": "dj_auto",
-                        "text": line,
-                        "audio_url": audio_url,
-                        "for_track": f"{artist} - {title}",
-                        "for_request_id": next_rid,
-                        "time": int(time.time() * 1000),
-                    })
-                    
-                    # Mark this RID as processed
-                    LAST_PROCESSED_RID = next_rid
-                    print(f"✅ Auto-DJ completed for RID {next_rid}")
-                    
-                except Exception as e:
-                    print(f"❌ Auto-DJ generation failed: {e}")
-                    import traceback
-                    traceback.print_exc()
+                                if piper_result.returncode == 0:
+                                    # Convert to MP3
+                                    ffmpeg_result = subprocess.run(
+                                        ["ffmpeg", "-nostdin", "-y", "-i", wav_path, "-codec:a", "libmp3lame", "-q:a", "3", mp3_path],
+                                        capture_output=True, timeout=15
+                                    )
+                                    if ffmpeg_result.returncode == 0:
+                                        audio_url = f"/tts/{os.path.basename(mp3_path)}"
+                                        print(f"🔊 Piper synthesis successful")
+                            except Exception as e:
+                                print(f"🔊 TTS synthesis failed: {e}")
+                        
+                        # Queue in Liquidsoap for automatic playback
+                        if audio_url:
+                            try:
+                                full_path = os.path.join(TTS_DIR, os.path.basename(audio_url.replace('/tts/', '')))
+                                
+                                # Push to TTS queue in Liquidsoap
+                                subprocess.run(
+                                    ["nc", "127.0.0.1", "1234"],
+                                    input=f"tts.push file://{full_path}\nquit\n".encode(),
+                                    capture_output=True, timeout=5, check=False
+                                )
+                                print(f"📻 Queued in Liquidsoap: {full_path}")
+                            except Exception as e:
+                                print(f"📻 Failed to queue in Liquidsoap: {e}")
+                        
+                        # Log the event
+                        push_event({
+                            "type": "dj_auto",
+                            "text": line,
+                            "audio_url": audio_url,
+                            "for_track": f"{artist} - {title}",
+                            "for_request_id": next_rid,
+                            "time": int(time.time() * 1000),
+                        })
+                        
+                        # Mark this RID as processed
+                        LAST_PROCESSED_RID = next_rid
+                        print(f"✅ Auto-DJ completed for RID {next_rid}")
+                        
+                    except Exception as e:
+                        print(f"❌ Auto-DJ generation failed: {e}")
+                        import traceback
+                        traceback.print_exc()
             
             # Wait before checking again
             time.sleep(10)  # Check every 10 seconds
