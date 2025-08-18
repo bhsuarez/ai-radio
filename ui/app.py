@@ -1155,9 +1155,192 @@ def api_debug_queue():
     except Exception as e:
         return jsonify({"error": str(e), "timestamp": int(time.time() * 1000)})
 
-# ── Startup ─────────────────────────────────────────────────────
+# ── Auto DJ System ──────────────────────────────────────────────────────────
+import threading
+import time
+
+# Global state for automatic DJ system
+AUTO_DJ_ENABLED = True
+AUTO_DJ_THREAD = None
+LAST_PROCESSED_RID = None
+
+def auto_dj_worker():
+    """Background thread that monitors track changes and generates DJ lines automatically"""
+    global LAST_PROCESSED_RID
+    
+    print("🎙️ Auto-DJ system started")
+    
+    while AUTO_DJ_ENABLED:
+        try:
+            # Get current next track
+            next_response = api_next()
+            next_tracks = next_response.get_json() if hasattr(next_response, 'get_json') else []
+            
+            if not next_tracks:
+                time.sleep(5)  # No next track, wait and retry
+                continue
+                
+            next_track = next_tracks[0]
+            next_rid = next_track.get('request_id')
+            
+            # Check if we've already processed this request ID
+            if next_rid and next_rid != LAST_PROCESSED_RID:
+                print(f"🎵 New track detected: RID {next_rid} - {next_track.get('artist')} - {next_track.get('title')}")
+                
+                # Generate and queue DJ line for this upcoming track
+                try:
+                    # Generate the DJ line
+                    title = next_track.get('title', 'Unknown Title')
+                    artist = next_track.get('artist', 'Unknown Artist')
+                    
+                    print(f"🎙️ Generating DJ line for: {artist} - {title}")
+                    
+                    # Use your existing DJ line generation
+                    ts = int(time.time())
+                    result = subprocess.run(
+                        ["/opt/ai-radio/gen_ai_dj_line.sh", title, artist],
+                        capture_output=True, text=True, timeout=35
+                    )
+                    
+                    if result.returncode == 0 and result.stdout.strip():
+                        line = result.stdout.strip()
+                    else:
+                        line = f"Coming up next: '{title}' by {artist}."
+                    
+                    print(f"🎙️ DJ line generated: {line[:100]}...")
+                    
+                    # Synthesize and queue the audio
+                    os.makedirs(TTS_DIR, exist_ok=True)
+                    mp3_path = os.path.join(TTS_DIR, f"auto_intro_{ts}.mp3")
+                    audio_url = None
+                    
+                    # Try ElevenLabs first, then Piper fallback
+                    try:
+                        api_key = os.getenv("ELEVENLABS_API_KEY")
+                        if api_key and synthesize_with_elevenlabs(line, mp3_path):
+                            audio_url = f"/tts/{os.path.basename(mp3_path)}"
+                            print(f"🔊 ElevenLabs synthesis successful")
+                        else:
+                            raise Exception("ElevenLabs not available")
+                    except Exception:
+                        # Piper fallback
+                        wav_path = os.path.join(TTS_DIR, f"auto_intro_{ts}.wav")
+                        try:
+                            piper_result = subprocess.run(
+                                ["piper", "--model", VOICE, "--output_file", wav_path],
+                                input=line.encode("utf-8"), 
+                                capture_output=True, timeout=30
+                            )
+                            if piper_result.returncode == 0:
+                                # Convert to MP3
+                                ffmpeg_result = subprocess.run(
+                                    ["ffmpeg", "-nostdin", "-y", "-i", wav_path, "-codec:a", "libmp3lame", "-q:a", "3", mp3_path],
+                                    capture_output=True, timeout=15
+                                )
+                                if ffmpeg_result.returncode == 0:
+                                    audio_url = f"/tts/{os.path.basename(mp3_path)}"
+                                    print(f"🔊 Piper synthesis successful")
+                        except Exception as e:
+                            print(f"🔊 TTS synthesis failed: {e}")
+                    
+                    # Queue in Liquidsoap for automatic playback
+                    if audio_url:
+                        try:
+                            full_path = os.path.join(TTS_DIR, os.path.basename(audio_url.replace('/tts/', '')))
+                            
+                            # Push to TTS queue in Liquidsoap
+                            subprocess.run(
+                                ["nc", "127.0.0.1", "1234"],
+                                input=f"tts.push file://{full_path}\nquit\n".encode(),
+                                capture_output=True, timeout=5, check=False
+                            )
+                            print(f"📻 Queued in Liquidsoap: {full_path}")
+                        except Exception as e:
+                            print(f"📻 Failed to queue in Liquidsoap: {e}")
+                    
+                    # Log the event
+                    push_event({
+                        "type": "dj_auto",
+                        "text": line,
+                        "audio_url": audio_url,
+                        "for_track": f"{artist} - {title}",
+                        "for_request_id": next_rid,
+                        "time": int(time.time() * 1000),
+                    })
+                    
+                    # Mark this RID as processed
+                    LAST_PROCESSED_RID = next_rid
+                    print(f"✅ Auto-DJ completed for RID {next_rid}")
+                    
+                except Exception as e:
+                    print(f"❌ Auto-DJ generation failed: {e}")
+                    import traceback
+                    traceback.print_exc()
+            
+            # Wait before checking again
+            time.sleep(10)  # Check every 10 seconds
+            
+        except Exception as e:
+            print(f"❌ Auto-DJ worker error: {e}")
+            time.sleep(15)  # Wait longer on errors
+    
+    print("🎙️ Auto-DJ system stopped")
+
+def start_auto_dj():
+    """Start the automatic DJ system"""
+    global AUTO_DJ_THREAD, AUTO_DJ_ENABLED
+    
+    if AUTO_DJ_THREAD and AUTO_DJ_THREAD.is_alive():
+        print("Auto-DJ already running")
+        return False
+    
+    AUTO_DJ_ENABLED = True
+    AUTO_DJ_THREAD = threading.Thread(target=auto_dj_worker, daemon=True)
+    AUTO_DJ_THREAD.start()
+    print("🎙️ Auto-DJ system started in background")
+    return True
+
+def stop_auto_dj():
+    """Stop the automatic DJ system"""
+    global AUTO_DJ_ENABLED
+    AUTO_DJ_ENABLED = False
+    print("🎙️ Auto-DJ system stopping...")
+
+@app.post("/api/auto-dj/start")
+def api_start_auto_dj():
+    """Start automatic DJ line generation"""
+    success = start_auto_dj()
+    return jsonify({"ok": success, "status": "started" if success else "already_running"})
+
+@app.post("/api/auto-dj/stop") 
+def api_stop_auto_dj():
+    """Stop automatic DJ line generation"""
+    stop_auto_dj()
+    return jsonify({"ok": True, "status": "stopping"})
+
+@app.get("/api/auto-dj/status")
+def api_auto_dj_status():
+    """Check auto-DJ system status"""
+    return jsonify({
+        "enabled": AUTO_DJ_ENABLED,
+        "thread_alive": AUTO_DJ_THREAD.is_alive() if AUTO_DJ_THREAD else False,
+        "last_processed_rid": LAST_PROCESSED_RID
+    })
+
+# Auto-start the DJ system when Flask starts
+def init_auto_dj():
+    """Initialize auto-DJ system on startup"""
+    # Wait a bit for Flask to fully start
+    time.sleep(3)
+    start_auto_dj()
+
+# ── Startup ──────────────────────────────────────────────────────────────────
 load_history()
 
-# ── Main ────────────────────────────────────────────────────────
+# Start auto-DJ in background when app starts
+startup_thread = threading.Thread(target=init_auto_dj, daemon=True)
+startup_thread.start()
+
+# ── Main ──────────────────────────────────────────────────────────────────────
 if __name__ == "__main__":
     app.run(host=HOST, port=PORT)
