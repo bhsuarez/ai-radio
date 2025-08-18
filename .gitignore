@@ -10,3 +10,4 @@ tts/*
 cache/*
 /cache
 cache/
+*.m3u

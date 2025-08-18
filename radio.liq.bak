@@ -1,7 +1,12 @@
+
+#set("decoder.mad", false)
+#set("decoder.ffmpeg", true)
+#set("decoder.faad", true)
+
 # Prefer ffmpeg over mad for decoding MP3/metadata with embedded images
-set("decoder.mad", false)
-set("decoder.ffmpeg", true)
-set("decoder.faad", true)
+settings.decoder.mad.set(false)
+settings.decoder.ffmpeg.set(true)
+settings.decoder.faad.set(true)
 
 # --- Core / logging -----------------------------------------------------------
 settings.init.allow_root.set(true)
@@ -69,9 +74,30 @@ end
 # Attach the hook to your music source (do this once, after you define the source)
 #all_music = source.on_metadata(all_music, after_song)
 
+# --- PRE-DJ transition: speak about the NEXT track (b) right before it plays
+def pre_dj(a,b) =
+  mb = metadata.export(b)
+
+  next_title  = metadata.title(mb)
+  next_artist = metadata.artist(mb)
+  next_album  = list.assoc(?default="", "album", mb)
+  next_file   = metadata.filename(mb)
+
+  ignore(http.get(
+    "http://127.0.0.1:5000/dj-now?"
+    ^ "title="  ^ url.encode(next_title)  ^ "&"
+    ^ "artist=" ^ url.encode(next_artist) ^ "&"
+    ^ "album="  ^ url.encode(next_album)  ^ "&"
+    ^ "file="   ^ url.encode(next_file)
+  ))
+
+  single("/var/tmp/dj_next.mp3")
+end
+
 # --- Chain / processing -------------------------------------------------------
 # Smooth transitions so the mount never drops between items
-smooth_music = crossfade(all_music)
+#smooth_music = crossfade(all_music)
+smooth_music = crossfade(transitions=[pre_dj], all_music)
 
 # 1) song event -> Flask UI
 smooth_music = source.on_metadata(smooth_music, announce_song)
@@ -113,7 +139,27 @@ radio = metadata.map(update_metadata, radio)
 music = radio
 
 # DJ queue source (trim any leading/ending silence so it fires cleanly)
-dj = strip_blank(max_blank=0.1, tts_q)
+dj = tts_q
+
+# --- PRE-DJ transition: speak about the NEXT track (b) right before it plays
+def pre_dj(a,b) =
+  mb = metadata.export(b)
+
+  next_title  = metadata.title(mb)
+  next_artist = metadata.artist(mb)
+  next_album  = list.assoc(?default="", "album", mb)
+  next_file   = metadata.filename(mb)
+
+  ignore(http.get(
+    "http://127.0.0.1:5000/dj-now?"
+    ^ "title="  ^ url.encode(next_title)  ^ "&"
+    ^ "artist=" ^ url.encode(next_artist) ^ "&"
+    ^ "album="  ^ url.encode(next_album)  ^ "&"
+    ^ "file="   ^ url.encode(next_file)
+  ))
+
+  single("/var/tmp/dj_next.mp3")
+end
 
 # Primary (song + DJ) should be track-sensitive between themselves
 primary = fallback(track_sensitive=true, [dj, music])
