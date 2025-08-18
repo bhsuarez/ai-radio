@@ -447,7 +447,82 @@ def api_now():
 
 @app.get("/api/next")
 def api_next():
-    return jsonify(UPCOMING)
+    """
+    Get the next track using Liquidsoap's request queue pattern
+    Always returns the highest RID (request ID) as the next track
+    """
+    try:
+        # Get all request IDs
+        queue_raw = telnet_cmd("request.all")
+        print(f"DEBUG: Raw queue: {queue_raw}")
+        
+        if not queue_raw or queue_raw.strip() == "":
+            return jsonify([])
+        
+        # Parse request IDs and find the highest one (that's next)
+        request_ids = []
+        for part in queue_raw.strip().split():
+            try:
+                request_ids.append(int(part))
+            except ValueError:
+                continue
+        
+        if len(request_ids) < 2:
+            return jsonify([])  # Need at least 2 requests for current + next
+        
+        # Sort to find current (lowest) and next (highest)
+        request_ids.sort()
+        current_rid = request_ids[0]  # Lower RID = currently playing
+        next_rid = request_ids[-1]    # Highest RID = next track
+        
+        print(f"DEBUG: Current RID: {current_rid}, Next RID: {next_rid}")
+        
+        # Get metadata for the next track
+        metadata_raw = telnet_cmd(f"request.metadata {next_rid}")
+        print(f"DEBUG: Next track metadata: {metadata_raw[:200]}...")
+        
+        if not metadata_raw:
+            return jsonify([])
+        
+        # Parse metadata
+        track_data = {}
+        for line in metadata_raw.split('\n'):
+            line = line.strip()
+            if '=' in line and not line.startswith('END'):
+                try:
+                    key, value = line.split('=', 1)
+                    key = key.strip()
+                    value = value.strip().strip('"')
+                    track_data[key] = value
+                except ValueError:
+                    continue
+        
+        if not track_data.get('filename'):
+            return jsonify([])
+        
+        # Build next track info
+        next_track = {
+            "type": "upcoming",
+            "title": track_data.get('title', 'Unknown Title'),
+            "artist": track_data.get('artist', 'Unknown Artist'),
+            "album": track_data.get('album', ''),
+            "year": track_data.get('year', ''),
+            "genre": track_data.get('genre', ''),
+            "filename": track_data.get('filename', ''),
+            "artwork_url": _build_art_url(track_data.get('filename', '')),
+            "time": int(time.time() * 1000) + 30000,  # Rough estimate: 30s in future
+            "request_id": next_rid,
+            "status": track_data.get('status', 'ready')
+        }
+        
+        print(f"DEBUG: Next track: {next_track['artist']} - {next_track['title']}")
+        return jsonify([next_track])  # Return as array for UI compatibility
+        
+    except Exception as e:
+        print(f"DEBUG: Error in api_next: {e}")
+        import traceback
+        traceback.print_exc()
+        return jsonify([])
 
 @app.get("/api/tts_queue")
 def tts_queue_get():
@@ -653,6 +728,80 @@ def api_dj_now():
 
     print(f"DEBUG: Final result - Text: '{line}', Audio URL: {audio_url}")
     return jsonify(ok=True, queued_text=line, audio_url=audio_url), 200
+
+@app.post("/api/dj-next")
+def api_dj_next():
+    """
+    Generate DJ line for the upcoming track (not current)
+    This allows pre-generating intros before the track starts
+    """
+    try:
+        # Get the next track
+        next_tracks = api_next().get_json()
+        if not next_tracks:
+            return jsonify({"ok": False, "error": "No next track available"}), 400
+        
+        next_track = next_tracks[0]
+        title = next_track.get('title', 'Unknown Title')
+        artist = next_track.get('artist', 'Unknown Artist')
+        
+        print(f"DEBUG: Generating DJ line for NEXT track: {artist} - {title}")
+        
+        # Generate DJ line for upcoming track
+        ts = int(time.time())
+        try:
+            result = subprocess.run(
+                ["/opt/ai-radio/gen_ai_dj_line.sh", title, artist],
+                capture_output=True, text=True, timeout=35
+            )
+            
+            if result.returncode == 0 and result.stdout.strip():
+                line = result.stdout.strip()
+                print(f"DEBUG: Generated intro for next track: '{line}'")
+            else:
+                line = f"Coming up next: '{title}' by {artist}."
+                print(f"DEBUG: Using fallback intro: '{line}'")
+                
+        except Exception as e:
+            line = f"Coming up next: '{title}' by {artist}."
+            print(f"DEBUG: DJ script error: {e}, using fallback: '{line}'")
+        
+        # Store but don't queue yet - this is for preparation
+        push_event({
+            "type": "dj_prepared",
+            "text": line,
+            "for_track": f"{artist} - {title}",
+            "for_request_id": next_track.get('request_id'),
+            "audio_url": None,
+            "time": int(time.time() * 1000),
+        })
+        
+        return jsonify({
+            "ok": True, 
+            "prepared_text": line,
+            "for_track": f"{artist} - {title}",
+            "next_track": next_track
+        }), 200
+        
+    except Exception as e:
+        print(f"DEBUG: Error in dj-next: {e}")
+        return jsonify({"ok": False, "error": str(e)}), 500
+
+
+@app.post("/api/dj-smart")  
+def api_dj_smart():
+    """
+    Smart DJ system that decides whether to intro current or upcoming track
+    """
+    try:
+        # Get current track progress to decide timing
+        # You could extend this to check track duration and time remaining
+        
+        # For now, default to current track behavior
+        return api_dj_now()
+        
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.get("/api/cover")
 def api_cover():
