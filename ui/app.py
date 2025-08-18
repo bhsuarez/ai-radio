@@ -11,7 +11,7 @@ from urllib.parse import quote
 
 HISTORY_PATH = "/opt/ai-radio/play_history.json"
 
-ICECAST_STATUS = "http://icecast.zorro.local:8000/status-json.xsl"
+ICECAST_STATUS = "http://icecast.zorro.network:8000/status-json.xsl"
 MOUNT = "/stream.mp3"
 
 # ── Config ──────────────────────────────────────────────────────
