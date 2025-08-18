@@ -539,8 +539,6 @@ def find_file_by_metadata_fast(title, artist, music_root="/mnt/music"):
     return None
 
 # ── Helpers ─────────────────────────────────────────────────────
-def telnet_cmd(cmd: str, timeout=5) -> str:
-    """Send command to Liquidsoap telnet interface with robust error handling."""
 def telnet_cmd(cmd: str, timeout=1.5) -> str:
     """Send a single telnet command and close (we append 'quit')."""
 
@@ -1711,64 +1709,6 @@ def api_dj_now():
 
     print(f"DEBUG: Final result - Text: '{line}', Audio URL: {audio_url}")
     return jsonify(ok=True, queued_text=line, audio_url=audio_url), 200
-
-@app.post("/api/dj-next")
-def api_dj_next():
-    """
-    Generate DJ line for the upcoming track (not current)
-    This allows pre-generating intros before the track starts
-    """
-    try:
-        # Get the next track
-        next_tracks = api_next().get_json()
-        if not next_tracks:
-            return jsonify({"ok": False, "error": "No next track available"}), 400
-        
-        next_track = next_tracks[0]
-        title = next_track.get('title', 'Unknown Title')
-        artist = next_track.get('artist', 'Unknown Artist')
-        
-        print(f"DEBUG: Generating DJ line for NEXT track: {artist} - {title}")
-        
-        # Generate DJ line for upcoming track
-        ts = int(time.time())
-        try:
-            result = subprocess.run(
-                ["/opt/ai-radio/gen_ai_dj_line.sh", title, artist],
-                capture_output=True, text=True, timeout=35
-            )
-            
-            if result.returncode == 0 and result.stdout.strip():
-                line = result.stdout.strip()
-                print(f"DEBUG: Generated intro for next track: '{line}'")
-            else:
-                line = f"Coming up next: '{title}' by {artist}."
-                print(f"DEBUG: Using fallback intro: '{line}'")
-                
-        except Exception as e:
-            line = f"Coming up next: '{title}' by {artist}."
-            print(f"DEBUG: DJ script error: {e}, using fallback: '{line}'")
-        
-        # Store but don't queue yet - this is for preparation
-        push_event({
-            "type": "dj_prepared",
-            "text": line,
-            "for_track": f"{artist} - {title}",
-            "for_request_id": next_track.get('request_id'),
-            "audio_url": None,
-            "time": int(time.time() * 1000),
-        })
-        
-        return jsonify({
-            "ok": True, 
-            "prepared_text": line,
-            "for_track": f"{artist} - {title}",
-            "next_track": next_track
-        }), 200
-        
-    except Exception as e:
-        print(f"DEBUG: Error in dj-next: {e}")
-        return jsonify({"ok": False, "error": str(e)}), 500
 
 
 @app.post("/api/dj-smart")  
