@@ -59,23 +59,56 @@ UPCOMING = []         # optional future items
 
 # ── Helpers ─────────────────────────────────────────────────────
 def telnet_cmd(cmd: str, timeout=5) -> str:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(timeout)
-    s.connect((TELNET_HOST, TELNET_PORT))
-    s.sendall((cmd + "\n").encode())
-    chunks = []
+    """Send command to Liquidsoap telnet interface with robust error handling."""
     try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.settimeout(timeout)
+        s.connect((TELNET_HOST, TELNET_PORT))
+        s.sendall((cmd + "\n").encode())
+        
+        chunks = []
+        start_time = time.time()
+        
         while True:
             try:
-                b = s.recv(65535)
+                # Check for overall timeout
+                if time.time() - start_time > timeout:
+                    break
+                    
+                s.settimeout(1)  # Short timeout for individual receives
+                b = s.recv(4096)
+                
+                if not b:
+                    break
+                    
+                chunks.append(b)
+                
+                # Stop if we see END marker (Liquidsoap's standard response terminator)
+                text = b.decode(errors="ignore")
+                if "END\n" in text or text.strip().endswith("END"):
+                    break
+                    
             except socket.timeout:
+                # Check if we have any data collected
+                if chunks:
+                    break
+                continue
+            except Exception as e:
+                print(f"DEBUG: Telnet receive error: {e}")
                 break
-            if not b:
-                break
-            chunks.append(b)
+                
+    except Exception as e:
+        print(f"DEBUG: Telnet connection error: {e}")
+        return ""
     finally:
-        s.close()
-    return (b"".join(chunks).decode(errors="ignore") or "").strip()
+        try:
+            s.close()
+        except:
+            pass
+    
+    result = (b"".join(chunks).decode(errors="ignore") or "").strip()
+    print(f"DEBUG: Telnet command '{cmd}' returned: {repr(result)}")
+    return result
 
 def parse_kv_text(text: str) -> dict:
     """Parse lines like key=value"""
@@ -137,48 +170,79 @@ def read_now() -> dict:
         except Exception:
             pass
 
-    # Fallback: Liquidsoap telnet - FIXED VERSION
-    if not data.get("title"):
+    # Fallback: Liquidsoap telnet - FIXED FOR YOUR FORMAT
+    if not (data.get("title") and data.get("artist")):
         try:
-            # Use the correct telnet command
+            # Get current metadata from Icecast output
             raw = telnet_cmd("output.icecast.metadata")
             print(f"DEBUG: Raw telnet response: {raw}")
             
-            # Parse the response - look for "--- 1 ---" section (current track)
-            lines = raw.split('\n')
             current_track = {}
-            in_current = False
             
-            for line in lines:
-                line = line.strip()
-                if line == "--- 1 ---":
-                    in_current = True
-                    continue
-                elif line.startswith("--- ") and line != "--- 1 ---":
-                    in_current = False
-                    continue
-                elif in_current and "=" in line:
-                    key, value = line.split("=", 1)
-                    current_track[key.strip()] = value.strip().strip('"')
+            # Parse the simple format: --- 1 --- followed by key="value" lines
+            if raw and "---" in raw:
+                lines = raw.split('\n')
+                in_metadata_section = False
+                
+                for line in lines:
+                    line = line.strip()
+                    
+                    # Look for the metadata section marker
+                    if line == "--- 1 ---":
+                        in_metadata_section = True
+                        continue
+                    elif line == "END" or line.startswith("---"):
+                        in_metadata_section = False
+                        continue
+                    
+                    # Parse key="value" lines in metadata section
+                    if in_metadata_section and "=" in line:
+                        try:
+                            key, value = line.split("=", 1)
+                            key = key.strip()
+                            value = value.strip().strip('"')  # Remove quotes
+                            current_track[key] = value
+                            print(f"DEBUG: Parsed metadata: {key} = {value}")
+                        except ValueError:
+                            continue
             
             print(f"DEBUG: Parsed current track: {current_track}")
             
             if current_track:
-                data["title"] = current_track.get("title") or data.get("title") or "Unknown title"
-                data["artist"] = current_track.get("artist") or data.get("artist") or "Unknown artist"
-                data["album"] = current_track.get("album") or data.get("album") or ""
-                data["date"] = current_track.get("date") or ""
-                data["filename"] = ""  # Not available from telnet
-                data["artwork_url"] = data.get("artwork_url") or ""
+                # Map the metadata fields
+                if "title" in current_track:
+                    data["title"] = current_track["title"]
+                if "artist" in current_track:
+                    data["artist"] = current_track["artist"]
+                if "album" in current_track:
+                    data["album"] = current_track["album"]
+                
+                # Try to get filename from other telnet commands if not in metadata
+                if not data.get("filename"):
+                    try:
+                        # The filename might be available from the playlist source
+                        uri_raw = telnet_cmd("library_clean_m3u.uri")
+                        if uri_raw and uri_raw.startswith("file://"):
+                            data["filename"] = uri_raw.replace("file://", "").strip()
+                            print(f"DEBUG: Got filename from playlist: {data['filename']}")
+                    except Exception as e:
+                        print(f"DEBUG: Could not get filename: {e}")
+                
                 print(f"DEBUG: Final telnet metadata: {data}")
             else:
                 print("DEBUG: No current track found in telnet response")
                 
         except Exception as e:
             print(f"DEBUG: Telnet metadata failed: {e}")
+            import traceback
+            traceback.print_exc()
 
+    # Ensure we always have basic metadata
     data.setdefault("title", "Unknown title")
     data.setdefault("artist", "Unknown artist")
+    data.setdefault("album", "")
+    data.setdefault("filename", "")
+    
     return data
 
 def push_event(ev: dict):
