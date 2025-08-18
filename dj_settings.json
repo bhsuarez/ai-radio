@@ -1,0 +1,20 @@
+{
+  "auto_dj_enabled": true,
+  "dj_probability": 100,
+  "min_interval_minutes": 0,
+  "max_interval_minutes": 10,
+  "use_ai_dj": true,
+  "ai_dj_probability": 100,
+  "ai_script_path": "/opt/ai-radio/gen_ai_dj_line.sh",
+  "dj_templates": [
+    "That was {title} by {artist}, keeping the vibes flowing here on AI Radio!",
+    "You just heard {title} from {artist}, and we've got more great music coming up!",
+    "{artist} with {title}, and this is AI Radio bringing you the best mix!",
+    "Beautiful track there - {title} by {artist}. Stay tuned for more!",
+    "That's {title} from {artist}, and you're listening to AI Radio!",
+    "What a great song! {title} by {artist}. More awesome music ahead!",
+    "AI Radio bringing you {title} from {artist}. We'll be right back with more hits!",
+    "{artist}'s {title} there, and this is your AI DJ keeping the music flowing!"
+  ],
+  "save_to_file": true
+}
