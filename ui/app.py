@@ -248,13 +248,13 @@ def read_now() -> dict:
 def push_event(ev: dict):
     """Insert newest-first with light de-duplication and persist to disk."""
     now_ms = int(time.time() * 1000)
-
+    
     # normalize timestamp to ms
     if isinstance(ev.get("time"), (int, float)):
         t = int(ev["time"])
         if t < 10_000_000_000:  # seconds → ms
             ev["time"] = t * 1000
-
+    
     # Normalize basic song fields
     if ev.get("type") == "song":
         title = (ev.get("title") or "").strip()
@@ -267,7 +267,7 @@ def push_event(ev: dict):
                 title  = title  or m.group(2)
         ev["artist"] = artist or "Unknown Artist"
         ev["title"]  = title  or "Unknown"
-
+    
     # De-dupe against last entry within window
     if HISTORY:
         last = HISTORY[0]
@@ -283,10 +283,37 @@ def push_event(ev: dict):
             if (ev.get("text") or "") == (last.get("text") or "") and \
                (now_ms - int(last.get("time", now_ms))) < 5000:
                 return
-
+    
     HISTORY.insert(0, ev)
     del HISTORY[MAX_HISTORY:]
     save_history()
+
+
+def track_prediction_accuracy(predicted_track, actual_track):
+    """
+    Log prediction accuracy for monitoring
+    """
+    accuracy_event = {
+        "type": "prediction_check",
+        "time": int(time.time() * 1000),
+        "predicted": {
+            "title": predicted_track.get("title"),
+            "artist": predicted_track.get("artist"),
+            "request_id": predicted_track.get("request_id")
+        },
+        "actual": {
+            "title": actual_track.get("title"),
+            "artist": actual_track.get("artist")
+        },
+        "accurate": (
+            predicted_track.get("title") == actual_track.get("title") and
+            predicted_track.get("artist") == actual_track.get("artist")
+        )
+    }
+    
+    push_event(accuracy_event)
+    print(f"DEBUG: Prediction accuracy: {accuracy_event['accurate']}")
+    return accuracy_event["accurate"]
 
 def _first_tag(v):
     try:
@@ -920,6 +947,213 @@ def api_cover():
     with open(out, "wb") as w:
         w.write(data)
     return send_file(out, mimetype="image/jpeg" if ext == ".jpg" else "image/png", conditional=True)
+
+@app.get("/api/next-status")
+def api_next_status():
+    """
+    Validate if our next track prediction is still accurate
+    Returns diagnostic info about the request queue state
+    """
+    try:
+        # Get current request state
+        queue_raw = telnet_cmd("request.all")
+        request_ids = []
+        for part in (queue_raw or "").strip().split():
+            try:
+                request_ids.append(int(part))
+            except ValueError:
+                continue
+        
+        # Get current playing track
+        current_data = read_now()
+        
+        # Analysis
+        status = {
+            "queue_healthy": len(request_ids) >= 2,
+            "request_ids": sorted(request_ids) if request_ids else [],
+            "current_track": {
+                "title": current_data.get("title"),
+                "artist": current_data.get("artist"),
+                "filename": current_data.get("filename")
+            },
+            "prediction_confidence": "unknown"
+        }
+        
+        if len(request_ids) >= 2:
+            request_ids.sort()
+            current_rid = request_ids[0]
+            next_rid = request_ids[-1]
+            
+            # Check if current RID matches what we expect
+            try:
+                current_rid_metadata = telnet_cmd(f"request.metadata {current_rid}")
+                current_rid_data = {}
+                for line in current_rid_metadata.split('\n'):
+                    if '=' in line and not line.startswith('END'):
+                        try:
+                            key, value = line.split('=', 1)
+                            current_rid_data[key.strip()] = value.strip().strip('"')
+                        except ValueError:
+                            continue
+                
+                # Compare current playing with current RID metadata
+                rid_filename = current_rid_data.get('filename', '')
+                actual_filename = current_data.get('filename', '')
+                
+                if rid_filename and actual_filename and rid_filename == actual_filename:
+                    status["prediction_confidence"] = "high"
+                    status["next_request_id"] = next_rid
+                elif current_rid_data.get('title') == current_data.get('title'):
+                    status["prediction_confidence"] = "medium"
+                    status["next_request_id"] = next_rid
+                else:
+                    status["prediction_confidence"] = "low"
+                    status["issue"] = "Current track doesn't match current RID"
+                    
+            except Exception as e:
+                status["prediction_confidence"] = "low"
+                status["issue"] = f"Error validating: {e}"
+        else:
+            status["prediction_confidence"] = "none"
+            status["issue"] = "Insufficient requests in queue"
+        
+        return jsonify(status)
+        
+    except Exception as e:
+        return jsonify({
+            "queue_healthy": False,
+            "error": str(e),
+            "prediction_confidence": "none"
+        })
+
+
+@app.get("/api/next-robust")
+def api_next_robust():
+    """
+    Enhanced /api/next with validation and fallback strategies
+    """
+    try:
+        # First check if our prediction system is healthy
+        status = api_next_status().get_json()
+        
+        if status.get("prediction_confidence") in ["high", "medium"]:
+            # Use the standard next track prediction
+            return api_next()
+        
+        elif status.get("queue_healthy") and status.get("request_ids"):
+            # Fallback: return all available requests as "possible next"
+            upcoming = []
+            current_filename = status["current_track"].get("filename", "")
+            
+            for rid in status["request_ids"]:
+                try:
+                    metadata_raw = telnet_cmd(f"request.metadata {rid}")
+                    track_data = {}
+                    for line in metadata_raw.split('\n'):
+                        if '=' in line and not line.startswith('END'):
+                            try:
+                                key, value = line.split('=', 1)
+                                track_data[key.strip()] = value.strip().strip('"')
+                            except ValueError:
+                                continue
+                    
+                    # Skip current track
+                    if track_data.get('filename') == current_filename:
+                        continue
+                    
+                    upcoming.append({
+                        "type": "upcoming",
+                        "title": track_data.get('title', 'Unknown'),
+                        "artist": track_data.get('artist', 'Unknown'),
+                        "album": track_data.get('album', ''),
+                        "filename": track_data.get('filename', ''),
+                        "artwork_url": _build_art_url(track_data.get('filename', '')),
+                        "request_id": rid,
+                        "confidence": "low"
+                    })
+                    
+                except Exception:
+                    continue
+            
+            return jsonify(upcoming)
+        
+        else:
+            # Last resort: empty queue or broken state
+            return jsonify([])
+            
+    except Exception as e:
+        print(f"DEBUG: Error in robust next: {e}")
+        return jsonify([])
+
+@app.get("/api/debug-queue")
+def api_debug_queue():
+    """
+    Debug endpoint to see full queue state and detect issues
+    """
+    try:
+        # Get comprehensive queue info
+        queue_raw = telnet_cmd("request.all")
+        resolving_raw = telnet_cmd("request.resolving")
+        
+        debug_info = {
+            "timestamp": int(time.time() * 1000),
+            "queue_raw": queue_raw,
+            "resolving_raw": resolving_raw,
+            "request_details": {},
+            "current_track": read_now(),
+            "analysis": {}
+        }
+        
+        # Parse request IDs
+        request_ids = []
+        for part in (queue_raw or "").strip().split():
+            try:
+                request_ids.append(int(part))
+            except ValueError:
+                continue
+        
+        debug_info["request_ids"] = sorted(request_ids)
+        
+        # Get detailed metadata for each request
+        for rid in request_ids:
+            try:
+                metadata_raw = telnet_cmd(f"request.metadata {rid}")
+                trace_raw = telnet_cmd(f"request.trace {rid}")
+                
+                # Parse metadata
+                metadata = {}
+                for line in metadata_raw.split('\n'):
+                    if '=' in line and not line.startswith('END'):
+                        try:
+                            key, value = line.split('=', 1)
+                            metadata[key.strip()] = value.strip().strip('"')
+                        except ValueError:
+                            continue
+                
+                debug_info["request_details"][rid] = {
+                    "metadata": metadata,
+                    "trace": trace_raw,
+                    "status": metadata.get("status", "unknown")
+                }
+                
+            except Exception as e:
+                debug_info["request_details"][rid] = {"error": str(e)}
+        
+        # Analysis
+        debug_info["analysis"] = {
+            "queue_size": len(request_ids),
+            "expected_pattern": len(request_ids) == 2,
+            "rid_sequence_healthy": len(request_ids) >= 2 and (max(request_ids) - min(request_ids)) == 1,
+            "all_ready": all(
+                debug_info["request_details"].get(rid, {}).get("metadata", {}).get("status") == "ready" 
+                for rid in request_ids
+            )
+        }
+        
+        return jsonify(debug_info)
+        
+    except Exception as e:
+        return jsonify({"error": str(e), "timestamp": int(time.time() * 1000)})
 
 # ── Startup ─────────────────────────────────────────────────────
 load_history()
