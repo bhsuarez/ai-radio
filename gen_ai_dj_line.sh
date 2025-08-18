@@ -12,19 +12,39 @@ MODEL="${MODEL:-llama3.2:3b}"
 PROVIDER="${PROVIDER:-ollama}"
 OPENAI_MODEL="${OPENAI_MODEL:-gpt-4o-mini}"
 
-STYLES=("energetic hype" "laid-back chill" "warm late-night" "quirky college-radio" "BBC-style concise" "retro 90s alt" "clubby electronic")
-STYLE="${STYLE:-$(printf '%s\n' "${STYLES[@]}" | shuf -n1)}"
+# Check if we're in intro mode
+INTRO_MODE="${DJ_INTRO_MODE:-0}"
+CUSTOM_PROMPT="${DJ_CUSTOM_PROMPT:-}"
 
-if (( RANDOM % 100 < 60 )); then
-  TRIVIA_LINE="If you genuinely know one short, widely known fact about ${ARTIST:-the artist} or the song '${TITLE:-this track}', include it; if not, skip trivia."
+if [[ "$INTRO_MODE" == "1" ]]; then
+    # INTRO MODE - Generate introduction before song plays
+    STYLES=("energetic" "upbeat" "smooth" "excited" "warm" "friendly")
+    STYLE="${STYLE:-$(printf '%s\n' "${STYLES[@]}" | shuf -n1)}"
+    
+    if [[ -n "$CUSTOM_PROMPT" ]]; then
+        PROMPT="$CUSTOM_PROMPT"
+    else
+        PROMPT="You are a ${STYLE} radio DJ introducing the next song. 
+In 1 sentence (under 15 words), introduce '${TITLE:-this track}' by ${ARTIST:-an unknown artist}.
+Use phrases like 'Coming up next', 'Here's', 'Time for', 'Let's hear', etc.
+Keep it brief, energetic, and natural. No emojis or hashtags. Don't invent facts."
+    fi
 else
-  TRIVIA_LINE=""
-fi
+    # NORMAL MODE - Generate commentary after song plays
+    STYLES=("energetic hype" "laid-back chill" "warm late-night" "quirky college-radio" "BBC-style concise" "retro 90s alt" "clubby electronic")
+    STYLE="${STYLE:-$(printf '%s\n' "${STYLES[@]}" | shuf -n1)}"
 
-PROMPT="You are a radio DJ. Style: ${STYLE}.
-In 1–2 sentences, speak about the song '${TITLE:-this track}' by ${ARTIST:-an unknown artist}.
+    if (( RANDOM % 100 < 60 )); then
+      TRIVIA_LINE="If you genuinely know one short, widely known fact about ${ARTIST:-the artist} or the song '${TITLE:-this track}', include it; if not, skip trivia."
+    else
+      TRIVIA_LINE=""
+    fi
+
+    PROMPT="You are a radio DJ. Style: ${STYLE}.
+In 1–2 sentences, speak about the song '${TITLE:-this track}' by ${ARTIST:-an unknown artist} that just played.
 ${TRIVIA_LINE}
 Keep it natural, conversational, and clean. No emojis or hashtags. Do not invent facts."
+fi
 
 collapse_line() {
   tr -d '\r' | sed 's/^[[:space:]]\+//; s/[[:space:]]\+$//' | awk 'NF' | paste -sd' ' - | sed 's/  */ /g'
@@ -43,7 +63,7 @@ run_openai() {
 {
   "model": "${OPENAI_MODEL}",
   "temperature": 0.8,
-  "max_tokens": 120,
+  "max_tokens": 80,
   "messages": [
     {"role":"system","content":"You are a concise, engaging radio DJ. No emojis or hashtags. Never invent facts."},
     {"role":"user","content": ${PROMPT@Q} }
