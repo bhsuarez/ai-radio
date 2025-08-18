@@ -77,7 +77,7 @@
     <button class="btn warn" id="skipBtn">⏭️ Skip Track</button>
     <button class="btn accent" id="genBtn">✨ Generate DJ Line</button>
     <button class="btn" id="debugDjBtn">🔍 Debug DJ Status</button>
-<button class="btn" id="testFullDjBtn">🧪 Test Full DJ</button>
+
   </aside>
 
   <!-- Main content -->
@@ -646,43 +646,7 @@ Check console for full details.
   }
 };
 
-// Test full DJ process button
-$('testFullDjBtn').onclick = async () => {
-  try {
-    const originalText = $('testFullDjBtn').textContent;
-    $('testFullDjBtn').disabled = true;
-    $('testFullDjBtn').textContent = 'Testing...';
 
-    const result = await j('/api/test-full-dj', { method: 'POST' });
-    console.log('Full DJ Test:', result);
-
-    if (result.ok) {
-      $('testFullDjBtn').textContent = 'Test Complete!';
-      $('testFullDjBtn').style.backgroundColor = '#3ddc97';
-      
-      alert(`Full DJ Test Results:
-AI Generation: ${result.steps.ai_generation ? 'SUCCESS' : 'FAILED'}
-Audio Created: ${result.steps.audio_exists ? 'YES' : 'NO'}
-Queued in Liquidsoap: ${result.steps.queue_result ? 'YES' : 'NO'}
-Queue Length: ${result.steps.queue_length}
-
-Check console for details.`);
-    } else {
-      $('testFullDjBtn').textContent = 'Test Failed!';
-      $('testFullDjBtn').style.backgroundColor = '#ff5d5d';
-      alert(`Test failed: ${result.error}`);
-    }
-
-    setTimeout(() => {
-      $('testFullDjBtn').disabled = false;
-      $('testFullDjBtn').textContent = originalText;
-      $('testFullDjBtn').style.backgroundColor = '';
-    }, 3000);
-
-  } catch (e) {
-    console.error('Test error:', e);
-  }
-};
 $('genBtn').onclick = async () => {
   try {
     console.log('Generating DJ line...');
