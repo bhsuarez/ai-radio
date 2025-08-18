@@ -418,13 +418,10 @@ def api_history():
 
 @app.get("/api/now")
 def api_now():
-    # Prefer the newest song event from memory
-    for ev in HISTORY:
-        if ev.get("type") == "song":
-            return jsonify(ev)
-    # Fallback to live metadata (works mid-track)
+    # ALWAYS get live metadata first - this is the actual current track
     data = read_now()
-    ev = {
+    
+    current_track = {
         "type": "song",
         "time": int(time.time() * 1000),
         "title": data.get("title") or "Unknown",
@@ -433,7 +430,20 @@ def api_now():
         "filename": data.get("filename") or "",
         "artwork_url": data.get("artwork_url") or _build_art_url(data.get("filename"))
     }
-    return jsonify(ev)
+    
+    # Optional: Check if this matches the most recent history entry
+    # If not, it means we have a newer track that hasn't been logged yet
+    if HISTORY:
+        latest_history = HISTORY[0]
+        if (latest_history.get("type") == "song" and 
+            latest_history.get("title") == current_track["title"] and
+            latest_history.get("artist") == current_track["artist"]):
+            # History matches current track, use the history entry (has more complete metadata)
+            latest_history["artwork_url"] = latest_history.get("artwork_url") or _build_art_url(latest_history.get("filename"))
+            return jsonify(latest_history)
+    
+    # Return the live track data
+    return jsonify(current_track)
 
 @app.get("/api/next")
 def api_next():
