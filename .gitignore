@@ -13,3 +13,4 @@ cache/*
 cache/
 *.m3u
 .DS_Store
+*.bak.*
