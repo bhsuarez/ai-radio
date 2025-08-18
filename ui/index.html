@@ -26,52 +26,31 @@
   .main { flex:1; display:flex; flex-direction:column; overflow:hidden; }
   header { padding:16px; border-bottom:1px solid #1f2531; display:flex; justify-content:space-between; align-items:center; }
   header .title { font-size:18px; font-weight:600; }
-  .timeline { flex:1; overflow-y:auto; overflow-x:hidden; padding:16px; display:flex; flex-direction:column; gap:16px; max-height:calc(100vh - 120px); }
-  
-  /* Timeline sections */
-  .timeline-section { background:var(--card); border-radius:var(--radius); border:1px solid #202634; overflow:hidden; }
-  .section-header { padding:12px 16px; border-bottom:1px solid #202634; font-weight:600; font-size:14px; text-transform:uppercase; letter-spacing:0.5px; }
-  .section-header.live { background:linear-gradient(135deg, #ff4d4d, #ff6b6b); color:white; }
-  .section-header.upcoming { background:linear-gradient(135deg, #4da3ff, #6bb6ff); color:white; }
-  .section-header.recent { background:linear-gradient(135deg, #3ddc97, #5ce1a6); color:white; }
+  .timeline { flex:1; overflow-y:auto; padding:16px; display:flex; flex-direction:column; gap:12px; }
+  .event { background:var(--card); border-radius:var(--radius); padding:12px; border:1px solid #202634; display:flex; gap:12px; }
+  .event.dj { border-left:4px solid var(--accent); }
+  .event.song { border-left:4px solid var(--ok); }
+  .event.upcoming { opacity:0.85; }
+  .event img { width:60px; height:60px; border-radius:8px; object-fit:cover; background:#0b0d12; border:1px solid #1f2531; }
+  .event-details { flex:1; }
+  .event-meta { font-size:12px; color:var(--muted); margin-bottom:4px; display:flex; gap:8px; flex-wrap:wrap; }
+  .voice-chip { padding:2px 6px; border-radius:999px; border:1px solid #1f2531; background:#0f1420; font-size:11px; color:var(--muted); }
+  .event-title { font-weight:600; }
+  .event-sub { font-size:14px; color:var(--muted); }
+  .live-chip { display:inline-block; padding:2px 8px; border-radius:999px; background:#ff4d4d; color:white; font-size:11px; font-weight:bold; margin-right:6px; }
 
-  .event { padding:12px 16px; border-bottom:1px solid #202634; display:flex; gap:12px; }
-  .event:last-child { border-bottom:none; }
-  .event.highlighted { background:rgba(77, 163, 255, 0.1); }
-  .event img { width:60px; height:60px; border-radius:8px; object-fit:cover; background:#0b0d12; border:1px solid #1f2531; flex-shrink:0; }
-  .event-details { flex:1; min-width:0; }
-  .event-meta { font-size:12px; color:var(--muted); margin-bottom:4px; display:flex; gap:8px; flex-wrap:wrap; align-items:center; }
-  .event-title { font-weight:600; margin-bottom:2px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  .event-sub { font-size:14px; color:var(--muted); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
-  
-  .chip { padding:2px 8px; border-radius:12px; font-size:11px; font-weight:500; }
-  .chip.live { background:#ff4d4d; color:white; animation:pulse 2s infinite; }
-  .chip.time-left { background:#4da3ff; color:white; }
-  .chip.dj { background:#9b59b6; color:white; }
-  .chip.upcoming { background:#6c757d; color:white; }
-
-  @keyframes pulse { 0%, 100% { opacity:1; } 50% { opacity:0.7; } }
-
-  .empty-state { padding:20px; text-align:center; color:var(--muted); font-style:italic; }
-
-  /* Mobile styles */
+  /* Mobile */
   @media (max-width: 768px) {
     body { flex-direction:column; }
-    .sidebar {
-      flex-direction:row; flex-wrap:wrap; width:100%; border-right:none;
-      border-bottom:1px solid #1f2531; align-items:center; gap:8px;
-    }
+    .sidebar { flex-direction:row; flex-wrap:wrap; width:100%; border-right:none; border-bottom:1px solid #1f2531; align-items:center; gap:8px; }
     .sidebar h1 { flex:1 1 100%; margin-bottom:4px; }
     .btn { flex:1; font-size:14px; padding:8px; text-align:center; }
     audio { position:sticky; top:0; z-index:10; background:#13161d; }
-    .timeline { padding:8px; gap:12px; }
-    .event { padding:8px 12px; }
-    .event img { width:50px; height:50px; }
+    .timeline { padding:8px; }
   }
 </style>
 </head>
 <body>
-  <!-- Sidebar -->
   <aside class="sidebar">
     <h1>🎧 AI Radio</h1>
     <a class="btn" id="openLink" href="#" target="_blank" rel="noopener">🔗 Open Stream</a>
@@ -79,373 +58,282 @@
     <audio id="livePlayer" controls preload="none"></audio>
     <button class="btn warn" id="skipBtn">⏭️ Skip Track</button>
     <button class="btn accent" id="genBtn">✨ Generate DJ Line</button>
+    <button class="btn" id="debugDjBtn">🔍 Debug DJ Status</button>
+    <button class="btn" id="testFullDjBtn">🧪 Test Full DJ</button>
   </aside>
 
-  <!-- Main content -->
   <div class="main">
-    <header>
-      <div class="title">📜 Live Timeline</div>
-      <div id="statusIndicator" style="font-size:12px; color:var(--muted);"></div>
-    </header>
+    <header><div class="title">📜 Live Timeline</div></header>
     <div id="timeline" class="timeline"></div>
   </div>
 
 <script>
-document.addEventListener('DOMContentLoaded', () => {
-  const $ = (id) => document.getElementById(id);
-  const STREAM_URL = "http://icecast.zorro.local:8000/stream.mp3";
-  $('livePlayer').src = STREAM_URL;
-  $('livePlayer').load();
-  $('openLink').href = STREAM_URL;
+// --- constants & helpers
+const STREAM_URL = "http://icecast.zorro.local:8000/stream.mp3";
+const DEFAULT_ART = "/static/station-cover.jpg"; // server-served placeholder
 
-  // Fetch helper
-  async function j(url, opts = {}) {
-    const r = await fetch(url, { headers: { 'Content-Type': 'application/json' }, ...opts });
-    if (!r.ok) throw new Error(await r.text());
-    return r.json();
+const $ = (id) => document.getElementById(id);
+$("livePlayer").src = STREAM_URL; $("livePlayer").load(); $("openLink").href = STREAM_URL;
+
+async function j(url, opts={}) {
+  const r = await fetch(url, { headers: { "Content-Type": "application/json" }, ...opts });
+  if (!r.ok) throw new Error(await r.text());
+  return r.json();
+}
+
+const toTime = (ts) => {
+  if (!ts) return null;
+  const n = Number(ts);
+  // support seconds OR ms epoch; support ISO strings
+  if (!Number.isNaN(n)) {
+    return new Date(n > 1e12 ? n : n * 1000);
   }
+  return new Date(ts);
+};
+const fmtTime = (ts) => { const d = toTime(ts); return d ? d.toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'}) : ''; };
 
-  const fmtTime = (ts) => ts ? new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '';
+const ensureArtPath = (url) => {
+  if (!url) return DEFAULT_ART;
+  // fix old frontends that requested "station-cover.jpg" with no /static
+  if (url.endsWith("station-cover.jpg") && !url.includes("/static/")) return DEFAULT_ART;
+  return url;
+};
 
-  // Track comparison functions
-  function tracksEqual(a, b) {
-    if (!a || !b) return false;
-    
-    // Exact filename match is most reliable
-    if (a.filename && b.filename && a.filename === b.filename) {
-      return true;
-    }
-    
-    // Title/artist match with some fuzzy logic
-    const titleA = (a.title || '').toLowerCase().trim();
-    const titleB = (b.title || '').toLowerCase().trim();
-    const artistA = (a.artist || '').toLowerCase().trim();
-    const artistB = (b.artist || '').toLowerCase().trim();
-    
-    if (titleA && titleB && titleA.length > 2 && titleB.length > 2) {
-      return titleA === titleB && artistA === artistB;
-    }
-    
-    return false;
+function getCover(ev) {
+  if (ev.artwork_url && ev.artwork_url !== DEFAULT_ART) return ensureArtPath(ev.artwork_url);
+  if (ev.filename) {
+    const u = new URL('/api/cover', location.origin); u.searchParams.set('file', ev.filename); return u.toString();
   }
+  return DEFAULT_ART;
+}
 
-  function getTrackKey(track) {
-    if (track.filename) return `file:${track.filename}`;
-    const title = (track.title || '').toLowerCase().trim();
-    const artist = (track.artist || '').toLowerCase().trim();
-    return `track:${title}|${artist}`;
-  }
+function eventKey(e) {
+  return (e.filename && e.filename.length > 0)
+    ? `f|${e.filename}`
+    : `t|${(e.title || '')}|${(e.artist || '')}|${(e.album || '')}`.toLowerCase() || `x|${e.time}`;
+}
 
-  // Cover art helpers
-  function getCoverUrl(track) {
-    if (track.artwork_url && !track.artwork_url.endsWith('/station-cover.jpg')) {
-      return track.artwork_url;
-    }
-    if (track.filename) {
-      return `/api/cover?file=${encodeURIComponent(track.filename)}`;
-    }
-    return '/static/station-cover.jpg';
-  }
+function setArtworkWithRetry(imgEl, ev, retries = 2) {
+  const url = ensureArtPath(getCover(ev));
+  const test = new Image();
+  test.onload = () => { imgEl.src = url; };
+  test.onerror = () => {
+    if (retries > 0) setTimeout(() => setArtworkWithRetry(imgEl, ev, retries - 1), 500);
+    else imgEl.src = DEFAULT_ART;
+  };
+  // cache-bust in case the same URL was cached as 404 by the browser
+  test.src = url.includes('?') ? `${url}&v=${Date.now()}` : `${url}?v=${Date.now()}`;
+}
 
-  function setCoverImage(imgEl, track) {
-    if (!imgEl || !track) return;
-    
-    const url = getCoverUrl(track);
-    imgEl.src = '/static/station-cover.jpg'; // Start with default
-    
-    if (url !== '/static/station-cover.jpg') {
-      const testImg = new Image();
-      testImg.onload = () => imgEl.src = url;
-      testImg.onerror = () => {}; // Keep default on error
-      testImg.src = url;
-    }
-  }
-
-  // Timeline state
-  let lastSignature = '';
-  let updateTimer = null;
-
-  async function loadTimeline() {
-    try {
-      const statusEl = $('statusIndicator');
-      statusEl.textContent = 'Loading...';
-
-      console.log('Fetching timeline data...');
-
-      // Fetch all data with better error handling
-      const [nowData, nextData, historyData] = await Promise.all([
-        j('/api/now').catch(e => { console.error('Now API error:', e); return null; }),
-        j('/api/next').catch(e => { console.error('Next API error:', e); return []; }),
-        j('/api/history').catch(e => { console.error('History API error:', e); return []; })
-      ]);
-
-      console.log('API Data received:', {
-        nowData: nowData,
-        nextCount: nextData?.length || 0,
-        historyCount: historyData?.length || 0
-      });
-
-      statusEl.textContent = `Updated ${new Date().toLocaleTimeString()}`;
-
-      // Process current track - be more lenient
-      const currentTrack = nowData ? {
-        ...nowData,
-        type: 'song',
-        time: nowData.time || Date.now(),
-        title: nowData.title || nowData.song || 'Unknown Track',
-        artist: nowData.artist || 'Unknown Artist',
-        album: nowData.album || '',
-        filename: nowData.filename || ''
-      } : null;
-
-      console.log('Current track:', currentTrack);
-
-      // Process upcoming tracks - simplified filtering
-      const upcomingTracks = (nextData || [])
-        .slice(0, 10) // Limit upcoming tracks
-        .map((track, index) => ({
-          type: 'upcoming',
-          time: Date.now() + (index + 1) * 180000, // 3 min apart estimates
-          title: track.title || track.song || 'Unknown Track',
-          artist: track.artist || 'Unknown Artist', 
-          album: track.album || '',
-          filename: track.filename || '',
-          artwork_url: track.artwork_url
-        }));
-
-      console.log('Upcoming tracks:', upcomingTracks.length);
-
-      // Process history - keep it simple for now
-      const historyTracks = (historyData || [])
-        .sort((a, b) => (b.time || 0) - (a.time || 0)) // Sort by time, newest first
-        .slice(0, 20); // Limit to recent items
-
-      console.log('History tracks:', historyTracks.length);
-
-      // Always render, even if data seems the same
-      renderTimeline(currentTrack, upcomingTracks, historyTracks);
-
-    } catch (error) {
-      console.error('Timeline load error:', error);
-      $('statusIndicator').textContent = 'Error loading';
-      
-      // Show error state with more details
-      const timeline = $('timeline');
-      timeline.innerHTML = `
-        <div class="timeline-section">
-          <div class="section-header">❌ Error Loading Timeline</div>
-          <div class="empty-state">
-            Error: ${error.message}<br>
-            Check console for details. Retrying in 10 seconds...
-          </div>
-        </div>
-      `;
-    }
-  }
-
-  function renderTimeline(currentTrack, upcomingTracks, historyItems) {
-    const timeline = $('timeline');
-    timeline.innerHTML = '';
-
-    console.log('Rendering timeline with:', {
-      current: currentTrack?.title || 'none',
-      upcoming: upcomingTracks.length,
-      history: historyItems.length
-    });
-
-    // Helper to create elements
-    function createElement(tag, className = '', innerHTML = '') {
-      const el = document.createElement(tag);
-      if (className) el.className = className;
-      if (innerHTML) el.innerHTML = innerHTML;
-      return el;
-    }
-
-    function createSection(title, className, items, renderer) {
-      const section = createElement('div', 'timeline-section');
-      const header = createElement('div', `section-header ${className}`, title);
-      section.appendChild(header);
-
-      console.log(`Creating section ${title} with ${items.length} items`);
-
-      if (items.length === 0) {
-        const empty = createElement('div', 'empty-state', 
-          className === 'upcoming' ? 'No upcoming tracks in queue' :
-          className === 'recent' ? 'No tracks played recently' :
-          'No data available'
-        );
-        section.appendChild(empty);
-      } else {
-        items.forEach((item, index) => {
-          try {
-            const eventEl = renderer(item, index);
-            section.appendChild(eventEl);
-          } catch (e) {
-            console.error(`Error rendering item ${index}:`, e, item);
+async function enrichEventsWithArtwork(events) {
+  for (const ev of events) {
+    if (ev.type === 'song' && !ev.artwork_url && (ev.filename || (ev.title && ev.artist))) {
+      try {
+        if (ev.filename) {
+          ev.artwork_url = `/api/cover?file=${encodeURIComponent(ev.filename)}`;
+        } else if (ev.title && ev.artist) {
+          const r = await fetch(`/api/test_find?title=${encodeURIComponent(ev.title)}&artist=${encodeURIComponent(ev.artist)}`);
+          if (r.ok) {
+            const x = await r.json();
+            if (x.found_file && x.has_artwork) { ev.artwork_url = x.artwork_url; ev.filename = x.found_file; }
           }
-        });
-      }
-
-      return section;
-    }
-
-    function formatRemaining(ms) {
-      if (ms <= 0) return 'ending...';
-      const totalSeconds = Math.floor(ms / 1000);
-      const minutes = Math.floor(totalSeconds / 60);
-      const seconds = totalSeconds % 60;
-      return `${minutes}:${seconds.toString().padStart(2, '0')} left`;
-    }
-
-    // 1. LIVE NOW Section
-    if (currentTrack) {
-      const section = createSection('🔴 LIVE NOW', 'live', [currentTrack], (track) => {
-        const event = createElement('div', 'event highlighted');
-        event.innerHTML = `
-          <img alt="Album artwork" src="/static/station-cover.jpg">
-          <div class="event-details">
-            <div class="event-meta">
-              <span>${fmtTime(track.time)}</span>
-              <span class="chip live">LIVE</span>
-              <span class="chip time-left" id="timeChip">playing</span>
-            </div>
-            <div class="event-title">${track.title || 'Unknown Track'}</div>
-            <div class="event-sub">${[track.artist, track.album].filter(Boolean).join(' • ') || 'Unknown Artist'}</div>
-          </div>
-        `;
-
-        const img = event.querySelector('img');
-        setCoverImage(img, track);
-
-        // Handle remaining time
-        const timeChip = event.querySelector('#timeChip');
-        if (track.duration_ms && track.elapsed_ms) {
-          let remaining = track.duration_ms - track.elapsed_ms;
-          timeChip.textContent = formatRemaining(remaining);
-          
-          const interval = setInterval(() => {
-            remaining -= 1000;
-            if (remaining <= 0) {
-              timeChip.textContent = 'ending...';
-              clearInterval(interval);
-            } else {
-              timeChip.textContent = formatRemaining(remaining);
-            }
-          }, 1000);
         }
-
-        return event;
-      });
-      timeline.appendChild(section);
-    } else {
-      // Show empty current section
-      const section = createSection('🔴 LIVE NOW', 'live', [], () => {});
-      timeline.appendChild(section);
+      } catch {}
     }
-
-    // 2. UPCOMING Section
-    const upcomingSection = createSection('⏭️ UPCOMING', 'upcoming', upcomingTracks.slice(0, 8), (track) => {
-      const event = createElement('div', 'event');
-      event.innerHTML = `
-        <img alt="Album artwork" src="/static/station-cover.jpg">
-        <div class="event-details">
-          <div class="event-meta">
-            <span class="chip upcoming">Up Next</span>
-          </div>
-          <div class="event-title">${track.title || 'Unknown Track'}</div>
-          <div class="event-sub">${[track.artist, track.album].filter(Boolean).join(' • ') || 'Unknown Artist'}</div>
-        </div>
-      `;
-
-      const img = event.querySelector('img');
-      setCoverImage(img, track);
-      return event;
-    });
-    timeline.appendChild(upcomingSection);
-
-    // 3. RECENTLY PLAYED Section
-    const recentSection = createSection('📀 RECENTLY PLAYED', 'recent', historyItems.slice(0, 20), (item) => {
-      const event = createElement('div', 'event');
-      
-      if (item.type === 'dj') {
-        event.innerHTML = `
-          <div class="event-details" style="width: 100%;">
-            <div class="event-meta">
-              <span>${fmtTime(item.time)}</span>
-              <span class="chip dj">DJ</span>
-            </div>
-            <div class="event-title">🎙️ ${item.text || '(DJ announcement)'}</div>
-            ${item.audio_url ? `<audio controls preload="none" src="${item.audio_url}" style="margin-top: 8px; width: 100%; max-width: 300px;"></audio>` : ''}
-          </div>
-        `;
-      } else {
-        event.innerHTML = `
-          <img alt="Album artwork" src="/static/station-cover.jpg">
-          <div class="event-details">
-            <div class="event-meta">
-              <span>${fmtTime(item.time)}</span>
-            </div>
-            <div class="event-title">${item.title || 'Unknown Track'}</div>
-            <div class="event-sub">${[item.artist, item.album].filter(Boolean).join(' • ') || 'Unknown Artist'}</div>
-          </div>
-        `;
-
-        const img = event.querySelector('img');
-        setCoverImage(img, item);
-      }
-      
-      return event;
-    });
-    timeline.appendChild(recentSection);
-
-    console.log('Timeline rendered successfully');
   }
+  return events;
+}
 
-  // Button handlers
-  $('skipBtn').onclick = async () => {
-    try {
-      await j('/api/skip', { method: 'POST' });
-      setTimeout(loadTimeline, 1000); // Reload after skip
-    } catch (e) {
-      console.error('Skip error:', e);
+function sameTrack(a,b){
+  if (!a || !b) return false;
+  if (a.filename && b.filename && a.filename === b.filename) return true;
+  const ta=(a.title||'').trim().toLowerCase(), tb=(b.title||'').trim().toLowerCase();
+  const aa=(a.artist||'').trim().toLowerCase(), ab=(b.artist||'').trim().toLowerCase();
+  return ta && tb && ta === tb && aa === ab;
+}
+
+let lastSig = '';
+let lastLiveTrack = null;
+
+async function loadTimeline(){
+  try {
+    if (window._timelineLoading) return; window._timelineLoading = true;
+
+    const [now, next, tts, history] = await Promise.all([
+      j('/api/now'), j('/api/next'), j('/api/tts_queue'), j('/api/history')
+    ]);
+
+    // LIVE NOW
+    const live = (now && (now.title || now.filename)) ? {
+      ...now, type:'song', liveNow:true,
+      title: now.title || 'Unknown Track', artist: now.artist || 'Unknown Artist'
+    } : null;
+
+    const currentLiveKey = live ? `${live.title}|${live.artist}` : null;
+    const liveChanged = lastLiveTrack && lastLiveTrack !== currentLiveKey && currentLiveKey; if (currentLiveKey) lastLiveTrack = currentLiveKey;
+
+    // UPCOMING
+    let upcoming = Array.isArray(next) ? next : [];
+    upcoming = upcoming
+      .filter(s => !sameTrack(s, live))
+      .map(s => ({ type:'upcoming', time: Date.now() + Math.random()*1e5, title: s.title || 'Unknown title', artist: s.artist || '', album: s.album || '', filename: s.filename || '', artwork_url: ensureArtPath(s.artwork_url || getCover(s)) }));
+
+    if (liveChanged || upcoming.some(u => !u.artwork_url || u.artwork_url === DEFAULT_ART)) {
+      const tasks = upcoming.map(async (t,i)=>{
+        if (!t.artwork_url || t.artwork_url === DEFAULT_ART) {
+          await new Promise(r=>setTimeout(r, i*100));
+          try {
+            const r = await fetch(`/api/test_find?title=${encodeURIComponent(t.title)}&artist=${encodeURIComponent(t.artist)}`);
+            if (r.ok) { const x = await r.json(); if (x.found_file && x.has_artwork) { t.artwork_url = ensureArtPath(x.artwork_url); t.filename = x.found_file; } }
+          } catch {}
+        }
+        return t;
+      });
+      const timeout = new Promise(res => setTimeout(()=>res(upcoming), 2500));
+      upcoming = await Promise.race([Promise.all(tasks), timeout]);
     }
-  };
 
-  $('genBtn').onclick = async () => {
-    const btn = $('genBtn');
-    const originalText = btn.textContent;
-    
-    try {
-      btn.disabled = true;
-      btn.textContent = 'Generating...';
-      btn.style.backgroundColor = '#ffb020';
+    // de-dupe upcoming by title|artist
+    const seenU = new Set();
+    upcoming = upcoming.filter(t=>{ const k=`${(t.title||'').toLowerCase()}|${(t.artist||'').toLowerCase()}`; if(seenU.has(k)) return false; seenU.add(k); return true; });
 
-      const result = await j('/api/dj-now', { method: 'POST' });
-      
-      btn.textContent = result.ok ? 'Generated!' : 'Error!';
-      btn.style.backgroundColor = result.ok ? '#3ddc97' : '#ff5d5d';
-      
-      if (result.ok) {
-        setTimeout(loadTimeline, 1000); // Reload to show new DJ line
+    // HISTORY + DJ
+    const events = [...(history||[])];
+    (tts||[]).forEach(t=>{ const dj={...t,type:'dj',time:t.time||Date.now()}; const exists = events.find(e=> e.type==='dj' && e.text===dj.text && Math.abs((e.time||0)-(dj.time||0))<60000); if(!exists) events.push(dj); });
+    events.sort((a,b)=> new Date(b.time) - new Date(a.time));
+
+    const songEvents = await enrichEventsWithArtwork(events.filter(e=>e.type==='song'));
+    const allEvents = [...songEvents, ...events.filter(e=>e.type==='dj')].sort((a,b)=> new Date(b.time) - new Date(a.time));
+
+    const played = allEvents.filter(e=>{
+      if (e.type==='dj') return true;
+      if (e.type==='song') {
+        if (live && sameTrack(e, live)) return false;
+        if (upcoming.some(u=>sameTrack(e,u))) return false;
       }
+      return true;
+    });
 
-    } catch (e) {
-      console.error('DJ generation error:', e);
-      btn.textContent = 'Error!';
-      btn.style.backgroundColor = '#ff5d5d';
-    } finally {
-      setTimeout(() => {
-        btn.disabled = false;
-        btn.textContent = originalText;
-        btn.style.backgroundColor = '';
-      }, 3000);
+    const seenP = new Set();
+    const dedupedPlayed = played.filter(tr=>{
+      if (tr.type==='dj') return true;
+      const k=`${(tr.title||'').toLowerCase()}|${(tr.artist||'').toLowerCase()}`; if(seenP.has(k)) return false; seenP.add(k); return true;
+    });
+
+    const sig = dedupedPlayed.map(e=>[e.type||'song', e.filename||'', e.title||'', e.artist||'', e.artwork_url||'', Math.floor((e.time||0)/60000)].join('|')).join('||') + upcoming.map(u=>`up:${u.title}|${u.artist}|${u.artwork_url||'noart'}`).join('||') + (live?`|live:${live.title}|${live.artist}|${live.artwork_url||''}`:'');
+    if (sig === lastSig) { window._timelineLoading=false; return; } lastSig = sig;
+
+    // --- render
+    const box = $("timeline"); box.innerHTML = '';
+    const h = (tag,cls,html='')=>{ const el=document.createElement(tag); if(cls) el.className=cls; if(html) el.innerHTML=html; return el; };
+    const section = (title)=>{ const wrap=h('div',null); wrap.appendChild(h('div','event-meta',`<strong>${title}</strong>`)); return wrap; };
+
+    // Upcoming
+    if (upcoming.length) {
+      const sec = section('⏭️ UPCOMING');
+      for (const ev of upcoming.slice(0,10)) {
+        const div=h('div','event upcoming song');
+        div.innerHTML = `
+          <img alt="Album artwork" loading="lazy" decoding="async">
+          <div class="event-details">
+            <div class="event-meta"><span>${fmtTime(ev.time)}</span><span class="voice-chip">Upcoming</span></div>
+            <div class="event-title">${ev.title || 'Unknown title'}</div>
+            <div class="event-sub">${[ev.artist, ev.album].filter(Boolean).join(' • ') || 'Unknown artist'}</div>
+          </div>`;
+        sec.appendChild(div);
+        setArtworkWithRetry(div.querySelector('img'), ev);
+      }
+      box.appendChild(sec);
     }
-  };
 
-  // Initialize
-  loadTimeline();
-  setInterval(loadTimeline, 10000); // Update every 10 seconds
-});
+    // Live now
+    if (live) {
+      const sec = section('🔴 LIVE NOW');
+      const card=h('div','event song');
+      card.innerHTML = `
+        <img alt="Album artwork" loading="eager" decoding="sync">
+        <div class="event-details">
+          <div class="event-meta"><span>${fmtTime(live.time)}</span><span class="live-chip">LIVE NOW</span><span class="voice-chip" id="remainChip">—</span></div>
+          <div class="event-title">${live.title || 'Unknown title'}</div>
+          <div class="event-sub">${[live.artist, live.album].filter(Boolean).join(' • ') || 'Unknown artist'}</div>
+        </div>`;
+      sec.appendChild(card); box.appendChild(sec);
+      setArtworkWithRetry(card.querySelector('img'), live);
+    }
+
+    // Just played
+    const sec = section('📀 JUST PLAYED');
+    if (dedupedPlayed.length) {
+      for (const ev of dedupedPlayed) {
+        const div=h('div',`event ${ev.type||'song'}`);
+        if (ev.type==='dj') {
+          div.innerHTML = `
+            <div class="event-details" style="width:100%">
+              <div class="event-meta"><span>${fmtTime(ev.time)}</span><span class="voice-chip">DJ Intro</span></div>
+              <div class="event-title">🎙️ ${ev.text || '(DJ line)'}</div>
+              ${ev.audio_url ? `<audio controls preload="none" src="${ev.audio_url}" style="margin-top:8px; width:100%"></audio>` : ''}
+            </div>`;
+        } else {
+          div.innerHTML = `
+            <img alt="Album artwork" loading="lazy" decoding="async">
+            <div class="event-details">
+              <div class="event-meta"><span>${fmtTime(ev.time)}</span></div>
+              <div class="event-title">${ev.title || 'Unknown title'}</div>
+              <div class="event-sub">${[ev.artist, ev.album].filter(Boolean).join(' • ') || 'Unknown artist'}</div>
+            </div>`;
+          setArtworkWithRetry(div.querySelector('img'), ev);
+        }
+        sec.appendChild(div);
+      }
+    } else {
+      const empty=h('div','event-meta'); empty.innerHTML = '<em>No tracks played yet. Songs will appear here as they play.</em>'; sec.appendChild(empty);
+    }
+    box.appendChild(sec);
+
+  } catch (e) {
+    console.error(e);
+    $("timeline").innerHTML = '<div class="event-meta" style="text-align:center; padding:20px"><strong>Unable to load timeline</strong><br>Retrying in a few seconds...</div>';
+  } finally {
+    window._timelineLoading = false;
+  }
+}
+
+$('skipBtn').onclick = async () => { try{ await j('/api/skip',{method:'POST'}); loadTimeline(); } catch(e){} };
+
+$('debugDjBtn').onclick = async () => {
+  try {
+    const result = await j('/api/debug-dj-status');
+    const summary = `\nDJ Status:\n- Auto DJ Enabled: ${result.config.auto_dj_enabled}\n- Script Exists: ${result.config.script_exists}\n- Recent DJ Events: ${result.recent_dj_events.length}\n- TTS Files: ${result.tts_files.length}\n- Queue Length: ${result.liquidsoap_queue_length}\n\nCheck console for full details.`;
+    console.log('DJ Debug Status:', result); alert(summary);
+  } catch { alert('Debug failed - check console'); }
+};
+
+$('testFullDjBtn').onclick = async () => {
+  try {
+    const original = $('testFullDjBtn').textContent; $('testFullDjBtn').disabled = true; $('testFullDjBtn').textContent = 'Testing...';
+    const result = await j('/api/test-full-dj', { method:'POST' });
+    console.log('Full DJ Test:', result);
+    if (result.ok) { $('testFullDjBtn').textContent='Test Complete!'; $('testFullDjBtn').style.backgroundColor='#3ddc97'; alert(`Full DJ Test Results:\nAI Generation: ${result.steps.ai_generation ? 'SUCCESS' : 'FAILED'}\nAudio Created: ${result.steps.audio_exists ? 'YES' : 'NO'}\nQueued in Liquidsoap: ${result.steps.queue_result ? 'YES' : 'NO'}\nQueue Length: ${result.steps.queue_length}\n\nCheck console for details.`); }
+    else { $('testFullDjBtn').textContent='Test Failed!'; $('testFullDjBtn').style.backgroundColor='#ff5d5d'; alert(`Test failed: ${result.error}`); }
+    setTimeout(()=>{ $('testFullDjBtn').disabled=false; $('testFullDjBtn').textContent=original; $('testFullDjBtn').style.backgroundColor=''; }, 3000);
+  } catch(e) { console.error(e); }
+};
+
+$('genBtn').onclick = async () => {
+  try {
+    const original = $('genBtn').textContent; $('genBtn').disabled = true; $('genBtn').textContent = 'Generating...';
+    const result = await j('/api/dj-now', { method:'POST' });
+    console.log('DJ generation result:', result);
+    if (result.skipped) { $('genBtn').textContent='Already Generated!'; $('genBtn').style.backgroundColor='#ffb020'; }
+    else { $('genBtn').textContent='Generated!'; $('genBtn').style.backgroundColor='#3ddc97'; loadTimeline(); }
+    setTimeout(()=>{ $('genBtn').disabled=false; $('genBtn').textContent=original; $('genBtn').style.backgroundColor=''; }, 3000);
+  } catch (e) {
+    console.error(e); $('genBtn').textContent='Error!'; $('genBtn').style.backgroundColor='#ff5d5d'; setTimeout(()=>{ $('genBtn').disabled=false; $('genBtn').textContent='✨ Generate DJ Line'; $('genBtn').style.backgroundColor=''; }, 3000);
+  }
+};
+
+loadTimeline();
+setInterval(loadTimeline, 10000);
 </script>
 </body>
 </html>
