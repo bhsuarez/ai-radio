@@ -701,7 +701,7 @@ def tts_queue_post():
 @app.post("/api/skip")
 def api_skip():
     try:
-        telnet_cmd("icecast.output.skip")
+        telnet_cmd("output.icecast.skip")
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}, 500
