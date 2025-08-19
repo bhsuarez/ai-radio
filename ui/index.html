@@ -205,14 +205,14 @@ async function loadTimeline(){
     const songEvents = await enrichEventsWithArtwork(events.filter(e=>e.type==='song'));
     const allEvents = [...songEvents, ...events.filter(e=>e.type==='dj')].sort((a,b)=> new Date(b.time) - new Date(a.time));
 
-    const played = allEvents.filter(e=>{
-      if (e.type==='dj') return true;
-      if (e.type==='song') {
-        if (live && sameTrack(e, live)) return false;
-        if (upcoming.some(u=>sameTrack(e,u))) return false;
-      }
-      return true;
-    });
+    const played = allEvents.filter(e => {
+  if (e.type === 'dj') return true;
+  if (e.type === 'song') {
+    // Hide the currently live track, but keep everything else
+    if (live && sameTrack(e, live)) return false;
+  }
+  return true;
+});
 
     const seenP = new Set();
     const dedupedPlayed = played.filter(tr=>{
