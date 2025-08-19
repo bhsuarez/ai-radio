@@ -70,7 +70,7 @@ except Exception:
 app = Flask(__name__)
 
 # ── In-memory state ─────────────────────────────────────────────
-#HISTORY = []          # newest first
+HISTORY = []          # newest first
 UPCOMING = []         # optional future items
 NEXT_CACHE = Path("/opt/ai-radio/next.json")
 
