@@ -416,28 +416,41 @@ def synthesize_with_elevenlabs(text, output_path):
         print(f"ElevenLabs API error: {e}")
         return False
 
-def _ls_cmd(cmd: str, timeout=2.5) -> str:
+def _ls_cmd(cmd: str, timeout: float = 3.0) -> str:
     """
-    Run a Liquidsoap telnet command and return the raw response (without the trailing END/Bye!).
+    Send a single command to the Liquidsoap telnet server and return raw text.
+    We send the command, then 'quit', and read until the connection closes or we
+    see an 'END' line (many commands end with END).
     """
+    data = b""
     with socket.create_connection((LS_HOST, LS_PORT), timeout=timeout) as s:
-        s.sendall((cmd.strip() + "\n").encode("utf-8"))
-        s.sendall(b"quit\n")
-        s.shutdown(socket.SHUT_WR)
-        buf = []
         s.settimeout(timeout)
+        # Send the command, then 'quit' to close the session cleanly
+        s.sendall(cmd.encode("utf-8") + b"\n")
+        s.sendall(b"quit\n")
+        # Read everything until the server closes or times out
         while True:
-            chunk = s.recv(4096)
+            try:
+                chunk = s.recv(4096)
+            except socket.timeout:
+                break
             if not chunk:
                 break
-            buf.append(chunk)
-    text = b"".join(buf).decode("utf-8", "replace")
-    # Drop the telnet banner/END/Bye! noise
-    # Keep only the block between our command echo and END
-    # Many builds don’t echo the command; simple fallback:
-    if "END" in text:
-        text = text.split("END", 1)[0]
-    return text.strip()
+            data += chunk
+            # small fast-path if END appears
+            if b"\nEND\n" in data or data.endswith(b"END\n"):
+                # keep reading until close, but usually this is enough
+                pass
+    return data.decode("utf-8", errors="ignore")
+
+def _ls(cmd: str, timeout: float = 3.0) -> list[str]:
+    """
+    Convenience wrapper that returns a list of non-empty response lines,
+    with 'END' removed if present.
+    """
+    raw = _ls_cmd(cmd, timeout=timeout)
+    lines = [ln.strip() for ln in raw.splitlines()]
+    return [ln for ln in lines if ln and ln != "END"]
 
 _key_val = re.compile(r'^\s*([A-Za-z0-9_./-]+)="?(.*?)"?\s*$')
 
