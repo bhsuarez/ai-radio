@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, json, socket, time, html, hashlib, io, re, requests, subprocess
+import os, json, socket, time, html, hashlib, io, re, requests, subprocess, threading
 import urllib.parse
 from datetime import datetime
 from pathlib import Path
@@ -51,6 +51,7 @@ VOICE   = "/mnt/music/ai-dj/piper_voices/en/en_US/norman/medium/en_US-norman-med
 COVER_CACHE = Path("/opt/ai-radio/cache/covers"); COVER_CACHE.mkdir(parents=True, exist_ok=True)
 
 HISTORY_FILE = "/opt/ai-radio/play_history.json"
+HISTORY_LOCK = threading.Lock()
 MAX_HISTORY = 100
 DEDUP_WINDOW_MS = 60_000  # suppress exact duplicate events within 60s
 
@@ -70,14 +71,20 @@ except Exception:
 
 app = Flask(__name__)
 
+if os.environ.get("WERKZEUG_RUN_MAIN") != "true":  # avoid double-start in debug
+    t = threading.Thread(target=_scrobble_loop, name="scrobble", daemon=True)
+    t.start()
+
 # ── In-memory state ─────────────────────────────────────────────
 HISTORY: list = []   # keep this line
 HIST_FILE = "/opt/ai-radio/history.json"  # adjust to your path
 UPCOMING = []
+MAX_HISTORY = 300
 NEXT_CACHE = Path("/opt/ai-radio/next.json")
 
 HISTORY = deque(maxlen=400)
 _last_now_key = None
+_last_history_key = None 
 _last_now_payload = None 
 
 # ── Helpers ─────────────────────────────────────────────────────
@@ -100,6 +107,25 @@ def telnet_cmd(cmd: str, timeout=5) -> str:
         s.close()
     return (b"".join(chunks).decode(errors="ignore") or "").strip()
 
+def _history_key(ev: dict) -> str:
+    """Stable key: prefer filename; else title|artist|album."""
+    fn = (ev.get("filename") or "").strip()
+    if fn:
+        return f"f|{fn}"
+    t = (ev.get("title") or "").strip().lower()
+    a = (ev.get("artist") or "").strip().lower()
+    b = (ev.get("album") or "").strip().lower()
+    return f"t|{t}|{a}|{b}"
+
+def _save_history_to_disk():
+    tmp = HISTORY[-MAX_HISTORY:]
+    try:
+        os.makedirs(os.path.dirname(HISTORY_FILE), exist_ok=True)
+        with open(HISTORY_FILE, "w") as f:
+            json.dump(tmp, f)
+    except Exception:
+        pass
+
 def parse_kv_text(text: str) -> dict:
     """Parse lines like key=value"""
     out = {}
@@ -109,25 +135,38 @@ def parse_kv_text(text: str) -> dict:
             out[k.strip()] = v.strip().strip('"')
     return out
 
-def load_history():
-    """
-    Load history on boot into the in-memory deque.
-    File is an array of events: [{type:'song'|'dj', ...}, ...]
-    """
-    try:
-        if os.path.isfile(HISTORY_FILE):
-            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
-                items = json.load(f)
-            # Normalize and cap
-            if not isinstance(items, list):
-                items = []
-            HISTORY.clear()
-            HISTORY.extend(items[-HISTORY.maxlen:])
-        else:
-            HISTORY.clear()
-    except Exception:
-        # If file is corrupt, start fresh
-        HISTORY.clear()
+def _load_history(limit: int = 60):
+    """Read the last N events from history.jsonl newest-first."""
+    if not os.path.isfile(HISTORY_PATH):
+        return []
+    out = []
+    with open(HISTORY_PATH, "r") as f:
+        for line in f:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except Exception:
+                continue
+    out.sort(key=lambda e: e.get("time", 0), reverse=True)
+    return out[:limit]
+
+def _append_history(ev: dict):
+    """Append a single play event to history.jsonl (safe for multi-workers)."""
+    ev = {
+        "type": "song",
+        "time": int(ev.get("time") or time.time()*1000),
+        "title": ev.get("title") or "",
+        "artist": ev.get("artist") or "",
+        "album": ev.get("album") or "",
+        "filename": ev.get("filename") or "",
+        "artwork_url": ev.get("artwork_url") or "",
+    }
+    with open(HISTORY_PATH, "a") as f:
+        fcntl.flock(f, fcntl.LOCK_EX)
+        f.write(json.dumps(ev, ensure_ascii=False) + "\n")
+        fcntl.flock(f, fcntl.LOCK_UN)
 
 def save_history():
     try:
@@ -637,6 +676,77 @@ def _parse_kv_lines(lines):
             out[k.strip()] = v
     return out
 
+def _maybe_record_play(now_dict: dict):
+    """
+    Record the track currently playing into HISTORY once, when it changes.
+    Expects keys: title/artist/album/filename/time/artwork_url (some may be empty).
+    """
+    global _last_history_key
+
+    if not now_dict:
+        return
+    # Require that we have *something* identifying the track
+    if not (now_dict.get("filename") or now_dict.get("title")):
+        return
+
+    k = _history_key(now_dict)
+    if not k:
+        return
+
+    if _last_history_key == k:
+        return  # same track; skip
+
+    # Update last-key immediately to avoid racing double inserts
+    _last_history_key = k
+
+    # Build the event the UI expects
+    ev = {
+        "type": "song",
+        "time": int(now_dict.get("time") or time.time() * 1000),
+        "title": now_dict.get("title") or "",
+        "artist": now_dict.get("artist") or "",
+        "album": now_dict.get("album") or "",
+        "filename": now_dict.get("filename") or "",
+        # Precompute artwork_url so the frontend doesn’t need extra lookups
+        "artwork_url": "",
+    }
+    fn = ev["filename"]
+    if fn:
+        ev["artwork_url"] = f"/api/cover?file={urllib.parse.quote(fn, safe='/:')}"
+
+    with HISTORY_LOCK:
+        HISTORY.append(ev)
+        if len(HISTORY) > MAX_HISTORY:
+            del HISTORY[:-MAX_HISTORY]
+        _save_history_to_disk()
+
+_last_fingerprint = {"title":"", "artist":"", "filename":""}
+
+def _fingerprint(now: dict):
+    return (
+        (now.get("filename") or "").strip(),
+        (now.get("title") or "").strip().lower(),
+        (now.get("artist") or "").strip().lower(),
+    )
+
+def _scrobble_loop():
+    global _last_fingerprint
+    while True:
+        try:
+            now = _get_now_playing()  # must return dict with title/artist/filename/time/album
+            if now and (now.get("title") or now.get("filename")):
+                fp = _fingerprint(now)
+                if fp and fp != tuple(_last_fingerprint.values()):
+                    # new track → write to history
+                    _append_history(now)
+                    _last_fingerprint = {
+                        "filename": fp[0], "title": fp[1], "artist": fp[2]
+                    }
+        except Exception as e:
+            # keep it quiet but don’t crash the thread
+            pass
+        time.sleep(2)  # small poll; cheap because it calls your existing logic
+
 # ── Routes ──────────────────────────────────────────────────────
 
 @app.route("/api/event")
@@ -740,7 +850,7 @@ def _load_history(limit=60):
 def static_file(fname):
     return send_from_directory("/opt/ai-radio/static", fname, conditional=True)
 
-@app.route("/api/history")
+@app.get("/api/history")
 def api_history():
     return jsonify(_load_history(60))
 
@@ -1100,6 +1210,7 @@ def api_cover():
 
 # ── Startup ─────────────────────────────────────────────────────
 load_history()
+_load_history_from_disk()
 
 # ── Main ────────────────────────────────────────────────────────
 if __name__ == "__main__":
