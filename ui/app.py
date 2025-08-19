@@ -416,33 +416,6 @@ def synthesize_with_elevenlabs(text, output_path):
         print(f"ElevenLabs API error: {e}")
         return False
 
-def _ls_cmd(cmd: str, timeout: float = 3.0) -> str:
-    """
-    Send a single command to the Liquidsoap telnet server and return raw text.
-    We send the command, then 'quit', and read until the connection closes or we
-    see an 'END' line (many commands end with END).
-    """
-    data = b""
-    with socket.create_connection((LS_HOST, LS_PORT), timeout=timeout) as s:
-        s.settimeout(timeout)
-        # Send the command, then 'quit' to close the session cleanly
-        s.sendall(cmd.encode("utf-8") + b"\n")
-        s.sendall(b"quit\n")
-        # Read everything until the server closes or times out
-        while True:
-            try:
-                chunk = s.recv(4096)
-            except socket.timeout:
-                break
-            if not chunk:
-                break
-            data += chunk
-            # small fast-path if END appears
-            if b"\nEND\n" in data or data.endswith(b"END\n"):
-                # keep reading until close, but usually this is enough
-                pass
-    return data.decode("utf-8", errors="ignore")
-
 def _ls(cmd: str, timeout: float = 3.0) -> list[str]:
     """
     Convenience wrapper that returns a list of non-empty response lines,
@@ -513,6 +486,45 @@ def _metadata_for_rid(rid: int) -> dict:
     if fname:
         out["artwork_url"] = f"/api/cover?file={urllib.parse.quote(fname)}"
     return out
+
+def _ls_cmd(args):
+    """Run a liquidsoap client command and return its stdout as string."""
+    try:
+        out = subprocess.check_output(
+            ["liquidsoap", "--socket", "/tmp/radio.sock"] + args,
+            stderr=subprocess.STDOUT
+        )
+        return out.decode("utf-8").strip()
+    except subprocess.CalledProcessError as e:
+        return e.output.decode("utf-8").strip()
+    except Exception as e:
+        return str(e)
+
+def _get_now_playing():
+    """Return dict with info about the current track, or None."""
+    try:
+        meta = _ls_cmd(["now"])   # runs: liquidsoap --socket /tmp/radio.sock now
+        if not meta:
+            return None
+
+        lines = meta.splitlines()
+        data = {}
+        for ln in lines:
+            if "=" in ln:
+                k, v = ln.split("=", 1)
+                data[k.strip()] = v.strip()
+
+        return {
+            "title": data.get("title", "Unknown"),
+            "artist": data.get("artist", "Unknown"),
+            "album": data.get("album", ""),
+            "filename": data.get("filename", ""),
+            "duration_ms": int(float(data.get("duration", "0")) * 1000) if "duration" in data else None,
+            "elapsed_ms": int(float(data.get("elapsed", "0")) * 1000) if "elapsed" in data else None,
+            "time": int(__import__("time").time() * 1000)
+        }
+    except Exception as e:
+        return {"error": str(e)}
 
 _key_val_re = re.compile(r'([^=]+)="(.*)"$')
 
