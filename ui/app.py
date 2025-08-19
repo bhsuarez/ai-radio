@@ -521,33 +521,58 @@ def api_event():
 def api_history():
     return jsonify(_load_history(60))
 
-@app.route("/api/now")
+@app.get("/api/now")
 def api_now():
+    """
+    Return the currently playing track. If the basic 'now' info lacks a
+    filename/artwork_url, enrich it via the lowest RID from request.all.
+    """
     try:
-        r = requests.get(ICECAST_STATUS, timeout=2)
-        data = r.json()["icestats"]["source"]
-        if isinstance(data, list):
-            data = next((s for s in data if s.get("listenurl", "").endswith(MOUNT)), None)
-        # fallback if not found
-        if not data:
-            return jsonify({"title": "Unknown", "artist": "Unknown"}), 200
+        # whatever you used before to build 'now' (safe defaults shown)
+        now = {
+            "time": int(time.time() * 1000),
+            "title": "",
+            "artist": "",
+            "album": "",
+            "filename": "",
+            "artwork_url": "",
+            "type": "song",
+        }
 
-        # Icecast sometimes puts artist+title in .title or .song
-        raw_title = data.get("title") or data.get("song", "")
-        if " - " in raw_title:
-            artist, title = raw_title.split(" - ", 1)
-        else:
-            artist, title = "", raw_title
+        # --- your existing lightweight "now" detection (keep this if you have it)
+        # e.g. parse icecast stats, cached metadata, etc.
+        # now.update(get_basic_now_somehow())
 
+        # --- enrichment via Liquidsoap queue: lowest RID is the track playing
+        rid_lines = _ls_cmd("request.all")
+        rids = []
+        for ln in rid_lines:
+            rids.extend([int(x) for x in ln.split() if x.isdigit()])
+        rids = sorted(set(rids))
+        if rids:
+            current_rid = rids[0]
+            md = _metadata_for_rid(current_rid)
+            # fill missing fields; don’t clobber existing non‑empty values
+            for k in ("title", "artist", "album", "filename", "artwork_url"):
+                if not now.get(k) and md.get(k):
+                    now[k] = md[k]
+
+        # ensure artwork_url if we have a filename
+        if not now.get("artwork_url") and now.get("filename"):
+            now["artwork_url"] = f"/api/cover?file={urllib.parse.quote(now['filename'])}"
+
+        return jsonify(now)
+    except Exception:
+        app.logger.exception("now endpoint failed")
+        # Return something rather than 500 so UI keeps polling
         return jsonify({
-            "title": title.strip() or "Unknown",
-            "artist": artist.strip() or "Unknown",
-            "listeners": data.get("listeners", 0),
-            "stream_start": data.get("stream_start_iso"),
-            "filename": None
-        })
-    except Exception as e:
-        return jsonify({"title": "Unknown", "artist": "Unknown", "error": str(e)}), 200
+            "time": int(time.time() * 1000),
+            "title": "Unknown",
+            "artist": "Unknown Artist",
+            "album": "",
+            "filename": "",
+            "artwork_url": ""
+        }), 200
 
 @app.get("/api/next")
 def api_next():
