@@ -57,6 +57,7 @@ app = Flask(__name__)
 # ── In-memory state ─────────────────────────────────────────────
 HISTORY = []          # newest first
 UPCOMING = []         # optional future items
+NEXT_CACHE = Path("/opt/ai-radio/next.json")
 
 # ── Helpers ─────────────────────────────────────────────────────
 def telnet_cmd(cmd: str, timeout=5) -> str:
@@ -301,8 +302,15 @@ def _fetch_online_cover(artist, album, title, size=600, timeout=6):
 
     return None
 
-import requests
-import os
+def _validate_track_obj(t):
+    """Keep only the fields the frontend and enqueue scripts expect."""
+    return {
+        "title": t.get("title") or "",
+        "artist": t.get("artist") or "",
+        "album": t.get("album") or "",
+        "filename": t.get("filename") or "",
+        "artwork_url": t.get("artwork_url") or ""
+    }
 
 def synthesize_with_elevenlabs(text, output_path):
     """
@@ -482,7 +490,19 @@ def api_now():
 
 @app.get("/api/next")
 def api_next():
-    return jsonify(UPCOMING)
+    """
+    Returns an array of upcoming tracks.
+    Schema (per frontend): [{title, artist, album, filename, artwork_url}]
+    """
+    if NEXT_CACHE.exists():
+        try:
+            data = json.loads(NEXT_CACHE.read_text())
+            if isinstance(data, list):
+                return jsonify([_validate_track_obj(t) for t in data])
+        except Exception:
+            pass
+    # Fallback: nothing queued yet
+    return jsonify([])
 
 @app.get("/api/tts_queue")
 def tts_queue_get():

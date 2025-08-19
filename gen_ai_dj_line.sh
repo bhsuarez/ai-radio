@@ -1,84 +1,74 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Ensure Ollama uses the right model directory
-export OLLAMA_MODELS="/mnt/music/ai-dj/ollama"
+NEXT_JSON="${NEXT_JSON:-/opt/ai-radio/next.json}"
+QUEUE_HOST="${QUEUE_HOST:-127.0.0.1}"
+QUEUE_PORT="${QUEUE_PORT:-1234}"
+LS_CMD="${LS_CMD:-output.icecast.metadata}"
 
-TITLE="${1:-}"
-ARTIST="${2:-}"
+mkdir -p "$(dirname "$NEXT_JSON")"
 
-# Default to a smaller, RAM-friendly model
-MODEL="${MODEL:-llama3.2:3b}"
-PROVIDER="${PROVIDER:-ollama}"
-OPENAI_MODEL="${OPENAI_MODEL:-gpt-4o-mini}"
-
-# Check if we're in intro mode
-INTRO_MODE="${DJ_INTRO_MODE:-0}"
-CUSTOM_PROMPT="${DJ_CUSTOM_PROMPT:-}"
-
-if [[ "$INTRO_MODE" == "1" ]]; then
-    # INTRO MODE - Generate introduction before song plays
-    STYLES=("energetic" "upbeat" "smooth" "excited" "warm" "friendly")
-    STYLE="${STYLE:-$(printf '%s\n' "${STYLES[@]}" | shuf -n1)}"
-    
-    if [[ -n "$CUSTOM_PROMPT" ]]; then
-        PROMPT="$CUSTOM_PROMPT"
-    else
-        PROMPT="You are a ${STYLE} radio DJ introducing the next song. 
-In 1 sentence (under 15 words), introduce '${TITLE:-this track}' by ${ARTIST:-an unknown artist}.
-Use phrases like 'Coming up next', 'Here's', 'Time for', 'Let's hear', etc.
-Keep it brief, energetic, and natural. No emojis or hashtags. Don't invent facts."
-    fi
-else
-    # NORMAL MODE - Generate commentary after song plays
-    STYLES=("energetic hype" "laid-back chill" "warm late-night" "quirky college-radio" "BBC-style concise" "retro 90s alt" "clubby electronic")
-    STYLE="${STYLE:-$(printf '%s\n' "${STYLES[@]}" | shuf -n1)}"
-
-    if (( RANDOM % 100 < 60 )); then
-      TRIVIA_LINE="If you genuinely know one short, widely known fact about ${ARTIST:-the artist} or the song '${TITLE:-this track}', include it; if not, skip trivia."
-    else
-      TRIVIA_LINE=""
-    fi
-
-    PROMPT="You are a radio DJ. Style: ${STYLE}.
-In 1–2 sentences, speak about the song '${TITLE:-this track}' by ${ARTIST:-an unknown artist} that just played.
-${TRIVIA_LINE}
-Keep it natural, conversational, and clean. No emojis or hashtags. Do not invent facts."
-fi
-
-collapse_line() {
-  tr -d '\r' | sed 's/^[[:space:]]\+//; s/[[:space:]]\+$//' | awk 'NF' | paste -sd' ' - | sed 's/  */ /g'
-}
-
-run_ollama() {
-  ollama run "$MODEL" "$PROMPT" | collapse_line
-}
-
-run_openai() {
-  : "${OPENAI_API_KEY:?OPENAI_API_KEY is required when PROVIDER=openai}"
-  resp="$(curl -sS https://api.openai.com/v1/chat/completions \
-    -H "Authorization: Bearer ${OPENAI_API_KEY}" \
-    -H "Content-Type: application/json" \
-    -d @- <<EOF
-{
-  "model": "${OPENAI_MODEL}",
-  "temperature": 0.8,
-  "max_tokens": 80,
-  "messages": [
-    {"role":"system","content":"You are a concise, engaging radio DJ. No emojis or hashtags. Never invent facts."},
-    {"role":"user","content": ${PROMPT@Q} }
-  ]
-}
-EOF
+# 1) Ask Liquidsoap for the metadata blocks (like your sample) via netcat
+RAW="$(
+  { printf '%s\n' "$LS_CMD"; printf 'quit\n'; } \
+  | nc -w 1 "$QUEUE_HOST" "$QUEUE_PORT" || true
 )"
-  python3 - "$resp" <<'PY' | collapse_line
-import sys, json
-data = json.loads(sys.argv[1])
-print(data["choices"][0]["message"]["content"])
-PY
-}
 
-case "$PROVIDER" in
-  openai) run_openai ;;
-  *)      run_ollama ;;
-esac
+# Optional: drop a debug copy so we can inspect what came back
+echo "$RAW" > /var/tmp/ls_meta.txt
+
+# 2) Parse the blocks and write next.json
+python3 - "$NEXT_JSON" <<'PY'
+import json, re, sys
+
+out_path = sys.argv[1]
+raw = sys.stdin.read()
+
+# Expect blocks like:
+# --- 10 ---
+# album="..."
+# artist="..."
+# ...
+# --- 9 ---
+blocks = []
+cur = {}
+cur_idx = None
+
+for line in raw.splitlines():
+    m = re.match(r'^\s*---\s*(\d+)\s*---\s*$', line)
+    if m:
+        if cur:
+            blocks.append((cur_idx, cur))
+        cur = {}
+        cur_idx = int(m.group(1))
+        continue
+    if line.strip() == "END":
+        if cur:
+            blocks.append((cur_idx, cur))
+        break
+    kv = re.match(r'^\s*([a-zA-Z0-9_]+)="?(.*?)"?\s*$', line)
+    if kv:
+        k, v = kv.group(1), kv.group(2)
+        cur[k.lower()] = v
+
+# If LS printed 10..1, this puts 1 first (nearest/up next first)
+blocks.sort(key=lambda t: t[0])
+
+tracks = []
+for _, meta in blocks:
+    title  = meta.get("title")  or "Unknown Title"
+    artist = meta.get("artist") or "Unknown Artist"
+    album  = meta.get("album")  or ""
+    tracks.append({
+        "title": title,
+        "artist": artist,
+        "album": album,
+        "filename": "",       # not provided by this command
+        "artwork_url": ""     # UI will try /api/test_find to fill this
+    })
+
+with open(out_path, "w") as f:
+    json.dump(tracks, f)
+
+print(f"Wrote {len(tracks)} tracks to {out_path}")
+PY

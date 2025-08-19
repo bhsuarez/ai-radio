@@ -1,8 +1,8 @@
 *.bak.*
 .DS_Store
 /tts
-ui/.venv
-ui/__pycache__
+ui/.venv/*
+ui/__pycache__/*
 *.mp3
 *.wav
 tts/*
