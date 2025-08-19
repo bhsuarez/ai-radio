@@ -69,10 +69,6 @@ except Exception:
 
 app = Flask(__name__)
 
-if os.environ.get("WERKZEUG_RUN_MAIN") != "true":  # avoid double-start in debug
-    t = threading.Thread(target=_scrobble_loop, name="scrobble", daemon=True)
-    t.start()
-
 # ── In-memory state ─────────────────────────────────────────────
 HISTORY: list = []   # keep this line
 HIST_FILE = "/opt/ai-radio/history.json"  # adjust to your path
@@ -1292,6 +1288,10 @@ def api_cover():
 # ── Startup ─────────────────────────────────────────────────────
 load_history()
 _load_history_from_disk()
+
+if os.environ.get("WERKZEUG_RUN_MAIN") != "true":  # avoid double-start in debug
+    t = threading.Thread(target=_scrobble_loop, name="scrobble", daemon=True)
+    t.start()
 
 # ── Main ────────────────────────────────────────────────────────
 if __name__ == "__main__":
