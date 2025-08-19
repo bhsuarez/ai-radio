@@ -109,23 +109,24 @@ def parse_kv_text(text: str) -> dict:
     return out
 
 def load_history():
-    global HISTORY
+    """
+    Load history on boot into the in-memory deque.
+    File is an array of events: [{type:'song'|'dj', ...}, ...]
+    """
     try:
-        with open(HIST_FILE, "r") as f:
-            data = json.load(f)
-        if isinstance(data, list):
-            if isinstance(HISTORY, list):
-                HISTORY[:] = data
-            else:
-                HISTORY = data  # rebind if someone clobbered it
+        if os.path.isfile(HISTORY_FILE):
+            with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+                items = json.load(f)
+            # Normalize and cap
+            if not isinstance(items, list):
+                items = []
+            HISTORY.clear()
+            HISTORY.extend(items[-HISTORY.maxlen:])
         else:
-            # file had something unexpected; reset to empty list
-            HISTORY = []
-    except FileNotFoundError:
-        HISTORY = []
-    except Exception as e:
-        print(f"[history] load failed: {e}")
-        HISTORY = []
+            HISTORY.clear()
+    except Exception:
+        # If file is corrupt, start fresh
+        HISTORY.clear()
 
 def save_history():
     try:
@@ -277,7 +278,6 @@ def _first_tag(v):
     except Exception:
         return None
 
-
 def _track_key(t: dict) -> str:
     """Stable key for change detection."""
     fn = (t.get("filename") or "").strip().lower()
@@ -416,32 +416,63 @@ def synthesize_with_elevenlabs(text, output_path):
         print(f"ElevenLabs API error: {e}")
         return False
 
-def _ls_cmd(cmd: str, expect_end=True, timeout=2.0):
-    """Send one command to Liquidsoap telnet and return lines (without END)."""
-    with closing(socket.create_connection((LS_HOST, LS_PORT), timeout=timeout)) as s:
+def _ls(cmd: str, timeout=2.5) -> str:
+    """
+    Run a Liquidsoap telnet command and return the raw response (without the trailing END/Bye!).
+    """
+    with socket.create_connection((LS_HOST, LS_PORT), timeout=timeout) as s:
         s.sendall((cmd.strip() + "\n").encode("utf-8"))
-        # read until END or connection closes
-        buf = b""
+        s.sendall(b"quit\n")
+        s.shutdown(socket.SHUT_WR)
+        buf = []
         s.settimeout(timeout)
         while True:
-            try:
-                chunk = s.recv(4096)
-                if not chunk:
-                    break
-                buf += chunk
-                if b"\nEND" in buf or b"END\r" in buf:
-                    break
-            except socket.timeout:
+            chunk = s.recv(4096)
+            if not chunk:
                 break
-    text = buf.decode("utf-8", "replace")
-    # strip leading echo/connection banners and trailing END
-    lines = [ln.strip() for ln in text.splitlines()]
-    if "END" in lines:
-        lines = lines[:lines.index("END")]
-    # Liquidsoap often echoes our command; drop it if present
-    if lines and lines[0].lower().startswith(cmd.split()[0].lower()):
-        lines = lines[1:]
-    return [ln for ln in lines if ln]
+            buf.append(chunk)
+    text = b"".join(buf).decode("utf-8", "replace")
+    # Drop the telnet banner/END/Bye! noise
+    # Keep only the block between our command echo and END
+    # Many builds don’t echo the command; simple fallback:
+    if "END" in text:
+        text = text.split("END", 1)[0]
+    return text.strip()
+
+_key_val = re.compile(r'^\s*([A-Za-z0-9_./-]+)="?(.*?)"?\s*$')
+
+def _parse_metadata_block(text: str) -> dict:
+    """
+    Turn Liquidsoap key="val" lines into a dict.
+    """
+    out = {}
+    for line in text.splitlines():
+        m = _key_val.match(line)
+        if not m: 
+            continue
+        k, v = m.group(1), m.group(2)
+        # Unescape simple cases: Liquidsoap prints quotes as-is
+        out[k] = v
+    return out
+
+def _ls_request_all() -> list[int]:
+    """
+    Return list of RIDs (ints) from `request.all`.
+    Example raw: '78 79'
+    """
+    raw = _ls("request.all")
+    # last line can contain rids or be empty; split on whitespace and keep ints
+    rids = []
+    for tok in raw.strip().split():
+        try:
+            rids.append(int(tok))
+        except ValueError:
+            pass
+    return rids
+
+def _ls_request_metadata(rid: int) -> dict:
+    raw = _ls(f"request.metadata {rid}")
+    return _parse_metadata_block(raw)
 
 def _metadata_for_rid(rid: int) -> dict:
     lines = _ls_cmd(f"request.metadata {rid}")
@@ -579,25 +610,47 @@ def static_file(fname):
 def api_history():
     return jsonify(_load_history(60))
 
+@app.get("/api/history")
+def api_history():
+    return jsonify(list(HISTORY))
+
 @app.get("/api/now")
 def api_now():
-    # 1) however you currently build "now" (from Liquidsoap / telnet)
-    now = _get_current_now_dict_somehow()  # <-- your existing logic returns a dict
+    """
+    Report what's currently on-air by asking Liquidsoap:
+    - request.all -> choose the LOWEST rid (now-playing)
+    - request.metadata <rid> -> parse fields
+    """
+    try:
+        rids = _ls_request_all()
+        if not rids:
+            return jsonify({})  # nothing queued
 
-    # 2) normalize and ensure artwork if we have filename
-    global _last_now_key, _last_now_payload
-    now = _with_artwork(now)
-    key = _track_key(now) if (now.get("title") or now.get("filename")) else None
+        rid_now = min(rids)  # lower = on air (matches your observation)
+        meta = _ls_request_metadata(rid_now)
 
-    # 3) detect change -> log previous into HISTORY
-    if key and _last_now_key and key != _last_now_key:
-        _maybe_log_previous(_last_now_payload)
+        title  = meta.get("title") or ""
+        artist = meta.get("artist") or ""
+        album  = meta.get("album") or ""
+        fname  = meta.get("filename") or meta.get("initial_uri","").removeprefix("file://")
 
-    # 4) update trackers and return
-    if key:
-        _last_now_key = key
-        _last_now_payload = now
-    return jsonify(now)
+        out = {
+            "rid": rid_now,
+            "title": title,
+            "artist": artist,
+            "album": album,
+            "filename": fname,
+            "time": int(time.time() * 1000)  # when we sampled it
+        }
+
+        if fname:
+            out["artwork_url"] = f"/api/cover?file={urllib.parse.quote(fname)}"
+
+        return jsonify(out)
+
+    except Exception as e:
+        # Don’t kill the UI; just return an empty object so the frontend can keep going
+        return jsonify({"error": str(e)}), 200
 
 @app.get("/api/next")
 def api_next():
