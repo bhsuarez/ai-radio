@@ -88,16 +88,39 @@ def update_metadata(m)
   m
 end
 
-# ---------- Chain / processing ----------
+# --- helpers you already have ---
+def rm_key(m, k)  list.filter(fun (kv) -> fst(kv) != k, m) end
+
+# New: set/replace a metadata key
+def put_meta(m, k, v)
+  m2 = rm_key(m, k)
+  list.append(m2, [(k, v)])
+end
+
+# Add/compute artwork per track
+def attach_cover(m)
+  artist = meta_get(m, "artist", "Unknown Artist")
+  title  = meta_get(m, "title",  "Unknown Title")
+
+  # Build your expected cover path (sanitize as needed)
+  cover = "/opt/ai-radio/covers/" ^ artist ^ " - " ^ title ^ ".jpg"
+
+  # Optional existence check; remove if not available in your build
+  if file.exists(cover) then
+    put_meta(m, "artwork", cover)
+  else
+    put_meta(m, "artwork", "/opt/ai-radio/covers/default.jpg")
+  end
+end
+
 # Normalize metadata
 music = metadata.map(update_metadata, all_music)
 
-# Smooth crossfades on music
-music = crossfade(music)
+# Attach per-track artwork
+music = metadata.map(attach_cover, music)
 
-# Announce every real track start (attach once, on the smoothed music)
+# Announce & (optional) DJ intro hooks
 music = source.on_metadata(music, announce_song)
-# Enable this if you want near-end DJ intros:
 # music = source.on_metadata(music, after_song)
 
 # Sine backup
