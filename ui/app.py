@@ -416,7 +416,7 @@ def synthesize_with_elevenlabs(text, output_path):
         print(f"ElevenLabs API error: {e}")
         return False
 
-def _ls(cmd: str, timeout=2.5) -> str:
+def _ls_cmd(cmd: str, timeout=2.5) -> str:
     """
     Run a Liquidsoap telnet command and return the raw response (without the trailing END/Bye!).
     """
