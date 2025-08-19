@@ -1,94 +1,65 @@
+# /opt/ai-radio/refresh_next_from_requests.sh
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Where to write the JSON that /api/next serves
-NEXT_JSON="${NEXT_JSON:-/opt/ai-radio/next.json}"
-
-# Liquidsoap telnet
 LS_HOST="${LS_HOST:-127.0.0.1}"
 LS_PORT="${LS_PORT:-1234}"
-
-tmpdir="$(mktemp -d)"
-trap 'rm -rf "$tmpdir"' EXIT
+NEXT_JSON="${NEXT_JSON:-/opt/ai-radio/next.json}"
+LIMIT="${LIMIT:-8}"                # max items to emit
+LOG="/var/tmp/refresh_next_from_requests.log"
 
 ts() { date '+%Y-%m-%d %H:%M:%S'; }
-log() { echo "[$(ts)] $*"; }
+echo "[$(ts)] START refresh via request.all" >> "$LOG"
 
-# 1) Get the queued request RIDs (these are *upcoming* items)
-# Output looks like:  "53 54" then "END"
-rid_line="$(
-  { printf 'request.all\n'; printf 'quit\n'; } \
-  | telnet "$LS_HOST" "$LS_PORT" 2>/dev/null \
-  | awk 'NF==0{next} /^[0-9 ]+$/ {print; exit}'
-)"
+# 1) fetch RIDs currently queued
+RID_LINES="$({
+  printf 'request.all\n'
+  printf 'quit\n'
+} | telnet "$LS_HOST" "$LS_PORT" 2>>"$LOG" | tr -d '\r')"
 
-# If nothing queued, write empty array and exit cleanly
-if [[ -z "${rid_line// }" ]]; then
-  printf '[]\n' > "$NEXT_JSON"
-  log "Wrote 0 tracks to $NEXT_JSON (queue empty)"
+# Extract numeric RIDs (space/newline separated list, ends with "END")
+RIDS="$(echo "$RID_LINES" | awk '/^[0-9]+([ \t]+[0-9]+)*$/{print}')" || true
+RIDS="$(echo "$RIDS" | tr ' ' '\n' | grep -E '^[0-9]+$' | head -n "$LIMIT" || true)"
+
+if [[ -z "${RIDS}" ]]; then
+  echo "[]" > "$NEXT_JSON"
+  echo "[$(ts)] Wrote 0 tracks to $NEXT_JSON (queue empty)" | tee -a "$LOG"
   exit 0
 fi
 
-# Split RIDs
-read -r -a RIDS <<<"$rid_line"
+# 2) for each RID, pull metadata and turn into JSON
+json_items=()
+i=0
+while read -r rid; do
+  [[ -z "$rid" ]] && continue
+  ((i++))
 
-# 2) For each RID, fetch metadata and capture a small JSON object
-# We’ll keep the fields your front-end expects: title, artist, album, filename, plus artwork_url
-items=()
-for rid in "${RIDS[@]}"; do
-  md="$(
-    { printf 'request.metadata %s\n' "$rid"; printf 'quit\n'; } \
-    | telnet "$LS_HOST" "$LS_PORT" 2>/dev/null
-  )"
+  META="$({
+    printf 'request.metadata %s\n' "$rid"
+    printf 'quit\n'
+  } | telnet "$LS_HOST" "$LS_PORT" 2>>"$LOG" | tr -d '\r')"
 
-  # Convert key="value" lines to JSON with Python (robust to missing fields)
-  js="$(python3 - "$md" <<'PY'
-import json, re, sys
-text = sys.stdin.read()
+  # pull key="value" pairs into shell vars
+  getv(){ echo "$META" | awk -v k="$1" -F'=' '$1==k{ sub(/^"/,"",$2); sub(/"$/,"",$2); print $2; exit }'; }
+  title="$(getv title)"
+  artist="$(getv artist)"
+  album="$(getv album)"
+  filename="$(getv filename)"
+  [[ -z "$filename" ]] && filename="$(getv initial_uri | sed 's#^file://##')"
 
-# Grab key="value" pairs
-pairs = dict(re.findall(r'^([a-zA-Z0-9_./:-]+)="(.*)"$', text, flags=re.M))
+  # build a JSON object safely with jq
+  obj="$(jq -n --arg title "${title:-}" \
+               --arg artist "${artist:-}" \
+               --arg album "${album:-}" \
+               --arg filename "${filename:-}" \
+               --arg rid "$rid" \
+               '{title:$title, artist:$artist, album:$album, filename:$filename, rid:$rid|tonumber}')"
+  json_items+=("$obj")
+done <<< "$RIDS"
 
-# Normalize fields
-title   = pairs.get('title') or ''
-artist  = pairs.get('artist') or pairs.get('albumartist') or ''
-album   = pairs.get('album') or ''
-fname   = pairs.get('filename') or pairs.get('initial_uri','').replace('file://','')
-
-# If the filename is a file://-style path in initial_uri, decode \uXXXX etc
-fname = fname.encode('utf-8','ignore').decode('unicode_escape')
-
-# Minimal object expected by the UI for "UPCOMING"
-obj = {
-  "title": title,
-  "artist": artist,
-  "album": album,
-  "filename": fname,
-}
-
-# If we have a filename, give the UI a cover URL it can try
-if fname:
-  from urllib.parse import quote
-  obj["artwork_url"] = f"/api/cover?file={quote(fname)}"
-
-print(json.dumps(obj, ensure_ascii=False))
-PY
-)"
-  # Ignore completely empty records
-  if [[ "$js" != "{}" && -n "$js" ]]; then
-    items+=("$js")
-  fi
-done
-
-# 3) Write array in the same order Liquidsoap returned (earliest first)
-printf '[\n' >"$NEXT_JSON"
-for i in "${!items[@]}"; do
-  if [[ $i -gt 0 ]]; then printf ',\n' >>"$NEXT_JSON"; fi
-  printf '  %s' "${items[$i]}" >>"$NEXT_JSON"
-done
-printf '\n]\n' >>"$NEXT_JSON"
-
-# 4) Done
-count=${#items[@]}
-log "Wrote $count tracks to $NEXT_JSON"
-jq -c '.' "$NEXT_JSON" >/dev/null 2>&1 || true
+# 3) write array
+jq -n --argjson a "[${json_items[*]:-}]" '$a' > "$NEXT_JSON"
+count="$(jq 'length' < "$NEXT_JSON")"
+echo "jq . $NEXT_JSON"
+jq . "$NEXT_JSON"
+echo "[$(ts)] Wrote ${count} tracks to $NEXT_JSON" | tee -a "$LOG"
