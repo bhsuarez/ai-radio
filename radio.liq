@@ -88,6 +88,34 @@ def update_metadata(m)
   m
 end
 
+# Replace/add a metadata key
+def put_meta(m, k, v)
+  m2 = list.filter(fun (kv) -> fst(kv) != k, m)
+  list.append(m2, [(k, v)])
+end
+
+# Attach cover URL that points to your Flask /api/cover
+def attach_cover(m)
+  # Use same fallback logic you used in announce_song
+  file =
+    if list.mem("filename", list.map(fst, m)) then list.assoc("filename", m)
+    else if list.mem("file", list.map(fst, m)) then list.assoc("file", m) else "" end end
+
+  # Build the URL for clients (use your server IP/hostname, not 127.0.0.1)
+  base = "http://icecast.zorro.network:5055/api/cover?file="
+  cover_url = base ^ url.encode(file)
+
+  # Set several common keys; harmless and improves player compatibility
+  m = put_meta(m, "artwork",      cover_url)
+  m = put_meta(m, "artwork_url",  cover_url)
+  m = put_meta(m, "arturl",       cover_url)
+  m
+end
+
+# Wire it in
+music = metadata.map(update_metadata, all_music)
+music = metadata.map(attach_cover,   music)  # <-- add this line
+
 # --- helpers you already have ---
 def rm_key(m, k)  list.filter(fun (kv) -> fst(kv) != k, m) end
 
