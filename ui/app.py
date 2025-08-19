@@ -416,14 +416,8 @@ def synthesize_with_elevenlabs(text, output_path):
         print(f"ElevenLabs API error: {e}")
         return False
 
-def _ls(cmd: str, timeout: float = 3.0) -> list[str]:
-    """
-    Convenience wrapper that returns a list of non-empty response lines,
-    with 'END' removed if present.
-    """
-    raw = _ls_cmd(cmd, timeout=timeout)
-    lines = [ln.strip() for ln in raw.splitlines()]
-    return [ln for ln in lines if ln and ln != "END"]
+def _ls(cmd: str, timeout: float = 2.5):
+    return _ls_lines(cmd, timeout)
 
 _key_val = re.compile(r'^\s*([A-Za-z0-9_./-]+)="?(.*?)"?\s*$')
 
@@ -460,47 +454,26 @@ def _ls_request_metadata(rid: int) -> dict:
     raw = _ls(f"request.metadata {rid}")
     return _parse_metadata_block(raw)
 
-def _metadata_for_rid(rid: int) -> dict | None:
-    raw = _ls_query(f"request.metadata {rid}")
-    d = _parse_kv_block(raw)
-    if not d:
-        return None
-    return {
-        "title": d.get("title") or "Unknown",
-        "artist": d.get("artist") or "Unknown",
-        "album": d.get("album") or "",
-        "filename": d.get("filename") or d.get("initial_uri", "").replace("file://", ""),
-        "time": int(__import__("time").time() * 1000),
-        "duration_ms": None,
-        "elapsed_ms": None,
+def _metadata_for_rid(rid: str | int):
+    rid = str(rid).strip()
+    meta_lines = _ls_lines(f"request.metadata {rid}")
+    d = _parse_kv_lines(meta_lines)
+    fname = d.get("filename") or d.get("initial_uri", "")
+    # Liquidsoap often returns "file:///..." as initial_uri
+    if fname.startswith("file://"):
+        fname = fname[7:]
+    out = {
+        "title": d.get("title", "") or "",
+        "artist": d.get("artist", "") or "",
+        "album": d.get("album", "") or "",
+        "filename": fname or "",
     }
-
-def _ls_cmd(cmd: str, timeout=2.5) -> list[str]:
-    """
-    Send a single command to liquidsoap telnet and return *all* lines (sans boilerplate).
-    Always returns a list of lines, no trailing 'END', no echoed command, no telnet noise.
-    """
-    bash = f'''\
-{shlex.quote(f'printf "%s\\nquit\\n" "{cmd}"')} | telnet {LS_HOST} {LS_PORT} 2>/dev/null
-'''
-    p = subprocess.run(["/bin/bash","-lc", bash],
-                       text=True, capture_output=True, timeout=timeout)
-    lines = [ln.rstrip("\r\n") for ln in p.stdout.splitlines()]
-
-    out = []
-    for ln in lines:
-        s = ln.strip()
-        if not s: 
-            continue
-        # skip the local/connected banners and the echoed command
-        if s.startswith("Trying ") or s.startswith("Connected to ") or s.startswith("Escape character is"):
-            continue
-        if s == cmd:  # echoed back by telnet sometimes
-            continue
-        if s == "END":
-            break
-        out.append(s)
+    if out["filename"]:
+        out["artwork_url"] = f"/api/cover?file={urllib.parse.quote(out['filename'])}"
     return out
+
+def _ls_cmd(cmd: str, timeout: float = 2.5):
+    return _ls_lines(cmd, timeout)
 
 _kv_re = re.compile(r'([a-zA-Z0-9_]+)="([^"]*)"')
 
@@ -623,6 +596,46 @@ def _art_url_from_file(fname: str) -> str:
         return None
     return f"/api/cover?file={urllib.parse.quote(fname)}"
 
+def _ls_lines(cmd: str, timeout: float = 2.5):
+    """
+    Send a command to Liquidsoap's telnet interface and return a list of lines,
+    with trailing 'END' removed.
+    """
+    data = b""
+    with socket.create_connection((LS_HOST, LS_PORT), timeout=timeout) as s:
+        s.settimeout(timeout)
+        s.sendall((cmd + "\n").encode("utf-8"))
+        s.sendall(b"quit\n")
+        start = time.time()
+        while time.time() - start < timeout:
+            try:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                data += chunk
+                # LS ends most responses with a line 'END'
+                if b"\nEND" in data or data.rstrip().endswith(b"END"):
+                    break
+            except socket.timeout:
+                break
+
+    lines = data.decode("utf-8", errors="ignore").splitlines()
+    # Strip any prompt/blank and the END sentinel
+    return [ln for ln in lines if ln.strip() and ln.strip() != "END"]
+
+def _parse_kv_lines(lines):
+    """
+    Parse Liquidsoap key="val" lines into a dict.
+    """
+    out = {}
+    for ln in lines:
+        # format: key="value"
+        if "=" in ln:
+            k, v = ln.split("=", 1)
+            v = v.strip().strip('"')
+            out[k.strip()] = v
+    return out
+
 # ── Routes ──────────────────────────────────────────────────────
 
 @app.route("/api/event")
@@ -739,51 +752,18 @@ def api_now():
 
 @app.get("/api/next")
 def api_next():
-    """
-    Returns upcoming track metadata by querying LS:
-      - request.all -> list of RIDs (possibly across multiple lines)
-      - request.metadata <rid> -> key="value" pairs
-    """
     try:
-        # 1) Get all upcoming RIDs (can be space-separated across several lines)
-        rid_lines = _ls_cmd("request.all")  # e.g. ["78 79"] or ["78", "79"] etc.
-        rids: list[int] = []
+        rid_lines = _ls_cmd("request.all")  # e.g. ["78 79"] or ["78", "79"]
+        rids = []
         for ln in rid_lines:
-            for tok in ln.split():
-                if tok.isdigit():
-                    rids.append(int(tok))
-
-        items = []
-        for rid in rids:
-            md = _ls_kv(f"request.metadata {rid}")
-            if not md:
-                continue
-
-            # Filter: only show queue entries, not broken ones
-            status = (md.get("status") or "").lower()
-            if status not in ("ready", "queued", "in_queue", "pending", "prepared"):
-                # skip weird or invalid entries
-                pass
-
-            # Prefer 'filename'; fall back to 'initial_uri'
-            fname = _clean_file(md.get("filename") or md.get("initial_uri") or "")
-            title = md.get("title") or ""
-            artist = md.get("artist") or ""
-            album = md.get("album") or ""
-
-            items.append({
-                "rid": rid,
-                "title": title,
-                "artist": artist,
-                "album": album,
-                "filename": fname,
-                "artwork_url": _art_url_from_file(fname),
-            })
-
-        return jsonify(items)
+            rids.extend(x for x in ln.strip().split() if x.isdigit())
+        # Keep ordering as returned by LS (first up next first)
+        upcoming = [_metadata_for_rid(r) for r in rids]
+        return jsonify(upcoming)
     except Exception as e:
         app.logger.exception("next endpoint failed")
-        return jsonify([]), 200
+        # return stable empty array on error so UI doesn't explode
+        return jsonify([])  # optionally: jsonify({"error": str(e)})
 
 # Serve the synthesized DJ audio files
 @app.get("/tts_queue/<path:fname>")
