@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
-import os, json, socket, time, hashlib, io, re, requests, subprocess
+import os, json, socket, time, html, hashlib, io, re, requests, subprocess
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory, send_file, abort
 from urllib.parse import quote
+from contextlib import closing
 
 HISTORY_PATH = "/opt/ai-radio/play_history.json"
 
@@ -13,6 +14,9 @@ MOUNT = "/stream.mp3"
 # ── Config ──────────────────────────────────────────────────────
 HOST = "0.0.0.0"
 PORT = 5055
+
+LS_HOST = os.environ.get("QUEUE_HOST", "127.0.0.1")
+LS_PORT = int(os.environ.get("QUEUE_PORT", "1234"))
 
 TELNET_HOST = "127.0.0.1"
 TELNET_PORT = 1234
@@ -356,6 +360,62 @@ def synthesize_with_elevenlabs(text, output_path):
         print(f"ElevenLabs API error: {e}")
         return False
 
+def _ls_cmd(cmd: str, expect_end=True, timeout=2.0):
+    """Send one command to Liquidsoap telnet and return lines (without END)."""
+    with closing(socket.create_connection((LS_HOST, LS_PORT), timeout=timeout)) as s:
+        s.sendall((cmd.strip() + "\n").encode("utf-8"))
+        # read until END or connection closes
+        buf = b""
+        s.settimeout(timeout)
+        while True:
+            try:
+                chunk = s.recv(4096)
+                if not chunk:
+                    break
+                buf += chunk
+                if b"\nEND" in buf or b"END\r" in buf:
+                    break
+            except socket.timeout:
+                break
+    text = buf.decode("utf-8", "replace")
+    # strip leading echo/connection banners and trailing END
+    lines = [ln.strip() for ln in text.splitlines()]
+    if "END" in lines:
+        lines = lines[:lines.index("END")]
+    # Liquidsoap often echoes our command; drop it if present
+    if lines and lines[0].lower().startswith(cmd.split()[0].lower()):
+        lines = lines[1:]
+    return [ln for ln in lines if ln]
+
+def _metadata_for_rid(rid: int) -> dict:
+    lines = _ls_cmd(f"request.metadata {rid}")
+    md = {"rid": rid}
+    for ln in lines:
+        m = _key_val_re.match(ln)
+        if not m: 
+            continue
+        k, v = m.group(1).strip(), m.group(2)
+        # unescape any quoted data
+        v = v.replace(r'\n', '\n')
+        md[k] = v
+    # normalize fields our frontend expects
+    title   = md.get("title") or md.get("song") or ""
+    artist  = md.get("artist", "")
+    album   = md.get("album", "")
+    fname   = md.get("filename") or md.get("initial_uri", "").replace("file://", "")
+    out = {
+        "rid": rid,
+        "title": title,
+        "artist": artist,
+        "album": album,
+        "filename": fname,
+    }
+    if fname:
+        out["artwork_url"] = f"/api/cover?file={urllib.parse.quote(fname)}"
+    return out
+
+_key_val_re = re.compile(r'([^=]+)="(.*)"$')
+
 # ── Routes ──────────────────────────────────────────────────────
 def _build_art_url(path: str) -> str:
     """Return a URL that always resolves to cover art (or your default)."""
@@ -491,18 +551,30 @@ def api_now():
 @app.get("/api/next")
 def api_next():
     """
-    Returns an array of upcoming tracks.
-    Schema (per frontend): [{title, artist, album, filename, artwork_url}]
+    Return upcoming tracks from Liquidsoap request queue:
+    - ask `request.all` for RIDs
+    - drop the lowest RID (current/playing)
+    - fetch metadata for the rest, in ascending RID order
     """
-    if NEXT_CACHE.exists():
-        try:
-            data = json.loads(NEXT_CACHE.read_text())
-            if isinstance(data, list):
-                return jsonify([_validate_track_obj(t) for t in data])
-        except Exception:
-            pass
-    # Fallback: nothing queued yet
-    return jsonify([])
+    try:
+        rid_lines = _ls_cmd("request.all")
+        # lines are space-separated RIDs like: "78 79"
+        rids = []
+        for ln in rid_lines:
+            rids.extend([int(x) for x in ln.split() if x.isdigit()])
+        rids = sorted(set(rids))
+        if not rids:
+            return jsonify([])
+
+        # lowest RID == currently playing; remove it
+        if len(rids) >= 1:
+            rids = rids[1:]
+
+        upcoming = [_metadata_for_rid(r) for r in rids]
+        return jsonify(upcoming)
+    except Exception as e:
+        app.logger.exception("next endpoint failed")
+        return jsonify([]), 200
 
 @app.get("/api/tts_queue")
 def tts_queue_get():
