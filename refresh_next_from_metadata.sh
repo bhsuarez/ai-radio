@@ -1,89 +1,121 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-NEXT_JSON="${NEXT_JSON:-/opt/ai-radio/next.json}"
-QUEUE_HOST="${QUEUE_HOST:-127.0.0.1}"
-QUEUE_PORT="${QUEUE_PORT:-1234}"
-LS_CMD="${LS_CMD:-output.icecast.metadata}"
-MAX="${MAX:-12}"  # cap how many upcoming to keep
+HOST="${HOST:-127.0.0.1}"
+PORT="${PORT:-1234}"
+OUT="${OUT:-/opt/ai-radio/next.json}"
+TMP="$(mktemp)"
+trap 'rm -f "$TMP"' EXIT
 
-mkdir -p "$(dirname "$NEXT_JSON")"
-
-# 1) Ask Liquidsoap via telnet (same pattern as your enqueue script)
-RAW="$(
+# --- 1) get the queued request IDs (not the now-playing) ---
+RID_LINE="$(
   {
-    printf '%s\n' "$LS_CMD"
+    printf 'request.all\n'
+    printf 'END\n'
     printf 'quit\n'
-    sleep 1
-  } | telnet "$QUEUE_HOST" "$QUEUE_PORT" 2>/dev/null || true
+  } | telnet "$HOST" "$PORT" 2>/dev/null \
+    | awk '/^request\.all/ {capture=1; next} /^END$/ {capture=0} capture' \
+    | tail -n1
 )"
 
-# Drop a debug copy for troubleshooting
-echo "$RAW" > /var/tmp/ls_meta.txt
+# RID_LINE looks like: "53 54 55"
+if [[ -z "${RID_LINE// /}" ]]; then
+  echo "[]" > "$OUT"
+  echo "Wrote 0 tracks to $OUT"
+  exit 0
+fi
 
-# 2) Parse the blocks and write next.json
-python3 - "$NEXT_JSON" "$MAX" <<'PY'
-import json, re, sys
+# --- 2) expand each RID to metadata blocks ---
+RIDS=($RID_LINE)
 
-out_path = sys.argv[1]
-max_items = int(sys.argv[2])
-raw = sys.stdin.read()
+# helper: fetch one RID's metadata in key="value" lines
+fetch_meta() {
+  local rid="$1"
+  {
+    printf 'request.metadata %s\n' "$rid"
+    printf 'END\n'
+    printf 'quit\n'
+  } | telnet "$HOST" "$PORT" 2>/dev/null \
+    | awk '/^request\.metadata/{capture=1; next} /^END$/{capture=0} capture'
+}
 
-# Strip telnet noise lines
-clean = []
-for line in raw.splitlines():
-    s = line.strip()
-    if not s or "Escape character is" in s or s == "Connection closed." or s == "Bye!":
+# --- 3) collect, parse, and emit JSON array ---
+{
+  echo '[]'
+} | python3 - "$OUT" "${RIDS[@]}" <<'PY'
+import json, os, sys, subprocess, shlex, re
+
+OUT=sys.argv[1]
+rids=sys.argv[2:]
+
+def telnet_cmd(cmd):
+    p = subprocess.run(
+        ["telnet", os.environ.get("HOST","127.0.0.1"), os.environ.get("PORT","1234")],
+        input=(cmd + "\nEND\nquit\n").encode(),
+        stdout=subprocess.PIPE, stderr=subprocess.DEVNULL, check=False
+    )
+    # Extract only the block between our command echo and END
+    lines=p.stdout.decode(errors="ignore").splitlines()
+    block=[]
+    capture=False
+    for ln in lines:
+        if ln.strip().startswith(cmd):
+            capture=True
+            continue
+        if ln.strip()=="END":
+            capture=False
+            break
+        if capture:
+            block.append(ln.rstrip())
+    return "\n".join(block)
+
+items=[]
+for rid in rids:
+    block = telnet_cmd(f"request.metadata {rid}")
+    if not block.strip():
         continue
-    if s.startswith("Trying ") or s.startswith("Connected to") or s.startswith("Liquidsoap"):
-        continue
-    clean.append(line.rstrip("\r"))
-raw = "\n".join(clean)
+    meta={}
+    # lines are like: key="value"
+    for ln in block.splitlines():
+        m=re.match(r'^([^=]+)="(.*)"$', ln.strip())
+        if not m: 
+            continue
+        k,v=m.group(1).strip(), m.group(2)
+        # unescape \u0000 etc.
+        try:
+            v=bytes(v, "utf-8").decode("unicode_escape")
+        except Exception:
+            pass
+        meta[k]=v
 
-# Parse blocks like --- 10 --- then key="value" lines
-blocks = []
-cur = {}
-cur_idx = None
-for line in raw.splitlines():
-    m = re.match(r'^\s*---\s*(\d+)\s*---\s*$', line)
-    if m:
-        if cur:
-            blocks.append((cur_idx, cur))
-        cur = {}
-        cur_idx = int(m.group(1))
-        continue
-    if line.strip() == "END":
-        if cur:
-            blocks.append((cur_idx, cur))
-        break
-    kv = re.match(r'^\s*([A-Za-z0-9_]+)="?(.*?)"?\s*$', line)
-    if kv:
-        k, v = kv.group(1).lower(), kv.group(2)
-        cur[k] = v
+    # build a compact track object
+    title   = meta.get("title") or ""
+    artist  = meta.get("artist") or meta.get("albumartist") or ""
+    album   = meta.get("album") or ""
+    fname   = meta.get("filename") or meta.get("initial_uri","").replace("file://","")
+    artwork = ""  # your /api/cover can fill this in client-side
 
-# If Liquidsoap prints 10..1 (1 = currently playing),
-# sort ascending so 1,2,3,... and DROP 1 so only "upcoming" remain.
-blocks = [(i, d) for (i, d) in sorted(blocks, key=lambda t: (t[0] is None, t[0])) if i != 1]
-
-tracks = []
-for _, meta in blocks[:max_items]:
-    title  = (meta.get("title")  or "Unknown Title").strip()
-    artist = (meta.get("artist") or "Unknown Artist").strip()
-    album  = (meta.get("album")  or "").strip()
-    # filename/artwork_url unknown from this endpoint. UI can enrich later.
-    tracks.append({
+    items.append({
+        "rid": rid,
         "title": title,
         "artist": artist,
         "album": album,
-        "filename": "",
-        "artwork_url": ""
+        "filename": fname,
+        "artwork_url": artwork
     })
 
-with open(out_path, "w") as f:
-    json.dump(tracks, f)
+# Optional: drop empties and dedupe by title|artist
+seen=set()
+clean=[]
+for it in items:
+    key=(it["title"].lower(), it["artist"].lower())
+    if key in seen or (not it["title"] and not it["filename"]):
+        continue
+    seen.add(key)
+    clean.append(it)
 
-print(f"Wrote {len(tracks)} tracks to {out_path}")
+with open(OUT,"w") as f:
+    json.dump(clean, f, indent=2)
+
+print(f"Wrote {len(clean)} tracks to {OUT}")
 PY
-
-# quick UX
-echo "Wrote $(jq 'length' "$NEXT_JSON" 2>/dev/null || echo 0) tracks to $NEXT_JSON"
