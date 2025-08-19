@@ -489,6 +489,10 @@ def _load_history(limit=60):
             break
     return out
 
+@app.get("/static/<path:fname>")
+def static_file(fname):
+    return send_from_directory("/opt/ai-radio/static", fname, conditional=True)
+
 @app.route("/api/event")
 def api_event():
     """Ingest events from Liquidsoap (announce_song/after_song)."""
