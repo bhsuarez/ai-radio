@@ -70,11 +70,12 @@ except Exception:
 app = Flask(__name__)
 
 # ── In-memory state ─────────────────────────────────────────────
-HISTORY = []          # newest first
-UPCOMING = []         # optional future items
+HISTORY: list = []   # keep this line
+HIST_FILE = "/opt/ai-radio/history.json"  # adjust to your path
+UPCOMING = []
 NEXT_CACHE = Path("/opt/ai-radio/next.json")
 
-HISTORY = deque(maxlen=400)  # keep more if you like
+HISTORY = deque(maxlen=400)
 _last_now_key = None
 _last_now_payload = None 
 
@@ -110,13 +111,21 @@ def parse_kv_text(text: str) -> dict:
 def load_history():
     global HISTORY
     try:
-        if os.path.exists(HISTORY_FILE):
-            with open(HISTORY_FILE, "r") as f:
-                HISTORY[:] = json.load(f)
+        with open(HIST_FILE, "r") as f:
+            data = json.load(f)
+        if isinstance(data, list):
+            if isinstance(HISTORY, list):
+                HISTORY[:] = data
+            else:
+                HISTORY = data  # rebind if someone clobbered it
         else:
-            HISTORY[:] = []
-    except Exception:
-        HISTORY[:] = []
+            # file had something unexpected; reset to empty list
+            HISTORY = []
+    except FileNotFoundError:
+        HISTORY = []
+    except Exception as e:
+        print(f"[history] load failed: {e}")
+        HISTORY = []
 
 def save_history():
     try:
