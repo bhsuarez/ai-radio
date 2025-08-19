@@ -28,7 +28,11 @@ NOW_JSON   = "/opt/ai-radio/now.json"
 NOW_TXT    = "/opt/ai-radio/nowplaying.txt"
 
 TTS_DIR    = "/opt/ai-radio/tts_queue"
+TTS_FALLBACK_DIR = "/opt/ai-radio/tts"
 GEN_SCRIPT = "/opt/ai-radio/gen_dj_clip.sh"
+
+def _tts_root():
+    return TTS_DIR if os.path.isdir(TTS_DIR) else TTS_FALLBACK_DIR
 
 LOG_DIR    = "/opt/ai-radio/logs"
 DJ_LOG     = os.path.join(LOG_DIR, "dj-now.log")
@@ -460,7 +464,6 @@ def _normalize_history_item(ev):
         "artwork_url": art_url,
     }
 
-
 def _load_history(limit=60):
     try:
         with open(HISTORY_PATH, "r") as f:
@@ -485,7 +488,6 @@ def _load_history(limit=60):
         if len(out) >= limit:
             break
     return out
-
 
 @app.route("/api/event")
 def api_event():
@@ -602,11 +604,69 @@ def api_next():
         app.logger.exception("next endpoint failed")
         return jsonify([]), 200
 
+# Serve the synthesized DJ audio files
+@app.get("/tts_queue/<path:fname>")
+def tts_audio(fname):
+    root = _tts_root()
+    full = os.path.join(root, fname)
+    if not os.path.exists(full):
+        abort(404)
+    return send_from_directory(root, fname, conditional=True)
+
+# Parse filenames like: intro_<Artist>__<Title>__<unix_ts>.mp3 (your scripts’ pattern)
+_TTS_PAT = re.compile(r'^(?:dj_|intro_)?(.+?)__(.+?)__(\d+)$')
+
+def _parse_tts_name(path: str):
+    base = os.path.basename(path)
+    stem, _ = os.path.splitext(base)
+    m = _TTS_PAT.match(stem)
+    if not m:
+        return {"title": "", "artist": "", "ts": None}
+    artist = m.group(1).replace("_", " ").strip()
+    title  = m.group(2).replace("_", " ").strip()
+    try:
+        ts = int(m.group(3)) * 1000  # ms
+    except Exception:
+        ts = None
+    return {"title": title, "artist": artist, "ts": ts}
+
 @app.get("/api/tts_queue")
-def tts_queue_get():
-    # Mirror recent DJ events for UI compatibility
-    items = [e for e in HISTORY if e.get("type") == "dj"][:5]
-    return jsonify(items)
+def api_tts_queue():
+    """
+    Return recent DJ intro items as proper DJ events the frontend expects:
+    {type:'dj', time, text, audio_url}
+    """
+    root = _tts_root()
+    if not os.path.isdir(root):
+        return jsonify([])
+
+    files = [f for f in os.listdir(root)
+             if f.lower().endswith((".mp3", ".m4a", ".wav", ".ogg"))]
+
+    events = []
+    for f in files:
+        p = os.path.join(root, f)
+        try:
+            st = os.stat(p)
+        except FileNotFoundError:
+            continue
+        meta = _parse_tts_name(p)
+        title  = meta["title"]
+        artist = meta["artist"]
+        when   = meta["ts"] or int(st.st_mtime * 1000)
+
+        text = (f'That was {title} by {artist}.' if title or artist
+                else os.path.splitext(f)[0])
+
+        events.append({
+            "type": "dj",
+            "time": when,
+            "text": text,
+            "audio_url": f"/tts_queue/{f}",
+        })
+
+    events.sort(key=lambda e: e["time"], reverse=True)
+    return jsonify(events[:50])
 
 @app.post("/api/tts_queue")
 def tts_queue_post():
