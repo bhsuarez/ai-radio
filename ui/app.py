@@ -50,8 +50,6 @@ VOICE   = "/mnt/music/ai-dj/piper_voices/en/en_US/norman/medium/en_US-norman-med
 
 COVER_CACHE = Path("/opt/ai-radio/cache/covers"); COVER_CACHE.mkdir(parents=True, exist_ok=True)
 
-HISTORY_FILE = "/opt/ai-radio/play_history.json"
-HISTORY_LOCK = threading.Lock()
 MAX_HISTORY = 100
 DEDUP_WINDOW_MS = 60_000  # suppress exact duplicate events within 60s
 
@@ -78,6 +76,8 @@ if os.environ.get("WERKZEUG_RUN_MAIN") != "true":  # avoid double-start in debug
 # ── In-memory state ─────────────────────────────────────────────
 HISTORY: list = []   # keep this line
 HIST_FILE = "/opt/ai-radio/history.json"  # adjust to your path
+HISTORY_FILE = "/opt/ai-radio/play_history.json"
+HISTORY_LOCK = threading.Lock()
 UPCOMING = []
 MAX_HISTORY = 300
 NEXT_CACHE = Path("/opt/ai-radio/next.json")
@@ -135,22 +135,26 @@ def parse_kv_text(text: str) -> dict:
             out[k.strip()] = v.strip().strip('"')
     return out
 
-def _load_history(limit: int = 60):
-    """Read the last N events from history.jsonl newest-first."""
-    if not os.path.isfile(HISTORY_PATH):
-        return []
-    out = []
-    with open(HISTORY_PATH, "r") as f:
-        for line in f:
-            line = line.strip()
-            if not line:
-                continue
-            try:
-                out.append(json.loads(line))
-            except Exception:
-                continue
-    out.sort(key=lambda e: e.get("time", 0), reverse=True)
-    return out[:limit]
+def load_history():
+    """Load prior history (if any) into the in‑memory list."""
+    global HISTORY
+    try:
+        with open(HISTORY_FILE, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, list):
+                with HISTORY_LOCK:
+                    HISTORY.clear()
+                    HISTORY.extend(data)
+            else:
+                with HISTORY_LOCK:
+                    HISTORY.clear()
+    except FileNotFoundError:
+        with HISTORY_LOCK:
+            HISTORY.clear()
+    except Exception:
+        # On any parse error, start fresh rather than crashing
+        with HISTORY_LOCK:
+            HISTORY.clear()
 
 def _append_history(ev: dict):
     """Append a single play event to history.jsonl (safe for multi-workers)."""
@@ -169,11 +173,13 @@ def _append_history(ev: dict):
         fcntl.flock(f, fcntl.LOCK_UN)
 
 def save_history():
-    try:
-        with open(HISTORY_FILE, "w") as f:
-            json.dump(HISTORY[:MAX_HISTORY], f)
-    except Exception:
-        pass
+    """Persist the in‑memory history to disk."""
+    with HISTORY_LOCK:
+        try:
+            with open(HISTORY_FILE, "w", encoding="utf-8") as f:
+                json.dump(HISTORY[-500:], f, ensure_ascii=False)
+        except Exception:
+            pass  # don't crash UI on disk errors
 
 def read_now() -> dict:
     """Best-effort live metadata: JSON → key=value txt → 'Artist - Title' → telnet."""
@@ -747,6 +753,79 @@ def _scrobble_loop():
             pass
         time.sleep(2)  # small poll; cheap because it calls your existing logic
 
+def _history_add_song(now_dict):
+    """Append a 'song' event to HISTORY from a /api/now object."""
+    ev = {
+        "type": "song",
+        "time": int(time.time() * 1000),
+        "title": now_dict.get("title") or "",
+        "artist": now_dict.get("artist") or "",
+        "album": now_dict.get("album") or "",
+        "filename": now_dict.get("filename") or "",
+    }
+    # give frontend a ready-to-use cover URL if we have a filename
+    if ev["filename"]:
+        ev["artwork_url"] = "/api/cover?file=" + urllib.parse.quote(ev["filename"])
+    with HISTORY_LOCK:
+        HISTORY.append(ev)
+        # keep list bounded
+        if len(HISTORY) > 500:
+            del HISTORY[:-500]
+    save_history()
+
+_SCROBBLER_STARTED = False
+
+def _scrobble_loop():
+    """
+    Polls current track and records transitions into HISTORY.
+    A 'transition' happens when (title, artist) or filename changes.
+    """
+    last_key = None
+    stable_key = None
+    stable_since = 0.0
+
+    while True:
+        try:
+            # You already have this function in your app:
+            now = _get_now_playing()  # must return dict with title/artist/filename/album/…
+        except Exception:
+            now = None
+
+        if now:
+            # build a key that tolerates minor metadata issues
+            t = (now.get("title") or "").strip().lower()
+            a = (now.get("artist") or "").strip().lower()
+            f = (now.get("filename") or "").strip().lower()
+            key = f or f"{t}|{a}"
+
+            # consider a track "stable" after 3 seconds with same key
+            now_ts = time.time()
+            if key == stable_key:
+                # already stable; do nothing
+                pass
+            else:
+                # key changed; start (or reset) stability timer
+                stable_key = key
+                stable_since = now_ts
+
+            became_stable = (stable_key == key) and (now_ts - stable_since >= 3.0)
+            if became_stable and key and key != last_key:
+                # new stable track -> record it
+                _history_add_song(now)
+                last_key = key
+        time.sleep(1.0)
+
+def _start_scrobbler_once():
+    global _SCROBBLER_STARTED
+    if _SCROBBLER_STARTED:
+        return
+    _SCROBBLER_STARTED = True
+    load_history()
+    threading.Thread(target=_scrobble_loop, name="scrobble", daemon=True).start()
+
+_start_scrobbler_once()
+
+
 # ── Routes ──────────────────────────────────────────────────────
 
 @app.route("/api/event")
@@ -852,7 +931,9 @@ def static_file(fname):
 
 @app.get("/api/history")
 def api_history():
-    return jsonify(_load_history(60))
+    with HISTORY_LOCK:
+        # Return newest first
+        return jsonify(sorted(HISTORY, key=lambda e: e.get("time", 0), reverse=True))
 
 @app.get("/api/now")
 def api_now():
