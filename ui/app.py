@@ -570,10 +570,6 @@ def static_file(fname):
 def api_history():
     return jsonify(_load_history(60))
 
-@app.get("/api/history")
-def api_history():
-    return jsonify(list(HISTORY))
-
 @app.get("/api/now")
 def api_now():
     # 1) however you currently build "now" (from Liquidsoap / telnet)
