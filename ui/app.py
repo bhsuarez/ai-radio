@@ -632,10 +632,6 @@ def _parse_tts_name(path: str):
 
 @app.get("/api/tts_queue")
 def api_tts_queue():
-    """
-    Return recent DJ intro items as proper DJ events the frontend expects:
-    {type:'dj', time, text, audio_url}
-    """
     root = _tts_root()
     if not os.path.isdir(root):
         return jsonify([])
@@ -650,16 +646,19 @@ def api_tts_queue():
             st = os.stat(p)
         except FileNotFoundError:
             continue
+
         meta = _parse_tts_name(p)
         title  = meta["title"]
         artist = meta["artist"]
         when   = meta["ts"] or int(st.st_mtime * 1000)
 
-        text = (f'That was {title} by {artist}.' if title or artist
+        # Build friendly text line
+        text = (f"That was {title} by {artist}."
+                if title or artist
                 else os.path.splitext(f)[0])
 
         events.append({
-            "type": "dj",
+            "type": "dj",              # <--- important
             "time": when,
             "text": text,
             "audio_url": f"/tts_queue/{f}",
