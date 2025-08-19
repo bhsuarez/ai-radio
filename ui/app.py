@@ -7,6 +7,7 @@ from flask import Flask, jsonify, request, send_from_directory, send_file, abort
 from urllib.parse import quote
 from urllib.parse import unquote, unquote_plus
 from contextlib import closing
+from collections import deque
 
 HISTORY_PATH = "/opt/ai-radio/play_history.json"
 
@@ -72,6 +73,10 @@ app = Flask(__name__)
 HISTORY = []          # newest first
 UPCOMING = []         # optional future items
 NEXT_CACHE = Path("/opt/ai-radio/next.json")
+
+HISTORY = deque(maxlen=400)  # keep more if you like
+_last_now_key = None
+_last_now_payload = None 
 
 # ── Helpers ─────────────────────────────────────────────────────
 def telnet_cmd(cmd: str, timeout=5) -> str:
@@ -263,6 +268,38 @@ def _first_tag(v):
     except Exception:
         return None
 
+
+def _track_key(t: dict) -> str:
+    """Stable key for change detection."""
+    fn = (t.get("filename") or "").strip().lower()
+    ti = (t.get("title") or "").strip().lower()
+    ar = (t.get("artist") or "").strip().lower()
+    al = (t.get("album") or "").strip().lower()
+    return f"f:{fn}" if fn else f"t:{ti}|{ar}|{al}"
+
+def _with_artwork(ev: dict) -> dict:
+    """Ensure artwork_url if we know the file path."""
+    out = dict(ev)
+    fn = out.get("filename")
+    if fn and not out.get("artwork_url"):
+        out["artwork_url"] = f"/api/cover?file={urllib.parse.quote(fn)}"
+    return out
+
+def _maybe_log_previous(previous_now: dict):
+    """Push the *previous* song into HISTORY when a new one starts."""
+    if not previous_now:
+        return
+    ev = {
+        "type": "song",
+        "time": int(time.time() * 1000),  # when we detected the handoff
+        "title": previous_now.get("title") or "Unknown title",
+        "artist": previous_now.get("artist") or "Unknown artist",
+        "album": previous_now.get("album"),
+        "filename": previous_now.get("filename"),
+        "artwork_url": previous_now.get("artwork_url"),
+    }
+    HISTORY.appendleft(_with_artwork(ev))
+
 def _fetch_online_cover(artist, album, title, size=600, timeout=6):
     if not requests:
         return None
@@ -427,6 +464,37 @@ def _metadata_for_rid(rid: int) -> dict:
 _key_val_re = re.compile(r'([^=]+)="(.*)"$')
 
 # ── Routes ──────────────────────────────────────────────────────
+
+@app.route("/api/event")
+def api_event():
+    """Ingest events from Liquidsoap (announce_song/after_song)."""
+    ev_type = request.args.get("type", "song")
+    now_ms = int(time.time() * 1000)
+
+    if ev_type == "song":
+        row = {
+            "type": "song",
+            "time": now_ms,  # always stamp
+            "title": request.args.get("title", "")[:512],
+            "artist": request.args.get("artist", "")[:512],
+            "album": request.args.get("album", "")[:512],
+            "filename": request.args.get("filename", ""),
+        }
+    elif ev_type == "dj":
+        row = {
+            "type": "dj",
+            "time": now_ms,
+            "text": request.args.get("text", "")[:2000],
+            "audio_url": request.args.get("audio_url"),
+        }
+    else:
+        return jsonify({"ok": False, "error": "unknown type"}), 400
+
+    hist = _read_history()
+    hist.append(row)
+    _write_history(hist)
+    return jsonify({"ok": True})
+
 def _build_art_url(path: str) -> str:
     """Return a URL that always resolves to cover art (or your default)."""
     if path and os.path.isabs(path) and os.path.exists(path):
@@ -498,92 +566,33 @@ def _load_history(limit=60):
 def static_file(fname):
     return send_from_directory("/opt/ai-radio/static", fname, conditional=True)
 
-@app.route("/api/event")
-def api_event():
-    """Ingest events from Liquidsoap (announce_song/after_song)."""
-    ev_type = request.args.get("type", "song")
-    now_ms = int(time.time() * 1000)
-
-    if ev_type == "song":
-        row = {
-            "type": "song",
-            "time": now_ms,  # always stamp
-            "title": request.args.get("title", "")[:512],
-            "artist": request.args.get("artist", "")[:512],
-            "album": request.args.get("album", "")[:512],
-            "filename": request.args.get("filename", ""),
-        }
-    elif ev_type == "dj":
-        row = {
-            "type": "dj",
-            "time": now_ms,
-            "text": request.args.get("text", "")[:2000],
-            "audio_url": request.args.get("audio_url"),
-        }
-    else:
-        return jsonify({"ok": False, "error": "unknown type"}), 400
-
-    hist = _read_history()
-    hist.append(row)
-    _write_history(hist)
-    return jsonify({"ok": True})
-
 @app.route("/api/history")
 def api_history():
     return jsonify(_load_history(60))
 
+@app.get("/api/history")
+def api_history():
+    return jsonify(list(HISTORY))
+
 @app.get("/api/now")
 def api_now():
-    """
-    Return the currently playing track. If the basic 'now' info lacks a
-    filename/artwork_url, enrich it via the lowest RID from request.all.
-    """
-    try:
-        # whatever you used before to build 'now' (safe defaults shown)
-        now = {
-            "time": int(time.time() * 1000),
-            "title": "",
-            "artist": "",
-            "album": "",
-            "filename": "",
-            "artwork_url": "",
-            "type": "song",
-        }
+    # 1) however you currently build "now" (from Liquidsoap / telnet)
+    now = _get_current_now_dict_somehow()  # <-- your existing logic returns a dict
 
-        # --- your existing lightweight "now" detection (keep this if you have it)
-        # e.g. parse icecast stats, cached metadata, etc.
-        # now.update(get_basic_now_somehow())
+    # 2) normalize and ensure artwork if we have filename
+    global _last_now_key, _last_now_payload
+    now = _with_artwork(now)
+    key = _track_key(now) if (now.get("title") or now.get("filename")) else None
 
-        # --- enrichment via Liquidsoap queue: lowest RID is the track playing
-        rid_lines = _ls_cmd("request.all")
-        rids = []
-        for ln in rid_lines:
-            rids.extend([int(x) for x in ln.split() if x.isdigit()])
-        rids = sorted(set(rids))
-        if rids:
-            current_rid = rids[0]
-            md = _metadata_for_rid(current_rid)
-            # fill missing fields; don’t clobber existing non‑empty values
-            for k in ("title", "artist", "album", "filename", "artwork_url"):
-                if not now.get(k) and md.get(k):
-                    now[k] = md[k]
+    # 3) detect change -> log previous into HISTORY
+    if key and _last_now_key and key != _last_now_key:
+        _maybe_log_previous(_last_now_payload)
 
-        # ensure artwork_url if we have a filename
-        if not now.get("artwork_url") and now.get("filename"):
-            now["artwork_url"] = f"/api/cover?file={urllib.parse.quote(now['filename'])}"
-
-        return jsonify(now)
-    except Exception:
-        app.logger.exception("now endpoint failed")
-        # Return something rather than 500 so UI keeps polling
-        return jsonify({
-            "time": int(time.time() * 1000),
-            "title": "Unknown",
-            "artist": "Unknown Artist",
-            "album": "",
-            "filename": "",
-            "artwork_url": ""
-        }), 200
+    # 4) update trackers and return
+    if key:
+        _last_now_key = key
+        _last_now_payload = now
+    return jsonify(now)
 
 @app.get("/api/next")
 def api_next():
