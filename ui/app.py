@@ -5,12 +5,17 @@ from datetime import datetime
 from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory, send_file, abort
 from urllib.parse import quote
+from urllib.parse import unquote, unquote_plus
 from contextlib import closing
 
 HISTORY_PATH = "/opt/ai-radio/play_history.json"
 
 ICECAST_STATUS = "http://icecast.zorro.network:8000/status-json.xsl"
 MOUNT = "/stream.mp3"
+
+MUSIC_ROOTS = ["/mnt/music", "/mnt/music/media", "/mnt/music/Music"]
+def _is_allowed_path(p: str) -> bool:
+    return any(os.path.commonpath([p, root]) == root for root in MUSIC_ROOTS)
 
 # ── Config ──────────────────────────────────────────────────────
 HOST = "0.0.0.0"
@@ -866,120 +871,56 @@ def api_dj_now():
 @app.get("/api/cover")
 def api_cover():
     """
-    GET /api/cover?file=/abs/path/to/song.ext
-    Returns cover art from:
-      1) embedded tags
-      2) folder images
-      3) online lookup (MusicBrainz → Cover Art Archive, then iTunes)
-      4) default station cover (static/station-cover.jpg)
-    Caches results in COVER_CACHE.
+    Return embedded artwork for a given audio file.
+    - Decodes URL-encoded paths (/a%20b/c.m4a -> /a b/c.m4a)
+    - Guards against path traversal
+    - Sends 404 if file missing or no artwork
     """
-    fpath = request.args.get("file", "")
-    default_cover_path = os.path.join(BASE_DIR, "static", "station-cover.jpg")
-    default_mime = "image/jpeg"
+    raw = request.args.get("file", "")
+    # robust decode (handles single/double encoding and '+' as space)
+    decoded = unquote_plus(unquote(raw))
+    path = os.path.abspath(decoded)
 
-    def _send_default():
-        if os.path.exists(default_cover_path):
-            return send_file(default_cover_path, mimetype=default_mime, conditional=True)
-        return abort(404)
+    if not _is_allowed_path(path):
+        return ("", 404)
 
-    if not fpath or not os.path.isabs(fpath) or not os.path.exists(fpath):
-        return _send_default()
+    if not os.path.exists(path):
+        return ("", 404)
 
-    key = hashlib.sha1(fpath.encode("utf-8")).hexdigest()
-    cache_jpg = os.path.join(COVER_CACHE, key + ".jpg")
-    cache_png = os.path.join(COVER_CACHE, key + ".png")
+    # --- extract & return cover (example using mutagen) ---
+    try:
+        from mutagen import File as MFile
+        from flask import send_file
+        mf = MFile(path)
+        pic = None
 
-    # 0) serve from cache
-    if os.path.exists(cache_jpg):
-        return send_file(cache_jpg, mimetype="image/jpeg", conditional=True)
-    if os.path.exists(cache_png):
-        return send_file(cache_png, mimetype="image/png", conditional=True)
+        # mp3/id3
+        if hasattr(mf, "tags") and mf.tags:
+            for key in ("APIC:", "APIC"):  # images in ID3
+                if key in mf.tags:
+                    apic = mf.tags[key]
+                    pic = (apic.mime, apic.data) if hasattr(apic, "data") else None
+                    break
 
-    data = None
-    mime = None
+        # mp4/m4a
+        if not pic and mf and mf.tags and "covr" in mf.tags:
+            covr = mf.tags["covr"][0]
+            mime = "image/jpeg" if covr.format == 13 else "image/png"
+            pic = (mime, bytes(covr))
 
-    # 1) embedded art
-    if _MUTAGEN_OK:
-        try:
-            audio = MutaFile(fpath)
-            if audio:
-                # MP3 APIC
-                try:
-                    from mutagen.id3 import APIC
-                    if getattr(audio, "tags", None):
-                        for _, v in audio.tags.items():
-                            if isinstance(v, APIC):
-                                data, mime = v.data, (v.mime or "image/jpeg"); break
-                except Exception:
-                    pass
-                # FLAC picture
-                if data is None:
-                    try:
-                        from mutagen.flac import FLAC
-                        if isinstance(audio, FLAC) and audio.pictures:
-                            pic = audio.pictures[0]
-                            data, mime = pic.data, (pic.mime or "image/jpeg")
-                    except Exception:
-                        pass
-                # MP4/M4A covr
-                if data is None:
-                    try:
-                        covr = None
-                        if getattr(audio, "tags", None):
-                            covr = audio.tags.get("covr") or audio.tags.get("----:com.apple.iTunes:cover")
-                        if covr:
-                            b = covr[0] if isinstance(covr, list) else covr
-                            data, mime = bytes(b), "image/jpeg"
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+        if not pic:
+            return ("", 404)
 
-    # 2) folder images
-    if data is None:
-        folder = os.path.dirname(fpath)
-        for name in ("cover.jpg", "cover.png", "folder.jpg", "folder.png", "front.jpg", "front.png"):
-            p = os.path.join(folder, name)
-            if os.path.exists(p):
-                with open(p, "rb") as imgf:
-                    data = imgf.read()
-                mime = "image/png" if p.lower().endswith(".png") else "image/jpeg"
-                break
-
-    # 3) online lookup (MusicBrainz → CAA → iTunes)
-    if data is None:
-        artist = album = title = None
-        if _MUTAGEN_OK:
-            try:
-                audio = MFile(fpath)
-                if audio and getattr(audio, "tags", None):
-                    title  = _first_tag(audio.tags.get("title"))  or _first_tag(audio.tags.get("TIT2"))
-                    artist = _first_tag(audio.tags.get("artist")) or _first_tag(audio.tags.get("TPE1"))
-                    album  = _first_tag(audio.tags.get("album"))  or _first_tag(audio.tags.get("TALB"))
-            except Exception:
-                pass
-        # fallback: infer from path
-        if not artist or not title:
-            parts = os.path.normpath(fpath).split(os.sep)
-            if len(parts) >= 3:
-                album = album or parts[-2]
-                artist = artist or parts[-3]
-                title = title or os.path.splitext(os.path.basename(fpath))[0]
-
-        fetched = _fetch_online_cover(artist, album, title)
-        if fetched:
-            data, mime = fetched
-
-    # 4) cache + return (or default)
-    if data is None:
-        return _send_default()
-
-    ext = ".jpg" if "jpeg" in (mime or "").lower() else ".png"
-    out = os.path.join(COVER_CACHE, key + ext)
-    with open(out, "wb") as w:
-        w.write(data)
-    return send_file(out, mimetype="image/jpeg" if ext == ".jpg" else "image/png", conditional=True)
+        mime, blob = pic
+        # lightweight cache headers so browsers stop hammering
+        resp = make_response(blob)
+        resp.headers["Content-Type"] = mime
+        resp.headers["Cache-Control"] = "public, max-age=86400"
+        resp.headers["ETag"] = f'W/"{os.path.getmtime(path)}-{len(blob)}"'
+        return resp
+    except Exception:
+        app.logger.exception("cover extract failed")
+        return ("", 404)
 
 # ── Startup ─────────────────────────────────────────────────────
 load_history()
