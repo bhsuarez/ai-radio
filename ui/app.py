@@ -8,6 +8,7 @@ from urllib.parse import quote
 from urllib.parse import unquote, unquote_plus
 from contextlib import closing
 from collections import deque
+import shlex
 
 HISTORY_PATH = "/opt/ai-radio/play_history.json"
 
