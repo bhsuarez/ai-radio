@@ -871,56 +871,79 @@ def api_dj_now():
 @app.get("/api/cover")
 def api_cover():
     """
-    Return embedded artwork for a given audio file.
-    - Decodes URL-encoded paths (/a%20b/c.m4a -> /a b/c.m4a)
-    - Guards against path traversal
-    - Sends 404 if file missing or no artwork
+    Return embedded album art for a given audio file.
+    Accepts:
+      - file=/abs/path/with spaces.m4a
+      - file=file:///abs/path/with%20spaces.m4a
     """
-    raw = request.args.get("file", "")
-    # robust decode (handles single/double encoding and '+' as space)
-    decoded = unquote_plus(unquote(raw))
-    path = os.path.abspath(decoded)
+    raw = request.args.get("file", "") or ""
+    if not raw:
+        return abort(404)
 
-    if not _is_allowed_path(path):
-        return ("", 404)
+    # Handle file:// and percent-encoding safely
+    if raw.startswith("file://"):
+        p = urlparse(raw).path  # /mnt/music/...
+        p = unquote(p)
+    else:
+        p = unquote(raw)
 
-    if not os.path.exists(path):
-        return ("", 404)
+    # Optional: harden path (only allow under your music roots)
+    ALLOWED_ROOTS = ("/mnt/music/", "/mnt/music/media/", "/mnt/music/Music/")
+    if not any(p.startswith(root) for root in ALLOWED_ROOTS):
+        return abort(404)
 
-    # --- extract & return cover (example using mutagen) ---
+    if not os.path.isfile(p):
+        return abort(404)
+
+    # Try to extract embedded cover art (Mutagen works well for mp3/m4a)
     try:
-        from mutagen import File as MFile
-        from flask import send_file
-        mf = MFile(path)
-        pic = None
+        import mutagen
+        from mutagen.flac import Picture
+        from mutagen.mp3 import MP3
+        from mutagen.id3 import APIC
+        from mutagen.mp4 import MP4
 
-        # mp3/id3
-        if hasattr(mf, "tags") and mf.tags:
-            for key in ("APIC:", "APIC"):  # images in ID3
-                if key in mf.tags:
-                    apic = mf.tags[key]
-                    pic = (apic.mime, apic.data) if hasattr(apic, "data") else None
+        audio = mutagen.File(p)
+        art_bytes = None
+        mime = "image/jpeg"
+
+        if isinstance(audio, MP3):
+            # ID3 APIC frames
+            for k, v in audio.tags.items():
+                if isinstance(v, APIC):
+                    art_bytes = v.data
+                    mime = v.mime or mime
                     break
+        elif isinstance(audio, MP4):
+            # iTunes cover atom: 'covr'
+            covr = audio.tags.get("covr")
+            if covr:
+                art_bytes = bytes(covr[0])
+                # Heuristic for MIME
+                if art_bytes.startswith(b"\x89PNG"):
+                    mime = "image/png"
+        else:
+            # Some formats (e.g., FLAC) hold pictures differently
+            pics = getattr(audio, "pictures", None)
+            if pics:
+                if isinstance(pics[0], Picture):
+                    art_bytes = pics[0].data
+                    if pics[0].mime:
+                        mime = pics[0].mime
 
-        # mp4/m4a
-        if not pic and mf and mf.tags and "covr" in mf.tags:
-            covr = mf.tags["covr"][0]
-            mime = "image/jpeg" if covr.format == 13 else "image/png"
-            pic = (mime, bytes(covr))
+        if art_bytes:
+            return send_file(io.BytesIO(art_bytes), mimetype=mime,
+                             as_attachment=False, download_name="cover")
 
-        if not pic:
-            return ("", 404)
-
-        mime, blob = pic
-        # lightweight cache headers so browsers stop hammering
-        resp = make_response(blob)
-        resp.headers["Content-Type"] = mime
-        resp.headers["Cache-Control"] = "public, max-age=86400"
-        resp.headers["ETag"] = f'W/"{os.path.getmtime(path)}-{len(blob)}"'
-        return resp
     except Exception:
-        app.logger.exception("cover extract failed")
-        return ("", 404)
+        # fall through to placeholder
+        pass
+
+    # Fallback: serve your station placeholder so the UI never 404s
+    placeholder = os.path.join(app.static_folder or "static", "station-cover.jpg")
+    if os.path.isfile(placeholder):
+        return send_file(placeholder, mimetype="image/jpeg")
+    return abort(404)
 
 # ── Startup ─────────────────────────────────────────────────────
 load_history()
