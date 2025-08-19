@@ -637,41 +637,10 @@ def api_history():
 
 @app.get("/api/now")
 def api_now():
-    """
-    Report what's currently on-air by asking Liquidsoap:
-    - request.all -> choose the LOWEST rid (now-playing)
-    - request.metadata <rid> -> parse fields
-    """
-    try:
-        rids = _ls_request_all()
-        if not rids:
-            return jsonify({})  # nothing queued
-
-        rid_now = min(rids)  # lower = on air (matches your observation)
-        meta = _ls_request_metadata(rid_now)
-
-        title  = meta.get("title") or ""
-        artist = meta.get("artist") or ""
-        album  = meta.get("album") or ""
-        fname  = meta.get("filename") or meta.get("initial_uri","").removeprefix("file://")
-
-        out = {
-            "rid": rid_now,
-            "title": title,
-            "artist": artist,
-            "album": album,
-            "filename": fname,
-            "time": int(time.time() * 1000)  # when we sampled it
-        }
-
-        if fname:
-            out["artwork_url"] = f"/api/cover?file={urllib.parse.quote(fname)}"
-
-        return jsonify(out)
-
-    except Exception as e:
-        # Don’t kill the UI; just return an empty object so the frontend can keep going
-        return jsonify({"error": str(e)}), 200
+    now = _get_now_playing()
+    if not now:
+        return jsonify({"error": "No track info"}), 404
+    return jsonify(now)
 
 @app.get("/api/next")
 def api_next():
