@@ -475,18 +475,35 @@ def _metadata_for_rid(rid: int) -> dict | None:
         "elapsed_ms": None,
     }
 
-def _ls_cmd(args):
-    """Run a liquidsoap client command and return its stdout as string."""
-    try:
-        out = subprocess.check_output(
-            ["liquidsoap", "--socket", "/tmp/radio.sock"] + args,
-            stderr=subprocess.STDOUT
-        )
-        return out.decode("utf-8").strip()
-    except subprocess.CalledProcessError as e:
-        return e.output.decode("utf-8").strip()
-    except Exception as e:
-        return str(e)
+def _ls_cmd(cmd: str, timeout=2.5) -> list[str]:
+    """
+    Send a single command to liquidsoap telnet and return *all* lines (sans boilerplate).
+    Always returns a list of lines, no trailing 'END', no echoed command, no telnet noise.
+    """
+    bash = f'''\
+{shlex.quote(f'printf "%s\\nquit\\n" "{cmd}"')} | telnet {LS_HOST} {LS_PORT} 2>/dev/null
+'''
+    p = subprocess.run(["/bin/bash","-lc", bash],
+                       text=True, capture_output=True, timeout=timeout)
+    lines = [ln.rstrip("\r\n") for ln in p.stdout.splitlines()]
+
+    out = []
+    for ln in lines:
+        s = ln.strip()
+        if not s: 
+            continue
+        # skip the local/connected banners and the echoed command
+        if s.startswith("Trying ") or s.startswith("Connected to ") or s.startswith("Escape character is"):
+            continue
+        if s == cmd:  # echoed back by telnet sometimes
+            continue
+        if s == "END":
+            break
+        out.append(s)
+    return out
+
+_kv_re = re.compile(r'([a-zA-Z0-9_]+)="([^"]*)"')
+
 
 def _get_now_playing() -> dict | None:
     """
@@ -578,6 +595,33 @@ def _ls_query(cmd: str, host: str = "127.0.0.1", port: int = 1234, timeout: floa
         return buf.decode("utf-8", "ignore")
     finally:
         s.close()
+
+def _ls_kv(cmd: str, timeout=2.5) -> dict:
+    """
+    Run a liquidsoap command that returns key="value" lines (e.g. request.metadata N)
+    and parse into a dict. Multiple lines are supported.
+    """
+    d = {}
+    for line in _ls_cmd(cmd, timeout=timeout):
+        m = _kv_re.match(line.strip())
+        if m:
+            k, v = m.group(1), m.group(2)
+            d[k] = v
+    return d
+
+def _clean_file(path_or_uri: str) -> str:
+    """Normalize LS filename/initial_uri into a filesystem path."""
+    if not path_or_uri:
+        return ""
+    # LS sometimes gives file:///… URIs; strip scheme
+    if path_or_uri.startswith("file://"):
+        return path_or_uri[7:]
+    return path_or_uri
+
+def _art_url_from_file(fname: str) -> str:
+    if not fname:
+        return None
+    return f"/api/cover?file={urllib.parse.quote(fname)}"
 
 # ── Routes ──────────────────────────────────────────────────────
 
@@ -696,27 +740,47 @@ def api_now():
 @app.get("/api/next")
 def api_next():
     """
-    Return upcoming tracks from Liquidsoap request queue:
-    - ask `request.all` for RIDs
-    - drop the lowest RID (current/playing)
-    - fetch metadata for the rest, in ascending RID order
+    Returns upcoming track metadata by querying LS:
+      - request.all -> list of RIDs (possibly across multiple lines)
+      - request.metadata <rid> -> key="value" pairs
     """
     try:
-        rid_lines = _ls_cmd("request.all")
-        # lines are space-separated RIDs like: "78 79"
-        rids = []
+        # 1) Get all upcoming RIDs (can be space-separated across several lines)
+        rid_lines = _ls_cmd("request.all")  # e.g. ["78 79"] or ["78", "79"] etc.
+        rids: list[int] = []
         for ln in rid_lines:
-            rids.extend([int(x) for x in ln.split() if x.isdigit()])
-        rids = sorted(set(rids))
-        if not rids:
-            return jsonify([])
+            for tok in ln.split():
+                if tok.isdigit():
+                    rids.append(int(tok))
 
-        # lowest RID == currently playing; remove it
-        if len(rids) >= 1:
-            rids = rids[1:]
+        items = []
+        for rid in rids:
+            md = _ls_kv(f"request.metadata {rid}")
+            if not md:
+                continue
 
-        upcoming = [_metadata_for_rid(r) for r in rids]
-        return jsonify(upcoming)
+            # Filter: only show queue entries, not broken ones
+            status = (md.get("status") or "").lower()
+            if status not in ("ready", "queued", "in_queue", "pending", "prepared"):
+                # skip weird or invalid entries
+                pass
+
+            # Prefer 'filename'; fall back to 'initial_uri'
+            fname = _clean_file(md.get("filename") or md.get("initial_uri") or "")
+            title = md.get("title") or ""
+            artist = md.get("artist") or ""
+            album = md.get("album") or ""
+
+            items.append({
+                "rid": rid,
+                "title": title,
+                "artist": artist,
+                "album": album,
+                "filename": fname,
+                "artwork_url": _art_url_from_file(fname),
+            })
+
+        return jsonify(items)
     except Exception as e:
         app.logger.exception("next endpoint failed")
         return jsonify([]), 200
