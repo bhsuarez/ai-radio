@@ -1,26 +1,23 @@
-# Decoder preferences (updated for Liquidsoap 2.3.x)
+# ----- Liquidsoap 2.3.x config for AI Radio -----
+
+# Decoder prefs
 settings.decoder.priorities.ffmpeg := 10
-settings.decoder.priorities.mad := 1
+settings.decoder.priorities.mad    := 1
 
 # Core / logging
 settings.init.allow_root := true
+settings.log.level       := 4  # warn
 
-# Reduce log noise - set to WARN level
-settings.log.level := 4
-
-# Telnet control (needed for tts queue pushes)
+# Telnet control (used by enqueue scripts to push TTS intros)
 settings.server.telnet := true
 settings.server.telnet.bind_addr := "127.0.0.1"
 settings.server.telnet.port := 1234
 
-# --- Sources -----------------------------------------------------------------
-# TTS queue with proper command exposure
+# ---------- Sources ----------
+# Queue for DJ/TTS lines
 tts_q = request.queue(id="tts")
 
-# Make sure the queue commands are available via telnet
-# (This should happen automatically with id="tts" but let's be explicit)
-
-# Load everything from the folder
+# Main music (m3u that points to your library files)
 all_music = playlist(
   mode="random",
   reload=300,
@@ -28,10 +25,12 @@ all_music = playlist(
   "/opt/ai-radio/library_clean.m3u"
 )
 
+# Helpers
 def meta_get(m, k, d)
   if list.mem(k, list.map(fst, m)) then list.assoc(k, m) else d end
 end
 
+# Log each song start to Flask (non-blocking)
 def announce_song(m)
   artist = meta_get(m, "artist", "Unknown artist")
   title  = meta_get(m, "title",  "Unknown title")
@@ -40,72 +39,47 @@ def announce_song(m)
            else if list.mem("file", list.map(fst, m)) then list.assoc("file", m) else "" end end
 
   qs = "type=song"
-       ^ "&artist=" ^ url.encode(artist)
-       ^ "&title="  ^ url.encode(title)
-       ^ "&album="  ^ url.encode(album)
+       ^ "&artist="   ^ url.encode(artist)
+       ^ "&title="    ^ url.encode(title)
+       ^ "&album="    ^ url.encode(album)
        ^ "&filename=" ^ url.encode(file)
 
-  # fire‑and‑forget so audio never blocks
+  # Fire-and-forget so audio never blocks
   cmd = "bash -lc \"(curl -fsS 'http://127.0.0.1:5055/api/event?" ^ qs ^
         "' || wget -qO- 'http://127.0.0.1:5055/api/event?" ^ qs ^
         "') >/dev/null 2>&1 &\""
   ignore(process.run(cmd))
 end
 
-# (re)attach the hook
-all_music = source.on_metadata(all_music, announce_song)
-
-# Simple log when sine fallback is active (kept tiny)
-def log_sine(_)
-  log("Sine wave fallback active.")
-end
-sine_src = source.on_metadata(sine(), log_sine)
-
-# --- Non-blocking Auto-DJ scheduled for NEXT transition ----------------------
+# Optional: schedule a DJ intro near the end of the current track (disabled by default)
 def after_song(m)
-  artist = if list.mem("artist", list.map(fst, m)) then m["artist"] else "Unknown Artist" end
-  title  = if list.mem("title",  list.map(fst, m)) then m["title"]  else "Unknown Title"  end
-  dur_s  = if list.mem("duration", list.map(fst, m)) then float_of_string(m["duration"]) else 0. end
+  title  = meta_get(m, "title",  "Unknown Title")
+  artist = meta_get(m, "artist", "Unknown Artist")
+  dur_s  = if list.mem("duration", list.map(fst, m))
+              then float_of_string(m["duration"]) else 0. end
 
-  # fire ~3s before end (or 1s if duration missing)
   lead   = 3.0
   wait_s = if dur_s > lead then dur_s - lead else 1.0 end
 
-  # DEBUG: write a log line every time the hook schedules
-  log("AUTO-DJ scheduling in " ^ string_of(int_of_float(wait_s)) ^
-      "s for next track intro: " ^ title ^ " — " ^ artist)
+  log("AUTO-DJ: scheduling intro in " ^ string_of(int_of_float(wait_s)) ^
+      "s for: " ^ title ^ " — " ^ artist)
 
-  # run enqueue script in the background and log its output
   ignore(process.run(
     "bash -lc \"(sleep " ^ string_of(int_of_float(wait_s)) ^
     "; /opt/ai-radio/dj_enqueue.sh \\\"" ^ artist ^ "\\\" \\\"" ^ title ^ "\\\" " ^
     ">>/var/tmp/dj_enqueue.log 2>&1) &\""
   ))
 end
-=======
-# --- Chain / processing -------------------------------------------------------
-# Apply smooth crossfade to music
-smooth_music = crossfade(all_music)
 
-# Attach metadata handlers to the smooth music
-smooth_music = source.on_metadata(smooth_music, announce_song)
-#smooth_music = source.on_metadata(smooth_music, after_song)
-
-# Remove all entries for key k from association-list m
-def rm_key(m, k)
-  list.filter(fun (kv) -> fst(kv) != k, m)
-end
-
-# If key k is missing or empty, set it to v (ensuring only one copy)
+# Ensure sane metadata defaults
+def rm_key(m, k)  list.filter(fun (kv) -> fst(kv) != k, m) end
 def put_default(m, k, v)
   has = list.mem(k, list.map(fst, m))
   cur = if has then list.assoc(k, m) else "" end
   if (not has) or cur == "" then
     m2 = rm_key(m, k)
     list.append(m2, [(k, v)])
-  else
-    m
-  end
+  else m end
 end
 
 def update_metadata(m)
@@ -114,39 +88,26 @@ def update_metadata(m)
   m
 end
 
-# --- Chain / processing -------------------------------------------------------
-# Apply metadata updates to music source
-all_music = metadata.map(update_metadata, all_music)
+# ---------- Chain / processing ----------
+# Normalize metadata
+music = metadata.map(update_metadata, all_music)
 
-# Add metadata announcements
-all_music = source.on_metadata(all_music, announce_song)
+# Smooth crossfades on music
+music = crossfade(music)
 
-# Add DJ intro generator (commented out for now to test basic functionality)
-# all_music = source.on_metadata(all_music, after_song)
+# Announce every real track start (attach once, on the smoothed music)
+music = source.on_metadata(music, announce_song)
+# Enable this if you want near-end DJ intros:
+# music = source.on_metadata(music, after_song)
 
-# Smooth transitions so the mount never drops between items
-smooth_music = crossfade(all_music)
+# Sine backup
+sine_src = sine()
 
-# Primary source with DJ inserts
-primary = fallback(track_sensitive=true, [tts_q, smooth_music])
+# Priority: DJ/TTS first, then music, then sine as emergency fallback
+primary = fallback(track_sensitive=true,  [tts_q, music])
+radio   = fallback(track_sensitive=false, [primary, sine_src])
 
-# Final radio output with sine fallback
-radio = fallback(track_sensitive=false, [primary, sine_src])
-=======
-# Apply metadata updates to music
-music = metadata.map(update_metadata, smooth_music)
-
-# DJ queue source - strip silence and make sure it's properly configured
-dj = blank.strip(max_blank=0.1, tts_q)
-
-# Create the main radio source with proper fallback hierarchy
-# DJ fills have priority, then music, then sine as emergency fallback
-radio = fallback(
-  track_sensitive=false,
-  [dj, music, sine_src]
-)
-
-# --- Output -------------------------------------------------------------------
+# ---------- Output ----------
 output.icecast(
   %mp3(id3v2=true),
   host="127.0.0.1",
@@ -155,7 +116,7 @@ output.icecast(
   password="passw0rd",
   mount="/stream.mp3",
   name="AI Plex DJ",
-  url="http://192.168.1.146:8000/",
+  url="http://127.0.0.1:8000/",
   genre="Mixed",
   description="24/7 auto-DJ",
   radio
