@@ -152,6 +152,21 @@ def load_history():
         with HISTORY_LOCK:
             HISTORY.clear()
 
+def _load_history_from_disk():
+    global HISTORY
+    if os.path.isfile(HISTORY_FILE):
+        try:
+            with open(HISTORY_FILE, "r") as f:
+                data = json.load(f)
+                if isinstance(data, list):
+                    with HISTORY_LOCK:
+                        HISTORY.clear()
+                        HISTORY.extend(data[-MAX_HISTORY:])
+        except Exception:
+            # corrupt or empty; start clean
+            with HISTORY_LOCK:
+                HISTORY.clear()
+
 def _append_history(ev: dict):
     """Append a single play event to history.jsonl (safe for multi-workers)."""
     ev = {
