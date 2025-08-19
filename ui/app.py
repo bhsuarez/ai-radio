@@ -460,32 +460,20 @@ def _ls_request_metadata(rid: int) -> dict:
     raw = _ls(f"request.metadata {rid}")
     return _parse_metadata_block(raw)
 
-def _metadata_for_rid(rid: int) -> dict:
-    lines = _ls_cmd(f"request.metadata {rid}")
-    md = {"rid": rid}
-    for ln in lines:
-        m = _key_val_re.match(ln)
-        if not m: 
-            continue
-        k, v = m.group(1).strip(), m.group(2)
-        # unescape any quoted data
-        v = v.replace(r'\n', '\n')
-        md[k] = v
-    # normalize fields our frontend expects
-    title   = md.get("title") or md.get("song") or ""
-    artist  = md.get("artist", "")
-    album   = md.get("album", "")
-    fname   = md.get("filename") or md.get("initial_uri", "").replace("file://", "")
-    out = {
-        "rid": rid,
-        "title": title,
-        "artist": artist,
-        "album": album,
-        "filename": fname,
+def _metadata_for_rid(rid: int) -> dict | None:
+    raw = _ls_query(f"request.metadata {rid}")
+    d = _parse_kv_block(raw)
+    if not d:
+        return None
+    return {
+        "title": d.get("title") or "Unknown",
+        "artist": d.get("artist") or "Unknown",
+        "album": d.get("album") or "",
+        "filename": d.get("filename") or d.get("initial_uri", "").replace("file://", ""),
+        "time": int(__import__("time").time() * 1000),
+        "duration_ms": None,
+        "elapsed_ms": None,
     }
-    if fname:
-        out["artwork_url"] = f"/api/cover?file={urllib.parse.quote(fname)}"
-    return out
 
 def _ls_cmd(args):
     """Run a liquidsoap client command and return its stdout as string."""
@@ -500,33 +488,96 @@ def _ls_cmd(args):
     except Exception as e:
         return str(e)
 
-def _get_now_playing():
-    """Return dict with info about the current track, or None."""
+def _get_now_playing() -> dict | None:
+    """
+    Determine current track:
+      1) request.all -> list of RIDs (lower RID == currently playing)
+      2) request.metadata <rid> -> kv metadata
+      Fallback: parse block --- 1 --- from output.icecast.metadata
+    """
     try:
-        meta = _ls_cmd(["now"])   # runs: liquidsoap --socket /tmp/radio.sock now
-        if not meta:
-            return None
+        raw = _ls_query("request.all")
+        rids = [int(x) for x in re.findall(r"\b\d+\b", raw)]
+        if rids:
+            rid = min(rids)  # lower RID is "on air" in your setup
+            md = _metadata_for_rid(rid)
+            if md:
+                return md
+        # Fallback: take block --- 1 --- from output.icecast.metadata
+        raw2 = _ls_query("output.icecast.metadata")
+        # capture lines between --- 1 --- and next --- or END
+        block = []
+        in_one = False
+        for ln in raw2.splitlines():
+            if ln.strip().startswith("--- 1 ---"):
+                in_one = True
+                continue
+            if in_one and ln.strip().startswith("--- "):
+                break
+            if in_one and ln.strip() != "END":
+                block.append(ln)
+        d = _parse_kv_block("\n".join(block))
+        if d:
+            return {
+                "title": d.get("title") or "Unknown",
+                "artist": d.get("artist") or "Unknown",
+                "album": d.get("album") or "",
+                "filename": "",  # not present in this view
+                "time": int(__import__("time").time() * 1000),
+                "duration_ms": None,
+                "elapsed_ms": None,
+            }
+        return None
+    except Exception:
+        return None
 
-        lines = meta.splitlines()
-        data = {}
-        for ln in lines:
-            if "=" in ln:
-                k, v = ln.split("=", 1)
-                data[k.strip()] = v.strip()
-
-        return {
-            "title": data.get("title", "Unknown"),
-            "artist": data.get("artist", "Unknown"),
-            "album": data.get("album", ""),
-            "filename": data.get("filename", ""),
-            "duration_ms": int(float(data.get("duration", "0")) * 1000) if "duration" in data else None,
-            "elapsed_ms": int(float(data.get("elapsed", "0")) * 1000) if "elapsed" in data else None,
-            "time": int(__import__("time").time() * 1000)
-        }
-    except Exception as e:
-        return {"error": str(e)}
+def _parse_kv_block(text: str) -> dict:
+    """Parse lines like key="val" into dict; ignores '--- n ---' separators."""
+    out = {}
+    for ln in text.splitlines():
+        ln = ln.strip()
+        if not ln or ln.startswith('---') or ln == 'END':
+            continue
+        if '=' not in ln:
+            continue
+        k, v = ln.split('=', 1)
+        v = v.strip()
+        if len(v) >= 2 and v[0] == '"' and v[-1] == '"':
+            v = v[1:-1]
+        out[k.strip()] = v
+    return out
 
 _key_val_re = re.compile(r'([^=]+)="(.*)"$')
+
+def _ls_query(cmd: str, host: str = "127.0.0.1", port: int = 1234, timeout: float = 2.5) -> str:
+    """Send one command to LS telnet interface and return raw text (until END)."""
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(timeout)
+    s.connect((host, port))
+    try:
+        # some LS builds print a banner; ignore
+        try:
+            _ = s.recv(4096)
+        except Exception:
+            pass
+        s.sendall((cmd + "\n").encode("utf-8"))
+
+        buf = b""
+        while True:
+            chunk = s.recv(4096)
+            if not chunk:
+                break
+            buf += chunk
+            if b"\nEND\n" in buf or buf.endswith(b"END\n") or b"END\r\n" in buf:
+                break
+        # be polite
+        try:
+            s.sendall(b"quit\n")
+        except Exception:
+            pass
+        return buf.decode("utf-8", "ignore")
+    finally:
+        s.close()
 
 # ── Routes ──────────────────────────────────────────────────────
 
