@@ -12,6 +12,10 @@ mkdir -p "$TTSDIR"
 
 echo "DJ_ENQUEUE: Starting at $(date)" >> /var/tmp/dj_enqueue.log
 
+NEXT_JSON="${NEXT_JSON:-/opt/ai-radio/next.json}"
+mkdir -p "$(dirname "$NEXT_JSON")"
+[ -f "$NEXT_JSON" ] || echo "[]" > "$NEXT_JSON"
+
 # ---------- 1) get upcoming track (robust to list/single/empty) ----------
 json="$(curl -fsS "$BASE/api/next" 2>/dev/null || echo '[]')"
 echo "DJ_ENQUEUE: Got JSON: $json" >> /var/tmp/dj_enqueue.log
@@ -47,6 +51,18 @@ PY
 )"
 
 echo "DJ_ENQUEUE: Artist='$ARTIST', Title='$TITLE'" >> /var/tmp/dj_enqueue.log
+
+# Drop the first element from next.json (if it's an array with >=1 item)
+pop_first_next() {
+  local tmp
+  tmp="$(mktemp)"
+  if jq -e 'type=="array" and length>0' "$NEXT_JSON" >/dev/null 2>&1; then
+    jq '.[1:]' "$NEXT_JSON" > "$tmp" && mv "$tmp" "$NEXT_JSON"
+    echo "DJ_ENQUEUE: Rotated NEXT_JSON (popped first item)" >> /var/tmp/dj_enqueue.log
+  else
+    echo "DJ_ENQUEUE: NEXT_JSON not an array or empty; no rotate" >> /var/tmp/dj_enqueue.log
+  fi
+}
 
 # ---------- 2) build the line FIRST ----------
 LINE="$(/opt/ai-radio/gen_ai_dj_line.sh "$TITLE" "$ARTIST" 2>/dev/null || true)"
