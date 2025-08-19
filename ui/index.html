@@ -130,14 +130,11 @@ async function enrichEventsWithArtwork(events) {
     if (ev.type === 'song' && !ev.artwork_url && (ev.filename || (ev.title && ev.artist))) {
       try {
         if (ev.filename) {
-          ev.artwork_url = `/api/cover?file=${encodeURIComponent(ev.filename)}`;
-        } else if (ev.title && ev.artist) {
-          const r = await fetch(`/api/test_find?title=${encodeURIComponent(ev.title)}&artist=${encodeURIComponent(ev.artist)}`);
-          if (r.ok) {
-            const x = await r.json();
-            if (x.found_file && x.has_artwork) { ev.artwork_url = x.artwork_url; ev.filename = x.found_file; }
-          }
-        }
+  ev.artwork_url = `/api/cover?file=${encodeURIComponent(ev.filename)}`;
+} else {
+  // fallback to station cover
+  ev.artwork_url = '/static/station-cover.jpg';
+}
       } catch {}
     }
   }
@@ -159,9 +156,13 @@ async function loadTimeline(){
   try {
     if (window._timelineLoading) return; window._timelineLoading = true;
 
-    const [now, next, tts, history] = await Promise.all([
+    const [nowR, nextR, ttsR, histR] = await Promise.allSettled([
       j('/api/now'), j('/api/next'), j('/api/tts_queue'), j('/api/history')
     ]);
+    const now     = nowR.status==='fulfilled' ? nowR.value : {};
+    const next    = nextR.status==='fulfilled' ? nextR.value : [];
+    const tts     = ttsR.status==='fulfilled' ? ttsR.value : [];
+    const history = histR.status==='fulfilled' ? histR.value : [];
 
     // LIVE NOW
     const live = (now && (now.title || now.filename)) ? {
@@ -178,20 +179,11 @@ async function loadTimeline(){
       .filter(s => !sameTrack(s, live))
       .map(s => ({ type:'upcoming', time: Date.now() + Math.random()*1e5, title: s.title || 'Unknown title', artist: s.artist || '', album: s.album || '', filename: s.filename || '', artwork_url: ensureArtPath(s.artwork_url || getCover(s)) }));
 
-    if (liveChanged || upcoming.some(u => !u.artwork_url || u.artwork_url === DEFAULT_ART)) {
-      const tasks = upcoming.map(async (t,i)=>{
-        if (!t.artwork_url || t.artwork_url === DEFAULT_ART) {
-          await new Promise(r=>setTimeout(r, i*100));
-          try {
-            const r = await fetch(`/api/test_find?title=${encodeURIComponent(t.title)}&artist=${encodeURIComponent(t.artist)}`);
-            if (r.ok) { const x = await r.json(); if (x.found_file && x.has_artwork) { t.artwork_url = ensureArtPath(x.artwork_url); t.filename = x.found_file; } }
-          } catch {}
-        }
-        return t;
-      });
-      const timeout = new Promise(res => setTimeout(()=>res(upcoming), 2500));
-      upcoming = await Promise.race([Promise.all(tasks), timeout]);
-    }
+    // No client-side lookup; just ensure a usable cover URL or fallback
+    upcoming = upcoming.map(t => {
+      if (!t.artwork_url) t.artwork_url = ensureArtPath(getCover(t));
+      return t;
+    });
 
     // de-dupe upcoming by title|artist
     const seenU = new Set();
