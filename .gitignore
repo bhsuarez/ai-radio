@@ -1,3 +1,6 @@
+venv/
+.venv/
+xtts-venv/
 *.bak.*
 .DS_Store
 /tts
