@@ -29,7 +29,7 @@ def main():
     if args.speaker_wav:
         kw["speaker_wav"] = args.speaker_wav
     else:
-        kw["speaker"] = speaker or os.environ.get("XTTS_SPEAKER", "en_female_5")
+        kw["speaker"] = speaker or os.environ.get("XTTS_SPEAKER", "Claribel Dervla")
 
     # Synthesize
     tts.tts_to_file(**kw)
