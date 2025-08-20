@@ -16,3 +16,4 @@ cache/
 .DS_Store
 *.bak.*
 *.json
+xtts-venv/*
