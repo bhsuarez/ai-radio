@@ -1128,95 +1128,105 @@ def api_dj_now():
     except Exception as e:
         line = f"That was '{title}' by {artist}."
         print(f"DEBUG: DJ script error: {e}, using fallback: '{line}'")
+    # TTS synthesis
+    mp3 = os.path.join(TTS_DIR, f"intro_{ts}.mp3")
+    audio_url = None
 
-    
-# TTS synthesis
-mp3 = os.path.join(TTS_DIR, f"intro_{ts}.mp3")
-audio_url = None
-
-try:
-    # Prefer XTTS when configured (default via systemd drop-in we added)
-    engine = os.getenv("TTS_ENGINE", "xtts").strip().lower()
-    if engine == "xtts":
-        try:
-            # Allow env override for language
-            xtts_lang = os.getenv("XTTS_LANG", "en")
-            # Use our XTTS enqueue script which prints the final file path on success
-            xtts_cmd = ["/opt/ai-radio/dj_enqueue_xtts.sh", artist, title, xtts_lang]
-            print(f"DEBUG: XTTS selected, running: {' '.join(xtts_cmd)}")
-            r = subprocess.run(xtts_cmd, capture_output=True, text=True, timeout=90)
-            print(f"DEBUG: XTTS rc={r.returncode} stdout='{r.stdout.strip()}' stderr='{(r.stderr or '').strip()}'")
-            if r.returncode == 0 and r.stdout.strip():
-                # Expect a full path to the rendered mp3 from tts_xtts.py
-                xtts_path = r.stdout.strip().splitlines()[-1].strip()
-                if os.path.isfile(xtts_path):
-                    audio_url = f"/tts/{os.path.basename(xtts_path)}"
-                    print(f"DEBUG: XTTS produced {audio_url}")
-                else:
-                    print("DEBUG: XTTS stdout didn't point to an existing file; will fall back.")
+    # Try XTTS via script first if enabled
+    try:
+        if os.getenv("USE_XTTS", "1") in ("1", "true", "True"):
+            print("DEBUG: Trying XTTS via dj_enqueue_xtts.sh")
+            # Respect XTTS_SPEAKER env if set
+            xtts_speaker = os.getenv("XTTS_SPEAKER")
+            cmd = ["/opt/ai-radio/dj_enqueue_xtts.sh", artist, title]
+            if xtts_speaker:
+                cmd += ["en", xtts_speaker]
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            print(f"DEBUG: XTTS return code: {r.returncode}")
+            if r.stdout:
+                print(f"DEBUG: XTTS stdout (truncated): {r.stdout[:300]}")
+            if r.stderr:
+                print(f"DEBUG: XTTS stderr (truncated): {r.stderr[:300]}")
+            # Best-effort: expect script to print a path to the file, or we find the newest intro_*.mp3
+            out = r.stdout.strip()
+            candidate = out if os.path.isfile(out) else None
+            if not candidate:
+                try:
+                    files = sorted(
+                        (os.path.join(TTS_DIR, f) for f in os.listdir(TTS_DIR) if f.startswith("intro_")),
+                        key=lambda x: os.path.getmtime(x),
+                        reverse=True
+                    )
+                    candidate = files[0] if files else None
+                except Exception:
+                    candidate = None
+            if r.returncode == 0 and candidate:
+                audio_url = f"/tts/{os.path.basename(candidate)}"
+                print(f"DEBUG: XTTS OK: {audio_url}")
             else:
-                print("DEBUG: XTTS failed, will try ElevenLabs/Piper fallback.")
-        except Exception as e:
-            print(f"DEBUG: XTTS exception: {e}; falling back to ElevenLabs/Piper")
+                print("DEBUG: XTTS did not produce an audio file; will try legacy path")
+    except Exception as e:
+        print(f"DEBUG: XTTS exception: {e}; falling back to ElevenLabs/Piper")
 
     # If XTTS did not set audio_url, continue with legacy ElevenLabs → Piper path
     if not audio_url:
-        # Check if ElevenLabs is available
-        api_key = os.getenv("ELEVENLABS_API_KEY")
-        print(f"DEBUG: ElevenLabs API key present: {bool(api_key)}")
-        
-        if api_key and 'synthesize_with_elevenlabs' in globals():
-            print("DEBUG: Trying ElevenLabs synthesis")
-            if synthesize_with_elevenlabs(line, mp3):
-                audio_url = f"/tts/{os.path.basename(mp3)}"
-                print(f"DEBUG: ElevenLabs synthesis successful: {audio_url}")
-            else:
-                print("DEBUG: ElevenLabs failed, falling back to Piper")
-                raise Exception("ElevenLabs failed")
-        else:
-            print("DEBUG: No ElevenLabs available, using Piper")
-            raise Exception("No ElevenLabs")
-            
-    except Exception as e:
-        print(f"DEBUG: ElevenLabs exception: {e}, trying Piper")
-        # Piper fallback
         try:
-            wav = os.path.join(TTS_DIR, f"intro_{ts}.wav")
-            print(f"DEBUG: Running Piper to create {wav}")
-            
-            piper_result = subprocess.run(
-                ["piper", "--model", VOICE, "--output_file", wav],
-                input=line.encode("utf-8"), 
-                capture_output=True,
-                timeout=30
-            )
-            print(f"DEBUG: Piper return code: {piper_result.returncode}")
-            if piper_result.stderr:
-                print(f"DEBUG: Piper stderr: {piper_result.stderr.decode()}")
-            
-            if piper_result.returncode == 0:
-                # Try to convert to MP3
-                try:
-                    print("DEBUG: Converting WAV to MP3")
-                    ffmpeg_result = subprocess.run(
-                        ["ffmpeg", "-nostdin", "-y", "-i", wav, "-codec:a", "libmp3lame", "-q:a", "3", mp3],
-                        capture_output=True, timeout=15
-                    )
-                    if ffmpeg_result.returncode == 0:
-                        audio_url = f"/tts/{os.path.basename(mp3)}"
-                        print(f"DEBUG: MP3 conversion successful: {audio_url}")
-                    else:
-                        audio_url = f"/tts/{os.path.basename(wav)}"
-                        print(f"DEBUG: MP3 conversion failed, using WAV: {audio_url}")
-                except Exception as ffmpeg_error:
-                    audio_url = f"/tts/{os.path.basename(wav)}"
-                    print(f"DEBUG: FFmpeg error: {ffmpeg_error}, using WAV: {audio_url}")
+            # Check if ElevenLabs is available
+            api_key = os.getenv("ELEVENLABS_API_KEY")
+            print(f"DEBUG: ElevenLabs API key present: {bool(api_key)}")
+
+            if api_key and 'synthesize_with_elevenlabs' in globals():
+                print("DEBUG: Trying ElevenLabs synthesis")
+                if synthesize_with_elevenlabs(line, mp3):
+                    audio_url = f"/tts/{os.path.basename(mp3)}"
+                    print(f"DEBUG: ElevenLabs synthesis successful: {audio_url}")
+                else:
+                    print("DEBUG: ElevenLabs failed, falling back to Piper")
+                    raise Exception("ElevenLabs failed")
             else:
-                print("DEBUG: Piper synthesis failed")
-                
-        except Exception as piper_error:
-            print(f"DEBUG: Piper completely failed: {piper_error}")
-    
+                print("DEBUG: No ElevenLabs available, using Piper")
+                raise Exception("No ElevenLabs")
+
+        except Exception as e:
+            print(f"DEBUG: ElevenLabs exception: {e}, trying Piper")
+            # Piper fallback
+            try:
+                wav = os.path.join(TTS_DIR, f"intro_{ts}.wav")
+                print(f"DEBUG: Running Piper to create {wav}")
+
+                piper_result = subprocess.run(
+                    ["piper", "--model", VOICE, "--output_file", wav],
+                    input=line.encode("utf-8"),
+                    capture_output=True,
+                    timeout=30
+                )
+                print(f"DEBUG: Piper return code: {piper_result.returncode}")
+                if piper_result.stderr:
+                    print(f"DEBUG: Piper stderr: {piper_result.stderr.decode()}")
+
+                if piper_result.returncode == 0:
+                    # Try to convert to MP3
+                    try:
+                        print("DEBUG: Converting WAV to MP3")
+                        ffmpeg_result = subprocess.run(
+                            ["ffmpeg", "-nostdin", "-y", "-i", wav, "-codec:a", "libmp3lame", "-q:a", "3", mp3],
+                            capture_output=True, timeout=15
+                        )
+                        if ffmpeg_result.returncode == 0:
+                            audio_url = f"/tts/{os.path.basename(mp3)}"
+                            print(f"DEBUG: MP3 conversion successful: {audio_url}")
+                        else:
+                            audio_url = f"/tts/{os.path.basename(wav)}"
+                            print(f"DEBUG: MP3 conversion failed, using WAV: {audio_url}")
+                    except Exception as ffmpeg_error:
+                        audio_url = f"/tts/{os.path.basename(wav)}"
+                        print(f"DEBUG: FFmpeg error: {ffmpeg_error}, using WAV: {audio_url}")
+                else:
+                    print("DEBUG: Piper synthesis failed")
+
+            except Exception as piper_error:
+                print(f"DEBUG: Piper completely failed: {piper_error}")
+
     # Push to Liquidsoap (best effort)
     if audio_url:
         try:
