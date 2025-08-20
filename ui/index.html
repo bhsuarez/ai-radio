@@ -329,3 +329,51 @@ setInterval(loadTimeline, 10000);
 </script>
 </body>
 </html>
+
+<script>
+async function loadTtsSettings() {
+  try {
+    const r = await fetch('/api/settings', {cache:'no-store'});
+    const data = await r.json();
+    const sel = document.getElementById('ttsProvider');
+    if (sel && data && data.tts_provider) sel.value = data.tts_provider;
+  } catch (e) { console.error('loadTtsSettings', e); }
+}
+
+async function saveTtsProvider() {
+  const sel = document.getElementById('ttsProvider');
+  const badge = document.getElementById('ttsSaveStatus');
+  if (!sel) return;
+  const val = sel.value;
+  try {
+    badge && (badge.textContent = 'Saving…');
+    const r = await fetch('/api/settings', {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({ tts_provider: val })
+    });
+    const j = await r.json();
+    if (j && j.ok) {
+      badge && (badge.textContent = 'Saved');
+      setTimeout(()=>{ if (badge) badge.textContent=''; }, 1200);
+    } else {
+      badge && (badge.textContent = 'Error');
+      console.error('saveTtsProvider error', j);
+    }
+  } catch (e) {
+    badge && (badge.textContent = 'Error');
+    console.error('saveTtsProvider', e);
+  }
+}
+
+document.addEventListener('change', (ev)=>{
+  if (ev.target && ev.target.id === 'ttsProvider') saveTtsProvider();
+});
+
+// Ensure it loads with the rest of the dashboard
+if (document.readyState === 'loading') {
+  document.addEventListener('DOMContentLoaded', loadTtsSettings);
+} else {
+  loadTtsSettings();
+}
+</script>

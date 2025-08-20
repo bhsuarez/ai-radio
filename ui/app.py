@@ -1311,3 +1311,40 @@ if os.environ.get("WERKZEUG_RUN_MAIN") != "true":  # avoid double-start in debug
 # ── Main ────────────────────────────────────────────────────────
 if __name__ == "__main__":
     app.run(host=HOST, port=PORT)
+def _safe_read_history():
+    try:
+        with open(HISTORY_PATH, "r") as f:
+            data = json.load(f)
+            return data if isinstance(data, list) else []
+    except Exception:
+        return []
+
+
+def push_event(ev):
+    global HISTORY
+    # Normalize in-memory history
+    if not isinstance(HISTORY, list):
+        HISTORY = _safe_read_history()
+        if not isinstance(HISTORY, list):
+            HISTORY = []
+
+    # Ensure timestamp (ms)
+    ev.setdefault("time", int(time.time() * 1000))
+
+    # Prepend newest
+    HISTORY.insert(0, ev)
+
+    # Trim safely
+    try:
+        if len(HISTORY) > int(MAX_HISTORY):
+            del HISTORY[int(MAX_HISTORY):]
+    except Exception:
+        HISTORY = HISTORY[:500]
+
+    # Persist atomically
+    os.makedirs(os.path.dirname(HISTORY_PATH), exist_ok=True)
+    tmp = HISTORY_PATH + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(HISTORY, f)
+    os.replace(tmp, HISTORY_PATH)
+    return True
