@@ -16,5 +16,7 @@
     "AI Radio bringing you {title} from {artist}. We'll be right back with more hits!",
     "{artist}'s {title} there, and this is your AI DJ keeping the music flowing!"
   ],
-  "save_to_file": true
+  "save_to_file": true,
+  "tts_voice": "Damien Black",
+  "tts_lang": "en"                 
 }
