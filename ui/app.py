@@ -1129,11 +1129,38 @@ def api_dj_now():
         line = f"That was '{title}' by {artist}."
         print(f"DEBUG: DJ script error: {e}, using fallback: '{line}'")
 
-    # TTS synthesis
-    mp3 = os.path.join(TTS_DIR, f"intro_{ts}.mp3")
-    audio_url = None
     
-    try:
+# TTS synthesis
+mp3 = os.path.join(TTS_DIR, f"intro_{ts}.mp3")
+audio_url = None
+
+try:
+    # Prefer XTTS when configured (default via systemd drop-in we added)
+    engine = os.getenv("TTS_ENGINE", "xtts").strip().lower()
+    if engine == "xtts":
+        try:
+            # Allow env override for language
+            xtts_lang = os.getenv("XTTS_LANG", "en")
+            # Use our XTTS enqueue script which prints the final file path on success
+            xtts_cmd = ["/opt/ai-radio/dj_enqueue_xtts.sh", artist, title, xtts_lang]
+            print(f"DEBUG: XTTS selected, running: {' '.join(xtts_cmd)}")
+            r = subprocess.run(xtts_cmd, capture_output=True, text=True, timeout=90)
+            print(f"DEBUG: XTTS rc={r.returncode} stdout='{r.stdout.strip()}' stderr='{(r.stderr or '').strip()}'")
+            if r.returncode == 0 and r.stdout.strip():
+                # Expect a full path to the rendered mp3 from tts_xtts.py
+                xtts_path = r.stdout.strip().splitlines()[-1].strip()
+                if os.path.isfile(xtts_path):
+                    audio_url = f"/tts/{os.path.basename(xtts_path)}"
+                    print(f"DEBUG: XTTS produced {audio_url}")
+                else:
+                    print("DEBUG: XTTS stdout didn't point to an existing file; will fall back.")
+            else:
+                print("DEBUG: XTTS failed, will try ElevenLabs/Piper fallback.")
+        except Exception as e:
+            print(f"DEBUG: XTTS exception: {e}; falling back to ElevenLabs/Piper")
+
+    # If XTTS did not set audio_url, continue with legacy ElevenLabs → Piper path
+    if not audio_url:
         # Check if ElevenLabs is available
         api_key = os.getenv("ELEVENLABS_API_KEY")
         print(f"DEBUG: ElevenLabs API key present: {bool(api_key)}")
