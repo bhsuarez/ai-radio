@@ -1,6 +1,27 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+BASE_DIR="/opt/ai-radio"
+VENV="$BASE_DIR/xtts-venv"
+PY="$VENV/bin/python"
+
+# Fallback to system python with a loud warning if venv is missing
+if [[ ! -x "$PY" ]]; then
+  echo "WARN: $PY not found. Recreating venv..."
+  python3.11 -m venv "$VENV"
+  source "$VENV/bin/activate"
+  pip install --upgrade pip setuptools wheel
+  pip install --index-url https://download.pytorch.org/whl/cpu \
+    torch==2.5.1+cpu torchaudio==2.5.1+cpu torchvision==0.20.1+cpu
+  pip install TTS==0.22.0 transformers==4.35.2 tokenizers==0.15.2 'pandas<2' 'numpy<2'
+  deactivate
+fi
+
+EXEC="$BASE_DIR/tts_xtts.py"
+LANG="${3:-en}"
+SPEAKER_WAV="${4:-}"
+exec "$PY" "$EXEC" --artist "$1" --title "$2" --lang "$LANG" ${SPEAKER_WAV:+--speaker_wav "$SPEAKER_WAV"}
+
 # Usage:
 #   dj_enqueue_xtts.sh "Artist" "Title" [lang] [speaker_ref_wav]
 ARTIST="${1:-}"
