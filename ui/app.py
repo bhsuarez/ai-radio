@@ -1298,8 +1298,9 @@ def api_dj_next():
             env = os.environ.copy()
             env["PATH"] = "/usr/local/bin:/usr/bin:/bin"  # ensure basic PATH
             print(f"DEBUG: Running XTTS with env USER={env.get('USER', 'unknown')}")
-            
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env)
+            print(f"DEBUG: Current working directory: {os.getcwd()}")
+
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env, cwd="/opt/ai-radio")
             print(f"DEBUG: XTTS return code: {r.returncode}")
             
             if r.stdout:
