@@ -81,7 +81,13 @@ NEXT_CACHE = Path("/opt/ai-radio/next.json")
 HISTORY = deque(maxlen=400)
 _last_now_key = None
 _last_history_key = None 
-_last_now_payload = None 
+_last_now_payload = None
+
+# DJ generation throttling
+_dj_generation_lock = threading.Lock()
+_last_dj_generation = 0
+_last_dj_track_key = ""
+DJ_GENERATION_COOLDOWN = 15  # seconds between generations 
 
 # ── Helpers ─────────────────────────────────────────────────────
 def telnet_cmd(cmd: str, timeout=5) -> str:
@@ -1067,6 +1073,30 @@ def log_event():
     push_event(data)
     return {"ok": True}
 
+def _should_generate_dj_intro(artist, title):
+    """Check if we should generate a DJ intro, preventing duplicates and overload"""
+    global _last_dj_generation, _last_dj_track_key
+    
+    current_time = time.time()
+    track_key = f"{artist}|{title}".lower()
+    
+    with _dj_generation_lock:
+        # Check cooldown period
+        if current_time - _last_dj_generation < DJ_GENERATION_COOLDOWN:
+            print(f"DEBUG: DJ generation on cooldown (last: {current_time - _last_dj_generation:.1f}s ago)")
+            return False
+            
+        # Check if same track
+        if track_key == _last_dj_track_key:
+            print(f"DEBUG: Same track as last generation: {track_key}")
+            return False
+            
+        # Update throttling state
+        _last_dj_generation = current_time
+        _last_dj_track_key = track_key
+        print(f"DEBUG: DJ generation allowed for: {track_key}")
+        return True
+
 @app.post("/api/dj-next")
 def api_dj_next():
     """Generate DJ intro for the NEXT upcoming track, not current track"""
@@ -1082,6 +1112,10 @@ def api_dj_next():
         artist = artist_param
         title = title_param
         print(f"DEBUG: Using Liquidsoap auto-DJ parameters - Artist: '{artist}', Title: '{title}'")
+        
+        # Check throttling before proceeding
+        if not _should_generate_dj_intro(artist, title):
+            return jsonify({"ok": True, "skipped": "throttled", "reason": "generation throttled"}), 200
     else:
         # Original logic - get from Liquidsoap queue
         try:

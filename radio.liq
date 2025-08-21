@@ -44,11 +44,12 @@ def auto_generate_dj_intro(m)
   if !last_processed_track != track_key then
     last_processed_track := track_key
     
-    log("AUTO-DJ: Generating intro for upcoming track: " ^ title ^ " by " ^ artist)
+    log("AUTO-DJ: Requesting intro for upcoming track: " ^ title ^ " by " ^ artist)
     
-    # Pass track info as URL parameters
+    # Pass track info as URL parameters - fire and forget to avoid blocking
     url = "http://127.0.0.1:5055/api/dj-now?artist=" ^ url.encode(artist) ^ "&title=" ^ url.encode(title)
-    ignore(http.post(url))
+    # Use thread to avoid blocking liquidsoap
+    thread.run(fun () -> ignore(http.post(url)))
   end
 end
 
@@ -107,7 +108,7 @@ end
 music = metadata.map(update_metadata, all_music)
 
 # AUTO-DJ: Generate intros when tracks are selected/ready
-#music = source.on_metadata(music, auto_generate_dj_intro)
+music = source.on_metadata(music, auto_generate_dj_intro)
 
 # Smooth crossfades on music
 music = crossfade(music)
