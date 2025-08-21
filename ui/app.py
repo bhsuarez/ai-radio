@@ -1247,7 +1247,7 @@ def api_dj_next():
             return jsonify({"ok": False, "error": "No tracks in queue"}), 400
             
         # Get metadata for the first (next) track
-        next_rid = rids[0]
+        next_rid = rids[1]
         next_track = _metadata_for_rid(next_rid)
         
         if not next_track or not next_track.get("title"):
