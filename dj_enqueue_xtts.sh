@@ -26,3 +26,14 @@ TEXT="Up next: ${TITLE} by ${ARTIST}."
 
 # Print the path for callers
 echo "${OUT}"
+
+if [[ -f "${OUT}" ]]; then
+    echo "DEBUG: Successfully created ${OUT}" >&2
+    echo "DEBUG: File size: $(stat -c%s "${OUT}") bytes" >&2
+    # Print the path for the calling script to capture
+    echo "${OUT}"
+    exit 0
+else
+    echo "ERROR: XTTS script completed but no output file found" >&2
+    exit 1
+fi
