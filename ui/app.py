@@ -1270,6 +1270,15 @@ def api_dj_next():
                 audio_url = f"/tts/{os.path.basename(candidate_file)}"
                 print(f"DEBUG: XTTS SUCCESS: {audio_url}")
                 
+                # Save transcript text file for frontend display
+                txt_file = candidate_file.replace('.mp3', '.txt')
+                try:
+                    with open(txt_file, 'w', encoding='utf-8') as f:
+                        f.write(line)
+                    print(f"DEBUG: Saved transcript to: {txt_file}")
+                except Exception as e:
+                    print(f"DEBUG: Failed to save transcript: {e}")
+                
                 # Push to Liquidsoap TTS queue
                 try:
                     print(f"DEBUG: Pushing to Liquidsoap TTS queue: {candidate_file}")
