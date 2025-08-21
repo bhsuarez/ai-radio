@@ -1067,167 +1067,166 @@ def log_event():
     push_event(data)
     return {"ok": True}
 
-# @app.post("/api/dj-now")
-# def api_dj_now():
-#     os.makedirs(TTS_DIR, exist_ok=True)
-#     ts = int(time.time())
+@app.post("/api/dj-now")
+def api_dj_now():
+    os.makedirs(TTS_DIR, exist_ok=True)
+    ts = int(time.time())
 
-#     # Get track data
-#     title = "Unknown Title"
-#     artist = "Unknown Artist"
+    # Get track data
+    title = "Unknown Title"
+    artist = "Unknown Artist"
     
-#     try:
-#         print("DEBUG: Getting track data for DJ intro")
-#         track_data = read_now()
-#         print(f"DEBUG: Live metadata: {track_data}")
+    try:
+        print("DEBUG: Getting track data for DJ intro")
+        track_data = read_now()
+        print(f"DEBUG: Live metadata: {track_data}")
         
-#         if track_data and track_data.get("title") and track_data.get("title") != "Unknown title":
-#             title = track_data.get("title", "Unknown Title")
-#             artist = track_data.get("artist", "Unknown Artist")
-#             print(f"DEBUG: Using live metadata - Title: '{title}', Artist: '{artist}'")
-#         else:
-#             print("DEBUG: Live metadata incomplete, checking history")
-#             for ev in HISTORY:
-#                 if ev.get("type") == "song":
-#                     title = ev.get("title", "Unknown Title")
-#                     artist = ev.get("artist", "Unknown Artist")
-#                     print(f"DEBUG: Using history fallback - Title: '{title}', Artist: '{artist}'")
-#                     break
+        if track_data and track_data.get("title") and track_data.get("title") != "Unknown title":
+            title = track_data.get("title", "Unknown Title")
+            artist = track_data.get("artist", "Unknown Artist")
+            print(f"DEBUG: Using live metadata - Title: '{title}', Artist: '{artist}'")
+        else:
+            print("DEBUG: Live metadata incomplete, checking history")
+            for ev in HISTORY:
+                if ev.get("type") == "song":
+                    title = ev.get("title", "Unknown Title")
+                    artist = ev.get("artist", "Unknown Artist")
+                    print(f"DEBUG: Using history fallback - Title: '{title}', Artist: '{artist}'")
+                    break
                 
-#     except Exception as e:
-#         print(f"DEBUG: Error getting track data: {e}")
+    except Exception as e:
+        print(f"DEBUG: Error getting track data: {e}")
 
-#     print(f"DEBUG: Final track data - Title: '{title}', Artist: '{artist}'")
+    print(f"DEBUG: Final track data - Title: '{title}', Artist: '{artist}'")
 
-#     # Generate DJ line (if using AI generation)
-#     line = f"That was '{title}' by {artist}."
-#     try:
-#         print(f"DEBUG: Running DJ script: /opt/ai-radio/gen_ai_dj_line.sh '{title}' '{artist}'")
-#         result = subprocess.run(
-#             ["/opt/ai-radio/gen_ai_dj_line.sh", title, artist],
-#             capture_output=True, text=True, timeout=35
-#         )
-#         if result.returncode == 0 and result.stdout.strip():
-#             line = ANSI.sub('', result.stdout.strip())
-#             print(f"DEBUG: Using DJ script output: '{line}'")
-#         else:
-#             print(f"DEBUG: DJ script failed, using fallback: '{line}'")
-#     except Exception as e:
-#         print(f"DEBUG: DJ script error: {e}, using fallback: '{line}'")
+    # Generate DJ line (if using AI generation)
+    line = f"That was '{title}' by {artist}."
+    try:
+        print(f"DEBUG: Running DJ script: /opt/ai-radio/gen_ai_dj_line.sh '{title}' '{artist}'")
+        result = subprocess.run(
+            ["/opt/ai-radio/gen_ai_dj_line.sh", title, artist],
+            capture_output=True, text=True, timeout=35
+        )
+        if result.returncode == 0 and result.stdout.strip():
+            line = ANSI.sub('', result.stdout.strip())
+            print(f"DEBUG: Using DJ script output: '{line}'")
+        else:
+            print(f"DEBUG: DJ script failed, using fallback: '{line}'")
+    except Exception as e:
+        print(f"DEBUG: DJ script error: {e}, using fallback: '{line}'")
 
-#     # XTTS synthesis
-#     audio_url = None
+    # XTTS synthesis
+    audio_url = None
     
-#     try:
-#         if os.getenv("USE_XTTS", "1") in ("1", "true", "True"):
-#             print("DEBUG: Trying XTTS via dj_enqueue_xtts.sh")
+    try:
+        if os.getenv("USE_XTTS", "1") in ("1", "true", "True"):
+            print("DEBUG: Trying XTTS via dj_enqueue_xtts.sh")
             
-#             # Build command with proper arguments
-#             xtts_speaker = os.getenv("XTTS_SPEAKER")
-#             cmd = ["/opt/ai-radio/dj_enqueue_xtts.sh", artist, title]
-#             if xtts_speaker:
-#                 cmd += ["en", xtts_speaker]
+            # Build command with proper arguments
+            xtts_speaker = os.getenv("XTTS_SPEAKER")
+            cmd = ["/opt/ai-radio/dj_enqueue_xtts.sh", artist, title]
+            if xtts_speaker:
+                cmd += ["en", xtts_speaker]
             
-#             print(f"DEBUG: XTTS command: {cmd}")
+            print(f"DEBUG: XTTS command: {cmd}")
             
-#             # Run XTTS script
-#             r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
-#             print(f"DEBUG: XTTS return code: {r.returncode}")
+            # Run XTTS script
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            print(f"DEBUG: XTTS return code: {r.returncode}")
             
-#             if r.stdout:
-#                 print(f"DEBUG: XTTS stdout: {r.stdout.strip()}")
-#             if r.stderr:
-#                 print(f"DEBUG: XTTS stderr (first 500 chars): {r.stderr[:500]}")
+            if r.stdout:
+                print(f"DEBUG: XTTS stdout: {r.stdout.strip()}")
+            if r.stderr:
+                print(f"DEBUG: XTTS stderr (first 500 chars): {r.stderr[:500]}")
                 
-#             # Check if script output contains a file path
-#             output_lines = r.stdout.strip().split('\n')
-#             candidate_file = None
+            # Check if script output contains a file path
+            output_lines = r.stdout.strip().split('\n')
+            candidate_file = None
             
-#             # Look for a file path in the output
-#             for line in output_lines:
-#                 line = line.strip()
-#                 if line.startswith('/') and line.endswith('.mp3') and os.path.isfile(line):
-#                     candidate_file = line
-#                     break
+            # Look for a file path in the output
+            for line in output_lines:
+                line = line.strip()
+                if line.startswith('/') and line.endswith('.mp3') and os.path.isfile(line):
+                    candidate_file = line
+                    break
             
-#             # If no explicit path found, look for newest intro file
-#             if not candidate_file:
-#                 try:
-#                     print("DEBUG: No explicit file path found, searching for newest intro file")
-#                     pattern = os.path.join(TTS_DIR, "intro_*.mp3")
-#                     import glob
-#                     files = glob.glob(pattern)
-#                     if files:
-#                         # Sort by modification time, newest first
-#                         files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
-#                         # Check if the newest file was created in the last 30 seconds
-#                         newest = files[0]
-#                         if time.time() - os.path.getmtime(newest) < 30:
-#                             candidate_file = newest
-#                             print(f"DEBUG: Found recent intro file: {candidate_file}")
-#                         else:
-#                             print(f"DEBUG: Newest intro file too old: {newest}")
-#                     else:
-#                         print("DEBUG: No intro files found")
-#                 except Exception as e:
-#                     print(f"DEBUG: Error searching for intro files: {e}")
+            # If no explicit path found, look for newest intro file
+            if not candidate_file:
+                try:
+                    print("DEBUG: No explicit file path found, searching for newest intro file")
+                    pattern = os.path.join(TTS_DIR, "intro_*.mp3")
+                    import glob
+                    files = glob.glob(pattern)
+                    if files:
+                        # Sort by modification time, newest first
+                        files.sort(key=lambda x: os.path.getmtime(x), reverse=True)
+                        # Check if the newest file was created in the last 30 seconds
+                        newest = files[0]
+                        if time.time() - os.path.getmtime(newest) < 30:
+                            candidate_file = newest
+                            print(f"DEBUG: Found recent intro file: {candidate_file}")
+                        else:
+                            print(f"DEBUG: Newest intro file too old: {newest}")
+                    else:
+                        print("DEBUG: No intro files found")
+                except Exception as e:
+                    print(f"DEBUG: Error searching for intro files: {e}")
             
-#             if candidate_file and r.returncode == 0:
-#                 audio_url = f"/tts/{os.path.basename(candidate_file)}"
-#                 print(f"DEBUG: XTTS SUCCESS: {audio_url}")
+            if candidate_file and r.returncode == 0:
+                audio_url = f"/tts/{os.path.basename(candidate_file)}"
+                print(f"DEBUG: XTTS SUCCESS: {audio_url}")
                 
-#                 # Push to Liquidsoap immediately
-#                 try:
-#                     print(f"DEBUG: Pushing to Liquidsoap: {candidate_file}")
-#                     liq_result = subprocess.run(
-#                         ["nc", "127.0.0.1", "1234"],
-#                         input=f"tts.push {candidate_file}\nquit\n".encode(),
-#                         capture_output=True,
-#                         timeout=5
-#                     )
-#                     print(f"DEBUG: Liquidsoap push result: {liq_result.returncode}")
-#                     if liq_result.stdout:
-#                         print(f"DEBUG: Liquidsoap stdout: {liq_result.stdout.decode()}")
-#                 except Exception as e:
-        push_cmd = f"tts.push annotate:title=\"DJ Intro\",artist=\"AI DJ\",comment=\"{line}\":{candidate_file}" if candidate_file and os.path.isfile(candidate_file) else ""
-#                     print(f"DEBUG: Liquidsoap push failed: {e}")
+                # Push to Liquidsoap immediately
+                try:
+                    print(f"DEBUG: Pushing to Liquidsoap: {candidate_file}")
+                    liq_result = subprocess.run(
+                        ["nc", "127.0.0.1", "1234"],
+                        input=f"tts.push {candidate_file}\nquit\n".encode(),
+                        capture_output=True,
+                        timeout=5
+                    )
+                    print(f"DEBUG: Liquidsoap push result: {liq_result.returncode}")
+                    if liq_result.stdout:
+                        print(f"DEBUG: Liquidsoap stdout: {liq_result.stdout.decode()}")
+                except Exception as e:
+                    print(f"DEBUG: Liquidsoap push failed: {e}")
                     
-#             else:
-#                 print("DEBUG: XTTS did not produce a usable audio file")
+            else:
+                print("DEBUG: XTTS did not produce a usable audio file")
                 
-#     except Exception as e:
-#         print(f"DEBUG: XTTS exception: {e}")
+    except Exception as e:
+        print(f"DEBUG: XTTS exception: {e}")
 
-#     # Fallback to ElevenLabs/Piper only if XTTS failed
-#     if not audio_url:
-#         print("DEBUG: XTTS failed, falling back to ElevenLabs/Piper")
-#         mp3 = os.path.join(TTS_DIR, f"intro_{ts}.mp3")
+    # Fallback to ElevenLabs/Piper only if XTTS failed
+    if not audio_url:
+        print("DEBUG: XTTS failed, falling back to ElevenLabs/Piper")
+        mp3 = os.path.join(TTS_DIR, f"intro_{ts}.mp3")
         
-#         try:
-#             api_key = os.getenv("ELEVENLABS_API_KEY")
-#             if api_key and 'synthesize_with_elevenlabs' in globals():
-#                 print("DEBUG: Trying ElevenLabs synthesis")
-#                 if synthesize_with_elevenlabs(line, mp3):
-#                     audio_url = f"/tts/{os.path.basename(mp3)}"
-#                     print(f"DEBUG: ElevenLabs synthesis successful: {audio_url}")
-#                 else:
-#                     raise Exception("ElevenLabs failed")
-#             else:
-#                 raise Exception("No ElevenLabs available")
-#         except Exception as e:
-#             print(f"DEBUG: ElevenLabs failed: {e}, trying Piper")
-#             # Piper fallback code here...
+        try:
+            api_key = os.getenv("ELEVENLABS_API_KEY")
+            if api_key and 'synthesize_with_elevenlabs' in globals():
+                print("DEBUG: Trying ElevenLabs synthesis")
+                if synthesize_with_elevenlabs(line, mp3):
+                    audio_url = f"/tts/{os.path.basename(mp3)}"
+                    print(f"DEBUG: ElevenLabs synthesis successful: {audio_url}")
+                else:
+                    raise Exception("ElevenLabs failed")
+            else:
+                raise Exception("No ElevenLabs available")
+        except Exception as e:
+            print(f"DEBUG: ElevenLabs failed: {e}, trying Piper")
+            # Piper fallback code here...
 
-#     # Add to timeline
-#     push_event({
-#         "type": "dj",
-#         "text": line,
-#         "audio_url": audio_url,
-#         "time": int(time.time() * 1000),
-#     })
+    # Add to timeline
+    push_event({
+        "type": "dj",
+        "text": line,
+        "audio_url": audio_url,
+        "time": int(time.time() * 1000),
+    })
 
-#     print(f"DEBUG: Final result - Text: '{line}', Audio URL: {audio_url}")
-#     return jsonify(ok=True, queued_text=line, audio_url=audio_url), 200
+    print(f"DEBUG: Final result - Text: '{line}', Audio URL: {audio_url}")
+    return jsonify(ok=True, queued_text=line, audio_url=audio_url), 200
 
 @app.post("/api/dj-next")
 def api_dj_next():
