@@ -4,7 +4,8 @@ set -euo pipefail
 ARTIST=${1:-}
 TITLE=${2:-}
 LANG=${3:-en}
-SPEAKER=${4:-${XTTS_SPEAKER:-"Damien Black"}}
+# Fix: Properly handle speaker name with spaces
+SPEAKER="${4:-${XTTS_SPEAKER:-Damien Black}}"
 
 if [[ -z "${ARTIST}" || -z "${TITLE}" ]]; then
   echo "Usage: $0 \"Artist\" \"Title\" [lang] [speaker]" >&2
@@ -26,6 +27,7 @@ echo "DEBUG: Expected output file: '$OUT'" >&2
 echo "DEBUG: Full command: $PY $APP --text '$TEXT' --lang '$LANG' --speaker '$SPEAKER' --out '$OUT'" >&2
 
 # Run the Python script and capture both stdout and stderr
+# Fix: Properly quote the speaker parameter
 if "${PY}" "${APP}" --text "${TEXT}" --lang "${LANG}" --speaker "${SPEAKER}" --out "${OUT}" 2>&1; then
     if [[ -f "${OUT}" ]]; then
         echo "DEBUG: Successfully created ${OUT}" >&2

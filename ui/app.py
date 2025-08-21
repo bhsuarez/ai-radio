@@ -1247,7 +1247,7 @@ def api_dj_next():
             return jsonify({"ok": False, "error": "No tracks in queue"}), 400
             
         # Get metadata for the first (next) track
-        next_rid = rids[0] if len(rids) == 1 else rids[1]  # Fix: handle single track case
+        next_rid = rids[0] if len(rids) == 1 else rids[1]
         next_track = _metadata_for_rid(next_rid)
         
         if not next_track or not next_track.get("title"):
@@ -1263,7 +1263,7 @@ def api_dj_next():
         print(f"DEBUG: Error getting next track: {e}")
         return jsonify({"ok": False, "error": str(e)}), 500
 
-    # Generate DJ line for UPCOMING track (not past track)
+    # Generate DJ line for UPCOMING track
     line = f"Up next: '{title}' by {artist}."
     
     # Set DJ_INTRO_MODE=1 to change the prompt style
@@ -1284,32 +1284,32 @@ def api_dj_next():
     except Exception as e:
         print(f"DEBUG: DJ script error: {e}, using fallback: '{line}'")
 
-    # XTTS synthesis - FIXED VERSION
+    # XTTS synthesis - FORCE CORRECT SPEAKER
     audio_url = None
     
     try:
         if os.getenv("USE_XTTS", "1") in ("1", "true", "True"):
             print("DEBUG: Generating XTTS for upcoming track")
             
-            # Fix 1: Use correct speaker name with fallback
-            xtts_speaker = os.getenv("XTTS_SPEAKER", "Damien Black")
-            print(f"DEBUG: Using XTTS speaker: '{xtts_speaker}'")
+            # FORCE the correct speaker name - override any environment setting
+            xtts_speaker = "Damien Black"  # Hardcode the correct value
+            print(f"DEBUG: FORCING XTTS speaker to: '{xtts_speaker}' (ignoring environment)")
             
-            # Fix 2: Generate timestamped filename first
+            # Generate timestamped filename
             output_filename = f"intro_{ts}.mp3"
             expected_output = os.path.join(TTS_DIR, output_filename)
             
-            cmd = ["/opt/ai-radio/dj_enqueue_xtts.sh", artist, title, "en", xtts_speaker]
-            print(f"DEBUG: XTTS command: {cmd}")
-
-            # Fix 3: Better environment setup
+            # Setup environment with FORCED speaker setting
             env = os.environ.copy()
             env["HOME"] = "/root"
             env["PYTHONPATH"] = "/opt/ai-radio/xtts-venv/lib/python3.11/site-packages"
             env["PATH"] = "/usr/local/bin:/usr/bin:/bin"
+            env["XTTS_SPEAKER"] = xtts_speaker  # Override the environment variable
             
-            print(f"DEBUG: Running XTTS with env HOME={env.get('HOME')}")
-            print(f"DEBUG: Current working directory: {os.getcwd()}")
+            # Build command with explicit speaker parameter
+            cmd = ["/opt/ai-radio/dj_enqueue_xtts.sh", artist, title, "en", xtts_speaker]
+            print(f"DEBUG: XTTS command: {cmd}")
+            print(f"DEBUG: Environment XTTS_SPEAKER set to: '{env['XTTS_SPEAKER']}'")
 
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env, cwd="/opt/ai-radio")
             print(f"DEBUG: XTTS return code: {r.returncode}")
@@ -1319,25 +1319,24 @@ def api_dj_next():
             if r.stderr:
                 print(f"DEBUG: XTTS stderr: {r.stderr}")
                 
-            # Fix 4: Better file detection logic
+            # File detection logic
             candidate_file = None
             
             if r.returncode == 0:
-                # Look for explicit file path in stdout
-                output_lines = r.stdout.strip().split('\n')
-                for line in output_lines:
-                    line = line.strip()
+                # Look for explicit file path in stdout (should be last line)
+                output_lines = [line.strip() for line in r.stdout.strip().split('\n') if line.strip()]
+                for line in reversed(output_lines):  # Check from last line backwards
                     if line.startswith('/') and line.endswith('.mp3') and os.path.isfile(line):
                         candidate_file = line
                         print(f"DEBUG: Found explicit file: {candidate_file}")
                         break
                 
-                # If no explicit path, look for the expected output file
+                # If no explicit path, check expected location
                 if not candidate_file and os.path.isfile(expected_output):
                     candidate_file = expected_output
                     print(f"DEBUG: Found expected file: {candidate_file}")
                 
-                # If still nothing, look for newest intro file created in last 30 seconds
+                # Last resort: newest intro file
                 if not candidate_file:
                     try:
                         import glob
@@ -1359,7 +1358,6 @@ def api_dj_next():
                 # Push to Liquidsoap TTS queue
                 try:
                     print(f"DEBUG: Pushing to Liquidsoap TTS queue: {candidate_file}")
-                    # Fix 5: Escape quotes in metadata properly
                     safe_line = line.replace('"', '\\"').replace("'", "\\'")
                     metadata = f'title="DJ Intro",artist="AI DJ",comment="{safe_line}"'
                     push_cmd = f"tts.push annotate:{metadata}:{candidate_file}"
@@ -1380,36 +1378,22 @@ def api_dj_next():
                     print(f"DEBUG: Liquidsoap push failed: {e}")
             else:
                 print(f"DEBUG: XTTS did not produce a usable audio file. Return code: {r.returncode}")
+                print(f"DEBUG: Expected file: {expected_output}, exists: {os.path.isfile(expected_output) if expected_output else 'N/A'}")
                 if r.stderr:
-                    print(f"DEBUG: XTTS error details: {r.stderr}")
+                    print(f"DEBUG: XTTS full error: {r.stderr}")
                 
     except Exception as e:
         print(f"DEBUG: XTTS exception: {e}")
 
-    # Fallback to ElevenLabs/Piper only if XTTS failed
+    # Fallback to other TTS methods if XTTS failed
     if not audio_url:
-        print("DEBUG: XTTS failed, falling back to ElevenLabs/Piper")
-        mp3 = os.path.join(TTS_DIR, f"intro_{ts}.mp3")
-        
-        try:
-            api_key = os.getenv("ELEVENLABS_API_KEY")
-            if api_key and 'synthesize_with_elevenlabs' in globals():
-                print("DEBUG: Trying ElevenLabs synthesis")
-                if synthesize_with_elevenlabs(line, mp3):
-                    audio_url = f"/tts/{os.path.basename(mp3)}"
-                    print(f"DEBUG: ElevenLabs synthesis successful: {audio_url}")
-                else:
-                    raise Exception("ElevenLabs failed")
-            else:
-                raise Exception("No ElevenLabs available")
-        except Exception as e:
-            print(f"DEBUG: ElevenLabs failed: {e}, trying Piper")
-            # Add Piper fallback here if needed
+        print("DEBUG: XTTS failed, falling back to other methods")
+        # Add your fallback TTS logic here
 
     # Add to timeline
     push_event({
         "type": "dj",
-        "text": line,  # Fix 6: Ensure this is a string, not a list
+        "text": line,  # Ensure this is a string
         "audio_url": audio_url,
         "time": int(time.time() * 1000),
     })
@@ -1417,9 +1401,9 @@ def api_dj_next():
     return jsonify(ok=True, queued_text=line, audio_url=audio_url, next_track={"title": title, "artist": artist}), 200
 
 
-# Modify the existing dj-now endpoint to use next track instead of current
+# Also update the original api_dj_now to redirect to the working version
 @app.post("/api/dj-now")
-def api_dj_now_next():
+def api_dj_now():
     """Redirect to next-track DJ generation"""
     return api_dj_next()
 
