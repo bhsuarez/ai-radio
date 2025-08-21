@@ -1296,6 +1296,8 @@ def api_dj_next():
 
             # Add environment debugging
             env = os.environ.copy()
+            env["HOME"] = "/root"  # Ensure HOME is set
+            env["PYTHONPATH"] = "/opt/ai-radio/xtts-venv/lib/python3.11/site-packages"
             env["PATH"] = "/usr/local/bin:/usr/bin:/bin"  # ensure basic PATH
             print(f"DEBUG: Running XTTS with env USER={env.get('USER', 'unknown')}")
             print(f"DEBUG: Current working directory: {os.getcwd()}")
