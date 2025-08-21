@@ -1291,7 +1291,7 @@ def api_dj_next():
         if os.getenv("USE_XTTS", "1") in ("1", "true", "True"):
             print("DEBUG: Generating XTTS for upcoming track")
             
-            cmd = ["/opt/ai-radio/dj_enqueue_xtts.sh", artist, title, "en"]
+            cmd = ["/opt/ai-radio/dj_enqueue_xtts.sh", artist, title, "en", "Damien Black"]
             print(f"DEBUG: XTTS command: {cmd}")
 
             # Add environment debugging
