@@ -1022,10 +1022,23 @@ def api_tts_queue():
         artist = meta["artist"]
         when   = meta["ts"] or int(st.st_mtime * 1000)
 
-        # Build friendly text line
-        text = (f"That was {title} by {artist}."
-                if title or artist
-                else os.path.splitext(f)[0])
+        # Try to read actual transcript from .txt file
+        txt_file = p.replace('.mp3', '.txt').replace('.m4a', '.txt').replace('.wav', '.txt').replace('.ogg', '.txt')
+        actual_transcript = None
+        if os.path.isfile(txt_file):
+            try:
+                with open(txt_file, 'r', encoding='utf-8') as tf:
+                    actual_transcript = tf.read().strip()
+            except Exception as e:
+                print(f"DEBUG: Could not read transcript file {txt_file}: {e}")
+
+        # Use actual transcript if available, otherwise fallback
+        if actual_transcript:
+            text = actual_transcript
+        else:
+            text = (f"That was {title} by {artist}."
+                    if title or artist
+                    else os.path.splitext(f)[0])
 
         events.append({
             "type": "dj",              # <--- important
