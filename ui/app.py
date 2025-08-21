@@ -1189,6 +1189,7 @@ def log_event():
 #                     if liq_result.stdout:
 #                         print(f"DEBUG: Liquidsoap stdout: {liq_result.stdout.decode()}")
 #                 except Exception as e:
+        push_cmd = f"tts.push annotate:title=\"DJ Intro\",artist=\"AI DJ\",comment=\"{line}\":{candidate_file}" if candidate_file and os.path.isfile(candidate_file) else ""
 #                     print(f"DEBUG: Liquidsoap push failed: {e}")
                     
 #             else:
@@ -1348,6 +1349,7 @@ def api_dj_next():
                     if liq_result.stdout:
                         print(f"DEBUG: Liquidsoap stdout: {liq_result.stdout.decode()}")
                 except Exception as e:
+        push_cmd = f"tts.push annotate:title=\"DJ Intro\",artist=\"AI DJ\",comment=\"{line}\":{candidate_file}" if candidate_file and os.path.isfile(candidate_file) else ""
                     print(f"DEBUG: Liquidsoap push failed: {e}")
             else:
                 print("DEBUG: XTTS did not produce a usable audio file")
