@@ -1145,12 +1145,33 @@ def api_dj_next():
             next_track = _metadata_for_rid(next_rid)
             print(f"DEBUG: Metadata for RID {next_rid}: {next_track}")
             
-            if not next_track or not next_track.get("title"):
+            # Extract metadata, with filename fallback
+            title = next_track.get("title", "").strip()
+            artist = next_track.get("artist", "").strip()
+            filename = next_track.get("filename", "")
+            
+            # If metadata is missing, try to extract from filename
+            if (not title or not artist) and filename:
+                print(f"DEBUG: Missing metadata, parsing filename: {filename}")
+                import os
+                try:
+                    # Extract from path: /mnt/music/Music/Artist/Album/Title.ext
+                    path_parts = filename.split('/')
+                    if len(path_parts) >= 3:
+                        if not artist and len(path_parts) >= 4:
+                            artist = path_parts[-3]  # Artist directory
+                        if not title:
+                            title = os.path.splitext(path_parts[-1])[0]  # Filename without extension
+                        print(f"DEBUG: Extracted from path - Artist: '{artist}', Title: '{title}'")
+                except Exception as e:
+                    print(f"DEBUG: Error parsing filename: {e}")
+            
+            if not title and not artist:
                 print("DEBUG: Could not get metadata for next track")
                 return jsonify({"ok": False, "error": "No metadata for next track"}), 400
                 
-            title = next_track.get("title", "Unknown Title")
-            artist = next_track.get("artist", "Unknown Artist")
+            title = title or "Unknown Title"
+            artist = artist or "Unknown Artist"
             
             print(f"DEBUG: Next track from queue - Title: '{title}', Artist: '{artist}'")
             
