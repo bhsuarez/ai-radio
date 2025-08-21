@@ -1239,6 +1239,15 @@ def api_dj_next():
             print(f"DEBUG: XTTS command: {cmd}")
             print(f"DEBUG: Environment XTTS_SPEAKER set to: '{env['XTTS_SPEAKER']}'")
 
+            # Check if XTTS is already running to prevent resource conflicts
+            try:
+                running_xtts = subprocess.run(["pgrep", "-f", "tts_xtts.py"], capture_output=True, text=True)
+                if running_xtts.returncode == 0:
+                    print(f"DEBUG: XTTS already running (PID: {running_xtts.stdout.strip()}), skipping generation")
+                    return jsonify({"ok": True, "skipped": "xtts_already_running"}), 200
+            except Exception as e:
+                print(f"DEBUG: Could not check for running XTTS: {e}")
+            
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=env, cwd="/opt/ai-radio")
             print(f"DEBUG: XTTS return code: {r.returncode}")
             
