@@ -1129,17 +1129,21 @@ def api_dj_next():
                 return jsonify({"ok": True, "skipped": "liquidsoap_not_ready"}), 200
                 
             rid_lines = _ls_cmd("request.all")
+            print(f"DEBUG: Raw queue response: {rid_lines}")
             rids = []
             for ln in rid_lines:
                 rids.extend(x for x in ln.strip().split() if x.isdigit())
             
+            print(f"DEBUG: Found RIDs: {rids}")
             if not rids:
                 print("DEBUG: No tracks in queue")
                 return jsonify({"ok": False, "error": "No tracks in queue"}), 400
                 
             # Get metadata for the first (next) track
             next_rid = rids[0] if len(rids) == 1 else rids[1]
+            print(f"DEBUG: Using RID {next_rid} for next track")
             next_track = _metadata_for_rid(next_rid)
+            print(f"DEBUG: Metadata for RID {next_rid}: {next_track}")
             
             if not next_track or not next_track.get("title"):
                 print("DEBUG: Could not get metadata for next track")
