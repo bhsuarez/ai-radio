@@ -1153,7 +1153,6 @@ def api_dj_next():
             # If metadata is missing, try to extract from filename
             if (not title or not artist) and filename:
                 print(f"DEBUG: Missing metadata, parsing filename: {filename}")
-                import os
                 try:
                     # Extract from path: /mnt/music/Music/Artist/Album/Title.ext
                     path_parts = filename.split('/')
