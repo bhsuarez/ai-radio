@@ -205,9 +205,9 @@ async function loadTimeline(){
       return t;
     });
 
-    // de-dupe upcoming by title|artist and limit to first few
+    // de-dupe upcoming by title|artist and limit to just the next one
     const seenU = new Set();
-    upcoming = upcoming.filter(t=>{ const k=`${(t.title||'').toLowerCase()}|${(t.artist||'').toLowerCase()}`; if(seenU.has(k)) return false; seenU.add(k); return true; }).slice(0, 5);
+    upcoming = upcoming.filter(t=>{ const k=`${(t.title||'').toLowerCase()}|${(t.artist||'').toLowerCase()}`; if(seenU.has(k)) return false; seenU.add(k); return true; }).slice(0, 1);
 
     // HISTORY (already includes DJ entries from backend)
     const events = [...(history||[])];
