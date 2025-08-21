@@ -1190,11 +1190,11 @@ def api_dj_next():
             env["XTTS_SPEAKER"] = xtts_speaker  # Override the environment variable
             
             # Build command with explicit speaker parameter
-            cmd = ["/opt/ai-radio/xtts_with_lock.sh", artist, title, "en", xtts_speaker]
+            cmd = ["/opt/ai-radio/dj_enqueue_xtts.sh", artist, title, "en", xtts_speaker]
             print(f"DEBUG: XTTS command: {cmd}")
             print(f"DEBUG: Environment XTTS_SPEAKER set to: '{env['XTTS_SPEAKER']}'")
 
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=300, env=env, cwd="/opt/ai-radio")
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=600, env=env, cwd="/opt/ai-radio")
             print(f"DEBUG: XTTS return code: {r.returncode}")
             
             if r.stdout:
