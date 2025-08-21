@@ -79,6 +79,11 @@ if "${PY}" "${APP}" --text "${TEXT}" --lang "${LANG}" --speaker "${SPEAKER}" --o
         file_size=$(stat -c%s "${OUT}")
         echo "DEBUG: Successfully created ${OUT} (${file_size} bytes)" >&2
         
+        # Save the transcript to a .txt file
+        TXT_FILE="${OUT%.mp3}.txt"
+        echo "$TEXT" > "$TXT_FILE"
+        echo "DEBUG: Saved transcript to ${TXT_FILE}" >&2
+        
         # Auto-queue in Liquidsoap if this is an intro
         if [[ "$MODE" == "intro" ]]; then
             echo "DEBUG: Auto-queuing intro in Liquidsoap..." >&2

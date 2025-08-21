@@ -47,11 +47,27 @@ Keep it natural, conversational, and clean. No emojis or hashtags. Do not invent
 fi
 
 collapse_line() {
-  tr -d '\r' | sed 's/^[[:space:]]\+//; s/[[:space:]]\+$//' | awk 'NF' | paste -sd' ' - | sed 's/  */ /g'
+  # Remove ANSI escape sequences and clean whitespace
+  sed 's/\x1b\[[0-9;]*[mKhlABCDEFGHJK]//g' | \
+  tr -d '\r' | \
+  sed 's/^[[:space:]]*//; s/[[:space:]]*$//' | \
+  tr '\n' ' ' | \
+  sed 's/[[:space:]]\+/ /g; s/^[[:space:]]*//; s/[[:space:]]*$//'
 }
 
 run_ollama() {
-  ollama run "$MODEL" "$PROMPT" | collapse_line
+  # Use a temporary file to capture output cleanly
+  local temp_file=$(mktemp)
+  
+  # Run ollama and capture to file, then clean it up
+  if timeout 30s ollama run "$MODEL" "$PROMPT" > "$temp_file" 2>/dev/null; then
+    cat "$temp_file" | collapse_line
+  else
+    echo "Error: Ollama generation failed or timed out" >&2
+    echo ""
+  fi
+  
+  rm -f "$temp_file"
 }
 
 run_openai() {

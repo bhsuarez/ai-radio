@@ -312,20 +312,19 @@ def push_event(ev: dict):
         ev["artist"] = artist or "Unknown Artist"
         ev["title"]  = title  or "Unknown"
 
-    # De-dupe against last entry within window
-    if HISTORY:
-        last = HISTORY[0]
-        if ev.get("type") == "song" and last.get("type") == "song":
+    # De-dupe against recent entries within window
+    for recent in list(HISTORY)[:10]:  # Check last 10 entries
+        if ev.get("type") == "song" and recent.get("type") == "song":
             same = (
-                (ev.get("title") or "") == (last.get("title") or "") and
-                (ev.get("artist") or "") == (last.get("artist") or "") and
-                (ev.get("filename") or "") == (last.get("filename") or "")
+                (ev.get("title") or "") == (recent.get("title") or "") and
+                (ev.get("artist") or "") == (recent.get("artist") or "") and
+                (ev.get("filename") or "") == (recent.get("filename") or "")
             )
-            if same and (now_ms - int(last.get("time", now_ms))) < DEDUP_WINDOW_MS:
+            if same and (now_ms - int(recent.get("time", now_ms))) < DEDUP_WINDOW_MS:
                 return
-        if ev.get("type") == "dj" and last.get("type") == "dj":
-            if (ev.get("text") or "") == (last.get("text") or "") and \
-               (now_ms - int(last.get("time", now_ms))) < 5000:
+        if ev.get("type") == "dj" and recent.get("type") == "dj":
+            if (ev.get("text") or "") == (recent.get("text") or "") and \
+               (now_ms - int(recent.get("time", now_ms))) < 5000:
                 return
 
     HISTORY.insert(0, ev)
@@ -543,20 +542,20 @@ _kv_re = re.compile(r'([a-zA-Z0-9_]+)="([^"]*)"')
 
 def _get_now_playing() -> dict | None:
     """
-    Determine current track:
+    Determine current track with caching to avoid slow Liquidsoap calls:
       1) request.all -> list of RIDs (lower RID == currently playing)
       2) request.metadata <rid> -> kv metadata
       Fallback: parse block --- 1 --- from output.icecast.metadata
     """
+    import time as time_mod
+    current_time = time_mod.time()
+    
+    # Check cache first
+    if _now_playing_cache["data"] and (current_time - _now_playing_cache["timestamp"]) < _CACHE_DURATION:
+        return _now_playing_cache["data"]
+    
     try:
-        raw = _ls_query("request.all")
-        rids = [int(x) for x in re.findall(r"\b\d+\b", raw)]
-        if rids:
-            rid = min(rids)  # lower RID is "on air" in your setup
-            md = _metadata_for_rid(rid)
-            if md:
-                return md
-        # Fallback: take block --- 1 --- from output.icecast.metadata
+        # Use just the metadata fallback method to avoid multiple queries
         raw2 = _ls_query("output.icecast.metadata")
         # capture lines between --- 1 --- and next --- or END
         block = []
@@ -571,18 +570,35 @@ def _get_now_playing() -> dict | None:
                 block.append(ln)
         d = _parse_kv_block("\n".join(block))
         if d:
-            return {
+            result = {
                 "title": d.get("title") or "Unknown",
                 "artist": d.get("artist") or "Unknown",
                 "album": d.get("album") or "",
-                "filename": "",  # not present in this view
-                "time": int(__import__("time").time() * 1000),
+                "filename": d.get("filename") or "",
+                "time": int(time_mod.time() * 1000),
                 "duration_ms": None,
                 "elapsed_ms": None,
             }
+            _now_playing_cache["data"] = result
+            _now_playing_cache["timestamp"] = current_time
+            return result
         return None
-    except Exception:
-        return None
+    except Exception as e:
+        print(f"DEBUG: Liquidsoap query failed: {e}")
+        # Return cached data if available, even if stale
+        if _now_playing_cache["data"]:
+            print("DEBUG: Returning stale cached data due to Liquidsoap failure")
+            return _now_playing_cache["data"]
+        # Ultimate fallback
+        return {
+            "title": "Loading...",
+            "artist": "AI Radio",
+            "album": "",
+            "filename": "",
+            "time": int(time_mod.time() * 1000),
+            "duration_ms": None,
+            "elapsed_ms": None,
+        }
 
 def _parse_kv_block(text: str) -> dict:
     """Parse lines like key="val" into dict; ignores '--- n ---' separators."""
@@ -602,7 +618,11 @@ def _parse_kv_block(text: str) -> dict:
 
 _key_val_re = re.compile(r'([^=]+)="(.*)"$')
 
-def _ls_query(cmd: str, host: str = "127.0.0.1", port: int = 1234, timeout: float = 2.5) -> str:
+# Simple cache for now playing to avoid repeated slow Liquidsoap calls
+_now_playing_cache = {"data": None, "timestamp": 0}
+_CACHE_DURATION = 3  # seconds
+
+def _ls_query(cmd: str, host: str = "127.0.0.1", port: int = 1234, timeout: float = 2.0) -> str:
     """Send one command to LS telnet interface and return raw text (until END)."""
     s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     s.settimeout(timeout)
@@ -946,11 +966,57 @@ def _load_history(limit=60):
 def static_file(fname):
     return send_from_directory("/opt/ai-radio/static", fname, conditional=True)
 
+def _fix_dj_transcription(entry):
+    """Fix DJ entries that have file paths instead of transcriptions."""
+    if entry.get("type") != "dj":
+        return entry
+    
+    text = entry.get("text", "")
+    entry_copy = None
+    
+    # Check if text looks like a file path
+    if text.startswith("/opt/ai-radio/tts/") and text.endswith(".mp3"):
+        # Try to read the transcript file
+        txt_file = text.replace('.mp3', '.txt')
+        if os.path.isfile(txt_file):
+            try:
+                with open(txt_file, 'r', encoding='utf-8') as f:
+                    actual_text = f.read().strip()
+                if actual_text and not actual_text.startswith("/opt/ai-radio/tts/"):
+                    entry_copy = entry.copy()  # Don't modify original
+                    entry_copy["text"] = actual_text
+            except Exception as e:
+                print(f"DEBUG: Could not read transcript file {txt_file}: {e}")
+        
+        # If we still don't have good text, provide a better fallback
+        if entry_copy is None:
+            entry_copy = entry.copy()
+            entry_copy["text"] = "AI DJ Commentary"
+    
+    # Fix audio_url path if it exists
+    if entry_copy is None:
+        entry_copy = entry.copy()
+    
+    audio_url = entry_copy.get("audio_url", "")
+    if audio_url.startswith("/tts/") and not audio_url.startswith("/tts_queue/"):
+        # Audio URL is already in the correct format
+        pass
+    elif audio_url.startswith("/tts_queue/"):
+        # Convert to /tts/ for consistency
+        entry_copy["audio_url"] = audio_url.replace("/tts_queue/", "/tts/")
+    elif not audio_url and text.startswith("/opt/ai-radio/tts/"):
+        # Generate audio_url from file path
+        filename = os.path.basename(text)
+        entry_copy["audio_url"] = f"/tts/{filename}"
+    
+    return entry_copy
+
 @app.get("/api/history")
 def api_history():
     with HISTORY_LOCK:
-        # Return newest first
-        return jsonify(sorted(HISTORY, key=lambda e: e.get("time", 0), reverse=True))
+        # Return newest first, with DJ transcriptions fixed
+        fixed_history = [_fix_dj_transcription(entry) for entry in HISTORY]
+        return jsonify(sorted(fixed_history, key=lambda e: e.get("time", 0), reverse=True))
 
 @app.get("/api/now")
 def api_now():
@@ -977,6 +1043,15 @@ def api_next():
 # Serve the synthesized DJ audio files
 @app.get("/tts_queue/<path:fname>")
 def tts_audio(fname):
+    root = _tts_root()
+    full = os.path.join(root, fname)
+    if not os.path.exists(full):
+        abort(404)
+    return send_from_directory(root, fname, conditional=True)
+
+# Also serve TTS files from /tts/ path for compatibility
+@app.get("/tts/<path:fname>")
+def tts_audio_compat(fname):
     root = _tts_root()
     full = os.path.join(root, fname)
     if not os.path.exists(full):
@@ -1036,9 +1111,13 @@ def api_tts_queue():
         if actual_transcript:
             text = actual_transcript
         else:
-            text = (f"That was {title} by {artist}."
-                    if title or artist
-                    else os.path.splitext(f)[0])
+            # Better fallback for missing transcripts
+            if title and artist:
+                text = f"Coming up next: {title} by {artist}"
+            elif title:
+                text = f"Coming up: {title}"
+            else:
+                text = "AI DJ intro"
 
         events.append({
             "type": "dj",              # <--- important
@@ -1085,6 +1164,37 @@ def log_event():
     data = request.get_json(force=True) or {}
     push_event(data)
     return {"ok": True}
+
+@app.post("/api/cleanup-history")
+def cleanup_history():
+    """Clean up duplicate entries and fix broken DJ transcriptions."""
+    try:
+        with HISTORY_LOCK:
+            # Remove exact duplicates
+            seen = set()
+            cleaned = []
+            original_count = len(HISTORY)
+            
+            for entry in HISTORY:
+                # Create a unique key for each entry
+                if entry.get("type") == "song":
+                    key = (entry.get("title", ""), entry.get("artist", ""), entry.get("filename", ""), entry.get("time", 0))
+                else:
+                    key = (entry.get("text", ""), entry.get("audio_url", ""), entry.get("time", 0))
+                
+                if key not in seen:
+                    seen.add(key)
+                    cleaned.append(entry)
+            
+            # Replace history with cleaned version
+            HISTORY.clear()
+            HISTORY.extend(cleaned)
+            save_history()
+            
+        return jsonify({"ok": True, "removed": original_count - len(cleaned), "remaining": len(cleaned)})
+    except Exception as e:
+        app.logger.exception("cleanup failed")
+        return jsonify({"error": str(e)}), 500
 
 def _should_generate_dj_intro(artist, title):
     """Check if we should generate a DJ intro, preventing duplicates and overload"""
