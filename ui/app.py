@@ -1306,11 +1306,13 @@ def api_dj_next():
             output_lines = r.stdout.strip().split('\n')
             candidate_file = None
             
+            print(f"DEBUG: XTTS output lines: {output_lines}")
+            print(f"DEBUG: Looking for file paths...")
             for line in output_lines:
                 line = line.strip()
-                if line.startswith('/') and line.endswith('.mp3') and os.path.isfile(line):
-                    candidate_file = line
-                    break
+                print(f"DEBUG: Checking line: '{line}'")
+                if line.startswith('/') and line.endswith('.mp3'):
+                    print(f"DEBUG: Found potential file: {line}, exists: {os.path.isfile(line)}")
             
             if candidate_file and r.returncode == 0:
                 audio_url = f"/tts/{os.path.basename(candidate_file)}"
