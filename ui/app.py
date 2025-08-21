@@ -1120,6 +1120,14 @@ def api_dj_next():
         # Original logic - get from Liquidsoap queue
         try:
             print("DEBUG: Getting next track from Liquidsoap queue")
+            # Test Liquidsoap connectivity first
+            try:
+                _ls_cmd("help", timeout=1.0)
+                print("DEBUG: Liquidsoap is responsive")
+            except Exception as conn_e:
+                print(f"DEBUG: Liquidsoap not ready yet: {conn_e}")
+                return jsonify({"ok": True, "skipped": "liquidsoap_not_ready"}), 200
+                
             rid_lines = _ls_cmd("request.all")
             rids = []
             for ln in rid_lines:
