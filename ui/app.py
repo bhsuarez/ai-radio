@@ -1298,11 +1298,11 @@ def api_dj_next():
             print(f"DEBUG: XTTS return code: {r.returncode}")
             
             if r.stdout:
-            print(f"DEBUG: XTTS raw stdout: {repr(r.stdout)}")
-            output_lines = r.stdout.strip().split('\n')
-            print(f"DEBUG: Split into {len(output_lines)} lines")
-            for i, line in enumerate(output_lines):
-                print(f"DEBUG: Line {i}: {repr(line.strip())}")
+                print(f"DEBUG: XTTS raw stdout: {repr(r.stdout)}")
+                output_lines = r.stdout.strip().split('\n')
+                print(f"DEBUG: Split into {len(output_lines)} lines")
+                for i, line in enumerate(output_lines):
+                    print(f"DEBUG: Line {i}: {repr(line.strip())}")
             if r.stderr:
                 print(f"DEBUG: XTTS stderr (first 300 chars): {r.stderr[:300]}")
                 
