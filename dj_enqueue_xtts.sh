@@ -22,16 +22,27 @@ OUT="${OUT_DIR}/intro_${TS}.mp3"
 TEXT="Up next: ${TITLE} by ${ARTIST}."
 
 echo "DEBUG: Speaker parameter: '$SPEAKER'" >&2
+echo "DEBUG: Expected output file: '$OUT'" >&2
 echo "DEBUG: Full command: $PY $APP --text '$TEXT' --lang '$LANG' --speaker '$SPEAKER' --out '$OUT'" >&2
 
-"${PY}" "${APP}" --text "${TEXT}" --lang "${LANG}" --speaker "${SPEAKER}" --out "${OUT}"
-
-if [[ -f "${OUT}" ]]; then
-    echo "DEBUG: Successfully created ${OUT}" >&2
-    echo "DEBUG: File size: $(stat -c%s "${OUT}") bytes" >&2
-    echo "${OUT}"
-    exit 0
+# Run the Python script and capture both stdout and stderr
+if "${PY}" "${APP}" --text "${TEXT}" --lang "${LANG}" --speaker "${SPEAKER}" --out "${OUT}" 2>&1; then
+    if [[ -f "${OUT}" ]]; then
+        echo "DEBUG: Successfully created ${OUT}" >&2
+        echo "DEBUG: File size: $(stat -c%s "${OUT}") bytes" >&2
+        echo "DEBUG: File permissions: $(ls -la "${OUT}")" >&2
+        # This is the critical line - output the file path for the calling script
+        echo "${OUT}"
+        exit 0
+    else
+        echo "ERROR: Python script succeeded but no output file found at ${OUT}" >&2
+        echo "DEBUG: Contents of ${OUT_DIR}:" >&2
+        ls -la "${OUT_DIR}" >&2 || true
+        exit 1
+    fi
 else
-    echo "ERROR: XTTS script completed but no output file found" >&2
+    echo "ERROR: Python script failed" >&2
+    echo "DEBUG: Contents of ${OUT_DIR}:" >&2
+    ls -la "${OUT_DIR}" >&2 || true
     exit 1
 fi
