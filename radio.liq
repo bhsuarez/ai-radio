@@ -46,8 +46,9 @@ def auto_generate_dj_intro(m)
     
     log("AUTO-DJ: Generating intro for upcoming track: " ^ title ^ " by " ^ artist)
     
-    # Use Liquidsoap's native HTTP function
-    ignore(http.post("http://127.0.0.1:5055/api/dj-now"))
+    # Pass track info as URL parameters
+    url = "http://127.0.0.1:5055/api/dj-now?artist=" ^ url.encode(artist) ^ "&title=" ^ url.encode(title)
+    ignore(http.post(url))
   end
 end
 
