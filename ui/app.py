@@ -1073,34 +1073,44 @@ def api_dj_next():
     os.makedirs(TTS_DIR, exist_ok=True)
     ts = int(time.time())
 
-    # Get NEXT track from Liquidsoap queue
-    try:
-        print("DEBUG: Getting next track from Liquidsoap queue")
-        rid_lines = _ls_cmd("request.all")
-        rids = []
-        for ln in rid_lines:
-            rids.extend(x for x in ln.strip().split() if x.isdigit())
-        
-        if not rids:
-            print("DEBUG: No tracks in queue")
-            return jsonify({"ok": False, "error": "No tracks in queue"}), 400
+    # Check if called with URL parameters (from Liquidsoap auto-DJ)
+    artist_param = request.args.get('artist')
+    title_param = request.args.get('title')
+    
+    if artist_param and title_param:
+        # Called from Liquidsoap with track info
+        artist = artist_param
+        title = title_param
+        print(f"DEBUG: Using Liquidsoap auto-DJ parameters - Artist: '{artist}', Title: '{title}'")
+    else:
+        # Original logic - get from Liquidsoap queue
+        try:
+            print("DEBUG: Getting next track from Liquidsoap queue")
+            rid_lines = _ls_cmd("request.all")
+            rids = []
+            for ln in rid_lines:
+                rids.extend(x for x in ln.strip().split() if x.isdigit())
             
-        # Get metadata for the first (next) track
-        next_rid = rids[0] if len(rids) == 1 else rids[1]
-        next_track = _metadata_for_rid(next_rid)
-        
-        if not next_track or not next_track.get("title"):
-            print("DEBUG: Could not get metadata for next track")
-            return jsonify({"ok": False, "error": "No metadata for next track"}), 400
+            if not rids:
+                print("DEBUG: No tracks in queue")
+                return jsonify({"ok": False, "error": "No tracks in queue"}), 400
+                
+            # Get metadata for the first (next) track
+            next_rid = rids[0] if len(rids) == 1 else rids[1]
+            next_track = _metadata_for_rid(next_rid)
             
-        title = next_track.get("title", "Unknown Title")
-        artist = next_track.get("artist", "Unknown Artist")
-        
-        print(f"DEBUG: Next track - Title: '{title}', Artist: '{artist}'")
-        
-    except Exception as e:
-        print(f"DEBUG: Error getting next track: {e}")
-        return jsonify({"ok": False, "error": str(e)}), 500
+            if not next_track or not next_track.get("title"):
+                print("DEBUG: Could not get metadata for next track")
+                return jsonify({"ok": False, "error": "No metadata for next track"}), 400
+                
+            title = next_track.get("title", "Unknown Title")
+            artist = next_track.get("artist", "Unknown Artist")
+            
+            print(f"DEBUG: Next track from queue - Title: '{title}', Artist: '{artist}'")
+            
+        except Exception as e:
+            print(f"DEBUG: Error getting next track: {e}")
+            return jsonify({"ok": False, "error": str(e)}), 500
 
     # Generate DJ line for UPCOMING track
     line = f"Up next: '{title}' by {artist}."
