@@ -47,7 +47,8 @@ def auto_generate_dj_intro(m)
     log("AUTO-DJ: Generating intro for upcoming track: " ^ title ^ " by " ^ artist)
     
     # Generate intro in background (non-blocking)
-    cmd = "bash -c \"(/opt/ai-radio/dj_enqueue_xtts_ai.sh \\\"" ^ artist ^ "\\\" \\\"" ^ title ^ "\\\" en \\\"Damien Black\\\" intro >>/var/tmp/auto_dj.log 2>&1) &\""
+    # In your radio.liq, change the auto-generation command:
+    cmd = "docker exec -it ai-radio-host bash -c \"(/opt/ai-radio/dj_enqueue_xtts_ai.sh \\\"" ^ artist ^ "\\\" \\\"" ^ title ^ "\\\" >>/var/tmp/auto_dj.log 2>&1) &\""
     ignore(process.run(cmd))
   end
 end
