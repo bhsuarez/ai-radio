@@ -1326,7 +1326,7 @@ def api_dj_next():
                 if line.startswith('/') and line.endswith('.mp3'):
                     print(f"DEBUG: Found potential file: {line}, exists: {os.path.isfile(line)}")
             
-            if candidate_file and r.returncode == 0:
+            if candidate_file and os.path.isfile(candidate_file):
                 audio_url = f"/tts/{os.path.basename(candidate_file)}"
                 print(f"DEBUG: XTTS SUCCESS: {audio_url}")
                 
