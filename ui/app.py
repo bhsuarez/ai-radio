@@ -575,6 +575,7 @@ def _get_now_playing() -> dict | None:
                 "artist": d.get("artist") or "Unknown",
                 "album": d.get("album") or "",
                 "filename": d.get("filename") or "",
+                "comment": d.get("comment") or "",
                 "time": int(time_mod.time() * 1000),
                 "duration_ms": None,
                 "elapsed_ms": None,
@@ -1032,8 +1033,10 @@ def api_next():
         rids = []
         for ln in rid_lines:
             rids.extend(x for x in ln.strip().split() if x.isdigit())
-        # Keep ordering as returned by LS (first up next first)
-        upcoming = [_metadata_for_rid(r) for r in rids]
+        
+        # Skip the first track (currently playing) and return only upcoming tracks
+        upcoming_rids = rids[1:] if len(rids) > 1 else []
+        upcoming = [_metadata_for_rid(r) for r in upcoming_rids]
         return jsonify(upcoming)
     except Exception as e:
         app.logger.exception("next endpoint failed")
@@ -1329,6 +1332,23 @@ def api_dj_next():
         if os.getenv("USE_XTTS", "1") in ("1", "true", "True"):
             print("DEBUG: Generating XTTS for upcoming track")
             
+            # Generate AI text first
+            ai_env = os.environ.copy()
+            ai_env["DJ_INTRO_MODE"] = "1"
+            ai_cmd = ["/opt/ai-radio/gen_ai_dj_line.sh", title, artist]
+            
+            try:
+                ai_result = subprocess.run(ai_cmd, capture_output=True, text=True, timeout=30, env=ai_env)
+                if ai_result.returncode == 0 and ai_result.stdout.strip():
+                    ai_text = ai_result.stdout.strip()
+                    print(f"DEBUG: Generated AI text: '{ai_text}'")
+                else:
+                    ai_text = f"Up next: {title} by {artist}."
+                    print(f"DEBUG: AI generation failed, using fallback: '{ai_text}'")
+            except Exception as e:
+                ai_text = f"Up next: {title} by {artist}."
+                print(f"DEBUG: AI generation error: {e}, using fallback: '{ai_text}'")
+            
             # FORCE the correct speaker name - override any environment setting
             xtts_speaker = "Damien Black"  # Hardcode the correct value
             print(f"DEBUG: FORCING XTTS speaker to: '{xtts_speaker}' (ignoring environment)")
@@ -1406,7 +1426,7 @@ def api_dj_next():
                 txt_file = candidate_file.replace('.mp3', '.txt')
                 try:
                     with open(txt_file, 'w', encoding='utf-8') as f:
-                        f.write(line)
+                        f.write(ai_text)
                     print(f"DEBUG: Saved transcript to: {txt_file}")
                 except Exception as e:
                     print(f"DEBUG: Failed to save transcript: {e}")
@@ -1414,8 +1434,8 @@ def api_dj_next():
                 # Push to Liquidsoap TTS queue
                 try:
                     print(f"DEBUG: Pushing to Liquidsoap TTS queue: {candidate_file}")
-                    safe_line = line.replace('"', '\\"').replace("'", "\\'")
-                    metadata = f'title="DJ Intro",artist="AI DJ",comment="{safe_line}"'
+                    safe_ai_text = ai_text.replace('"', '\\"').replace("'", "\\'")
+                    metadata = f'title="DJ Intro",artist="AI DJ",comment="{safe_ai_text}"'
                     push_cmd = f"tts.push annotate:{metadata}:{candidate_file}"
                     
                     print(f"DEBUG: Push command: {push_cmd}")
@@ -1449,12 +1469,12 @@ def api_dj_next():
     # Add to timeline
     push_event({
         "type": "dj",
-        "text": line,  # Ensure this is a string
+        "text": ai_text,  # Use the AI-generated text
         "audio_url": audio_url,
         "time": int(time.time() * 1000),
     })
 
-    return jsonify(ok=True, queued_text=line, audio_url=audio_url, next_track={"title": title, "artist": artist}), 200
+    return jsonify(ok=True, queued_text=ai_text, audio_url=audio_url, next_track={"title": title, "artist": artist}), 200
 
 # Also update the original api_dj_now to redirect to the working version
 @app.post("/api/dj-now")

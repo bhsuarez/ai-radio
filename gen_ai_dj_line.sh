@@ -24,10 +24,14 @@ if [[ "$INTRO_MODE" == "1" ]]; then
     if [[ -n "$CUSTOM_PROMPT" ]]; then
         PROMPT="$CUSTOM_PROMPT"
     else
+        # Always try to include a fun fact for intros
+        TRIVIA_LINE="If you know a short, interesting fact about ${ARTIST:-the artist} or the song '${TITLE:-this track}', include it naturally in your introduction."
+        
         PROMPT="You are a ${STYLE} radio DJ introducing the next song. 
-In 1 sentence (under 15 words), introduce '${TITLE:-this track}' by ${ARTIST:-an unknown artist}.
+In 1-2 sentences (under 25 words), introduce '${TITLE:-this track}' by ${ARTIST:-an unknown artist}.
+${TRIVIA_LINE}
 Use phrases like 'Coming up next', 'Here's', 'Time for', 'Let's hear', etc.
-Keep it brief, energetic, and natural. No emojis or hashtags. Don't invent facts."
+Keep it brief, energetic, and natural. No emojis or hashtags. Only include facts you're confident about."
     fi
 else
     # NORMAL MODE - Generate commentary after song plays

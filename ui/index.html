@@ -40,10 +40,10 @@
   .live-chip { display:inline-block; padding:2px 8px; border-radius:999px; background:#ff4d4d; color:white; font-size:11px; font-weight:bold; margin-right:6px; }
   
   /* Loading spinner */
-  .loading-overlay { position:fixed; top:0; left:0; right:0; bottom:0; background:rgba(15,17,21,0.9); display:flex; align-items:center; justify-content:center; z-index:1000; }
-  .spinner { width:40px; height:40px; border:3px solid var(--card); border-top:3px solid var(--accent); border-radius:50%; animation:spin 1s linear infinite; }
+  .loading-overlay { position:fixed; top:20px; right:20px; background:rgba(15,17,21,0.9); border-radius:8px; padding:12px 16px; display:flex; align-items:center; z-index:1000; box-shadow:0 4px 12px rgba(0,0,0,0.3); }
+  .spinner { width:20px; height:20px; border:2px solid var(--card); border-top:2px solid var(--accent); border-radius:50%; animation:spin 1s linear infinite; }
   @keyframes spin { 0% { transform:rotate(0deg); } 100% { transform:rotate(360deg); } }
-  .loading-text { color:var(--text); margin-left:16px; font-size:16px; }
+  .loading-text { color:var(--text); margin-left:12px; font-size:14px; }
 
   /* Mobile */
   @media (max-width: 768px) {
@@ -284,11 +284,12 @@ async function loadTimeline(){
       // Show TTS status when playing
       const sec = section('🎙️ ON AIR');
       const card=h('div','event dj');
+      const transcript = now.comment || 'DJ Commentary';
       card.innerHTML = `
         <div class="event-details" style="width:100%">
           <div class="event-meta"><span>${fmtTime(now.time)}</span><span class="live-chip">LIVE</span><span class="voice-chip">AI DJ</span></div>
-          <div class="event-title">🎙️ DJ Commentary</div>
-          <div class="event-sub">Next song coming up...</div>
+          <div class="event-title">🎙️ ${transcript}</div>
+          <div class="event-sub">AI DJ Commentary</div>
         </div>`;
       sec.appendChild(card); box.appendChild(sec);
     }
