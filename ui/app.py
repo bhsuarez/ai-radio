@@ -1369,7 +1369,7 @@ def api_dj_next():
 
 # Modify the existing dj-now endpoint to use next track instead of current
 @app.post("/api/dj-now")
-def api_dj_now():
+def api_dj_now_next():
     """Redirect to next-track DJ generation"""
     return api_dj_next()
 
