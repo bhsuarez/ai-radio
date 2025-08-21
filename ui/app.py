@@ -1293,8 +1293,13 @@ def api_dj_next():
             
             cmd = ["/opt/ai-radio/dj_enqueue_xtts.sh", artist, title, "en"]
             print(f"DEBUG: XTTS command: {cmd}")
+
+            # Add environment debugging
+            env = os.environ.copy()
+            env["PATH"] = "/usr/local/bin:/usr/bin:/bin"  # ensure basic PATH
+            print(f"DEBUG: Running XTTS with env USER={env.get('USER', 'unknown')}")
             
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60)
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env)
             print(f"DEBUG: XTTS return code: {r.returncode}")
             
             if r.stdout:
