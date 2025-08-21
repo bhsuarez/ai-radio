@@ -1,5 +1,4 @@
 # ----- Liquidsoap 2.3.x config for AI Radio -----
-
 # Decoder prefs
 settings.decoder.priorities.ffmpeg := 10
 settings.decoder.priorities.mad    := 1
@@ -14,7 +13,8 @@ settings.server.telnet.bind_addr := "127.0.0.1"
 settings.server.telnet.port := 1234
 
 # ---------- Sources ----------
-# Queue for DJ/TTS lines
+
+# Queue for DJ/TTS lines - this will play intros
 tts_q = request.queue(id="tts")
 
 # Main music (m3u that points to your library files)
@@ -37,13 +37,13 @@ def announce_song(m)
   album  = meta_get(m, "album",  "")
   file   = if list.mem("filename", list.map(fst, m)) then list.assoc("filename", m)
            else if list.mem("file", list.map(fst, m)) then list.assoc("file", m) else "" end end
-
+  
   qs = "type=song"
        ^ "&artist="   ^ url.encode(artist)
        ^ "&title="    ^ url.encode(title)
        ^ "&album="    ^ url.encode(album)
        ^ "&filename=" ^ url.encode(file)
-
+  
   # Fire-and-forget so audio never blocks
   cmd = "bash -lc \"(curl -fsS 'http://127.0.0.1:5055/api/event?" ^ qs ^
         "' || wget -qO- 'http://127.0.0.1:5055/api/event?" ^ qs ^
@@ -51,28 +51,29 @@ def announce_song(m)
   ignore(process.run(cmd))
 end
 
-# Optional: schedule a DJ intro near the end of the current track (disabled by default)
-def after_song(m)
-  title  = meta_get(m, "title",  "Unknown Title")
+# Generate XTTS intro for UPCOMING track (this is the key fix)
+def generate_intro_for_next(m)
   artist = meta_get(m, "artist", "Unknown Artist")
-  dur_s  = if list.mem("duration", list.map(fst, m))
-              then float_of_string(m["duration"]) else 0. end
+  title  = meta_get(m, "title",  "Unknown Title")
+  
+  # Generate intro for THIS track (which will be the "next" track when it starts)
+  log("XTTS: Generating intro for upcoming track: " ^ title ^ " by " ^ artist)
+  
+  # Use XTTS script directly
+  cmd = "bash -lc \"(/opt/ai-radio/dj_enqueue_xtts.sh \\\"" ^ artist ^ "\\\" \\\"" ^ title ^ "\\\" " ^
+        ">>/var/tmp/xtts_enqueue.log 2>&1) &\""
+  ignore(process.run(cmd))
+end
 
-  lead   = 3.0
-  wait_s = if dur_s > lead then dur_s - lead else 1.0 end
-
-  log("AUTO-DJ: scheduling intro in " ^ string_of(int_of_float(wait_s)) ^
-      "s for: " ^ title ^ " — " ^ artist)
-
-  ignore(process.run(
-    "bash -lc \"(sleep " ^ string_of(int_of_float(wait_s)) ^
-    "; /opt/ai-radio/dj_enqueue.sh \\\"" ^ artist ^ "\\\" \\\"" ^ title ^ "\\\" " ^
-    ">>/var/tmp/dj_enqueue.log 2>&1) &\""
-  ))
+# Schedule intro generation when track is about to start
+def on_track_ready(m)
+  # This fires when a track is prepared/ready but before it actually plays
+  generate_intro_for_next(m)
 end
 
 # Ensure sane metadata defaults
 def rm_key(m, k)  list.filter(fun (kv) -> fst(kv) != k, m) end
+
 def put_default(m, k, v)
   has = list.mem(k, list.map(fst, m))
   cur = if has then list.assoc(k, m) else "" end
@@ -89,21 +90,24 @@ def update_metadata(m)
 end
 
 # ---------- Chain / processing ----------
+
 # Normalize metadata
 music = metadata.map(update_metadata, all_music)
+
+# Generate intros when tracks are selected/ready
+music = source.on_metadata(music, on_track_ready)
 
 # Smooth crossfades on music
 music = crossfade(music)
 
 # Announce every real track start (attach once, on the smoothed music)
 music = source.on_metadata(music, announce_song)
-# Enable this if you want near-end DJ intros:
-# music = source.on_metadata(music, after_song)
 
 # Sine backup
 sine_src = sine()
 
 # Priority: DJ/TTS first, then music, then sine as emergency fallback
+# This ensures intros play before songs
 primary = fallback(track_sensitive=true,  [tts_q, music])
 radio   = fallback(track_sensitive=false, [primary, sine_src])
 
