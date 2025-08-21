@@ -1312,7 +1312,7 @@ def api_dj_next():
                 for i, line in enumerate(output_lines):
                     print(f"DEBUG: Line {i}: {repr(line.strip())}")
             if r.stderr:
-                print(f"DEBUG: XTTS stderr (first 300 chars): {r.stderr}")
+                print(f"DEBUG: XTTS full stderr: {r.stderr}")
                 
             # Look for output file path
             output_lines = r.stdout.strip().split('\n')
