@@ -3,10 +3,11 @@ set -euo pipefail
 
 ARTIST=${1:-}
 TITLE=${2:-}
-LANG=${3:-en}   # optional, defaults to English
+LANG=${3:-en}
+SPEAKER=${4:-${XTTS_SPEAKER:-"Damien Black"}}
 
 if [[ -z "${ARTIST}" || -z "${TITLE}" ]]; then
-  echo "Usage: $0 \"Artist\" \"Title\" [lang]" >&2
+  echo "Usage: $0 \"Artist\" \"Title\" [lang] [speaker]" >&2
   exit 2
 fi
 
@@ -18,19 +19,16 @@ mkdir -p "${OUT_DIR}"
 
 TS=$(date +%s)
 OUT="${OUT_DIR}/intro_${TS}.mp3"
-
 TEXT="Up next: ${TITLE} by ${ARTIST}."
 
-# If your script accepts --voice, you can add:  --voice xtts
-"${PY}" "${APP}" --text "${TEXT}" --lang "${LANG}" --out "${OUT}"
+echo "DEBUG: Speaker parameter: '$SPEAKER'" >&2
+echo "DEBUG: Full command: $PY $APP --text '$TEXT' --lang '$LANG' --speaker '$SPEAKER' --out '$OUT'" >&2
 
-# Print the path for callers
-echo "${OUT}"
+"${PY}" "${APP}" --text "${TEXT}" --lang "${LANG}" --speaker "${SPEAKER}" --out "${OUT}"
 
 if [[ -f "${OUT}" ]]; then
     echo "DEBUG: Successfully created ${OUT}" >&2
     echo "DEBUG: File size: $(stat -c%s "${OUT}") bytes" >&2
-    # Print the path for the calling script to capture
     echo "${OUT}"
     exit 0
 else
