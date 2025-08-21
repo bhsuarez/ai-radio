@@ -1301,6 +1301,9 @@ def api_dj_next():
             env["PATH"] = "/usr/local/bin:/usr/bin:/bin"  # ensure basic PATH
             print(f"DEBUG: Running XTTS with env USER={env.get('USER', 'unknown')}")
             print(f"DEBUG: Current working directory: {os.getcwd()}")
+            print(f"DEBUG: Push command: {push_cmd}")
+            print(f"DEBUG: Liquidsoap push stdout: {liq_result.stdout.decode()}")
+            print(f"DEBUG: Liquidsoap push stderr: {liq_result.stderr.decode()}")
 
             r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env, cwd="/opt/ai-radio")
             print(f"DEBUG: XTTS return code: {r.returncode}")
