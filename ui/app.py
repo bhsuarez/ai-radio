@@ -1333,9 +1333,11 @@ def api_dj_next():
                 # Push to Liquidsoap TTS queue
                 try:
                     print(f"DEBUG: Pushing to Liquidsoap TTS queue: {candidate_file}")
+                    metadata = f"title=\"DJ Intro\",artist=\"AI DJ\",comment=\"{line}\""
+                    push_cmd = f"tts.push annotate:{metadata}:{candidate_file}"
                     liq_result = subprocess.run(
                         ["nc", "127.0.0.1", "1234"],
-                        input=f"tts.push {candidate_file}\nquit\n".encode(),
+                        input=f"{push_cmd}\nquit\n".encode(),
                         capture_output=True,
                         timeout=5
                     )
