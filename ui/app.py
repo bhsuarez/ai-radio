@@ -1021,13 +1021,25 @@ def api_now():
 @app.get("/api/next")
 def api_next():
     try:
+        # Get current playing track to exclude it from next tracks
+        current_track = read_now()
+        current_filename = current_track.get("filename", "").strip()
+        
         rid_lines = _ls_cmd("request.all")  # e.g. ["78 79"] or ["78", "79"]
         rids = []
         for ln in rid_lines:
             rids.extend(x for x in ln.strip().split() if x.isdigit())
         
-        # Skip the first RID (currently playing track) and return only upcoming tracks
-        upcoming_rids = rids[1:] if len(rids) > 1 else []
+        # Filter out the currently playing track by comparing filenames
+        upcoming_rids = []
+        for rid in rids:
+            metadata = _metadata_for_rid(rid)
+            track_filename = metadata.get("filename", "").strip()
+            
+            # Skip if this RID matches the current track filename
+            if track_filename != current_filename:
+                upcoming_rids.append(rid)
+        
         upcoming = [_metadata_for_rid(r) for r in upcoming_rids]
         return jsonify(upcoming)
     except Exception as e:
