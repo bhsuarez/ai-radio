@@ -179,3 +179,11 @@ Available commands:
 - this seems to be a recurring issue that needs fixing
 
 "Still 10/10 telnet connection events even with Flask UI stopped! This means the problem is NOT the Flask UI - it's something else making rapid telnet connections."
+- Check if tts generation is active:
+  curl -s http://127.0.0.1:5055/api/dj_status | jq '.generation_active'
+
+  See what's being generated:
+  curl -s http://127.0.0.1:5055/api/dj_status | jq '.current_generation'
+
+  View recent generation history:
+  curl -s http://127.0.0.1:5055/api/dj_status | jq '.recent_intros'

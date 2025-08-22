@@ -51,25 +51,15 @@ def announce_song(m)
   ignore(process.run(cmd))
 end
 
-# Smart DJ intro generation - runs DURING current track, not on track change
-# This prevents telnet spam by using efficient batched queries
-def smart_intro_generation()
-  # Use Python script for efficient intro generation
-  cmd = "bash -lc \"(/opt/ai-radio/efficient_dj_intro.py > /tmp/intro_gen.log 2>&1) &\""
-  ignore(process.run(cmd))
-end
+# DJ intro generation now handled by ai-dj-daemon service
+# No need for radio.liq to trigger generation - daemon monitors continuously
 
-# Timer-based intro generation: generate intro 30 seconds after track starts
-# This gives enough time for track to start playing and queue to stabilize
 def on_track_started(m)
   # This fires when a track actually starts playing
   artist = meta_get(m, "artist", "Unknown Artist")
   title  = meta_get(m, "title",  "Unknown Title")
   
-  log("Track started: " ^ title ^ " by " ^ artist ^ " - scheduling intro generation")
-  
-  # Schedule intro generation in 30 seconds (non-blocking)
-  thread.run(delay=30., fun() -> smart_intro_generation())
+  log("Track started: " ^ title ^ " by " ^ artist ^ " - daemon handles intro generation")
 end
 
 # Ensure sane metadata defaults

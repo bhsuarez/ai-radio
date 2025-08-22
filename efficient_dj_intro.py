@@ -184,11 +184,11 @@ def generate_intro_for_track(artist: str, title: str, cache: IntroCache) -> Opti
     update_dj_status("start_generation", {"artist": artist, "title": title})
     
     try:
-        # Use existing XTTS generation script
+        # Use existing XTTS generation script with reasonable timeout - fallback if too slow
         result = subprocess.run([
-            "/opt/ai-radio/dj_enqueue_xtts.sh",
+            "/opt/ai-radio/dj_enqueue_xtts.sh", 
             artist, title, "en", os.getenv("XTTS_SPEAKER", "Damien Black")
-        ], capture_output=True, text=True, timeout=120)
+        ], capture_output=True, text=True, timeout=90)
         
         if result.returncode == 0:
             # Extract the output file path from stdout (last line should be the file path)
@@ -207,6 +207,28 @@ def generate_intro_for_track(artist: str, title: str, cache: IntroCache) -> Opti
         error_msg = f"Script failed: {result.stderr}"
         print(f"ERROR: Intro generation failed: {error_msg}")
         update_dj_status("fail_generation", {"error": error_msg})
+        
+    except subprocess.TimeoutExpired:
+        print(f"WARNING: AI+XTTS generation timed out after 90s, trying quick fallback")
+        # Try generating a simple generic intro quickly
+        try:
+            fallback_result = subprocess.run([
+                "/opt/ai-radio/dj_enqueue_xtts.sh",
+                artist, title, "en", os.getenv("XTTS_SPEAKER", "Damien Black"), "SIMPLE"
+            ], capture_output=True, text=True, timeout=30)
+            
+            if fallback_result.returncode == 0:
+                stdout_lines = fallback_result.stdout.strip().split('\n')
+                output_file = stdout_lines[-1].strip() if stdout_lines else ""
+                if output_file and output_file.startswith('/') and os.path.exists(output_file):
+                    cache.cache_intro(artist, title, output_file)
+                    print(f"Successfully generated fallback intro: {output_file}")
+                    update_dj_status("complete_generation", {"intro_file": output_file})
+                    return output_file
+        except:
+            pass
+        
+        update_dj_status("fail_generation", {"error": "Timeout - XTTS too slow"})
         
     except Exception as e:
         error_msg = f"Exception during generation: {e}"

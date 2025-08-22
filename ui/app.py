@@ -230,7 +230,6 @@ def read_now() -> dict:
         try:
             # Use the correct telnet command
             raw = telnet_cmd("output.icecast.metadata")
-            print(f"DEBUG: Raw telnet response: {raw}")
             
             # Parse the response - look for "--- 1 ---" section (current track)
             lines = raw.split('\n')
@@ -249,21 +248,35 @@ def read_now() -> dict:
                     key, value = line.split("=", 1)
                     current_track[key.strip()] = value.strip().strip('"')
             
-            print(f"DEBUG: Parsed current track: {current_track}")
-            
             if current_track:
                 data["title"] = current_track.get("title") or data.get("title") or "Unknown title"
                 data["artist"] = current_track.get("artist") or data.get("artist") or "Unknown artist"
                 data["album"] = current_track.get("album") or data.get("album") or ""
                 data["date"] = current_track.get("date") or ""
-                data["filename"] = ""  # Not available from telnet
-                data["artwork_url"] = data.get("artwork_url") or ""
-                print(f"DEBUG: Final telnet metadata: {data}")
-            else:
-                print("DEBUG: No current track found in telnet response")
                 
-        except Exception as e:
-            print(f"DEBUG: Telnet metadata failed: {e}")
+                # Get filename by finding the matching RID
+                try:
+                    rid_lines = _ls_cmd("request.all")
+                    rids = []
+                    for ln in rid_lines:
+                        rids.extend(x for x in ln.strip().split() if x.isdigit())
+                    
+                    # Find the RID that matches our current track title/artist
+                    for rid in rids:
+                        rid_metadata = _metadata_for_rid(rid)
+                        if (rid_metadata.get("title") == data.get("title") and 
+                            rid_metadata.get("artist") == data.get("artist")):
+                            data["filename"] = rid_metadata.get("filename", "")
+                            break
+                    else:
+                        data["filename"] = ""  # No matching RID found
+                except Exception:
+                    data["filename"] = ""
+                
+                data["artwork_url"] = data.get("artwork_url") or ""
+                
+        except Exception:
+            pass
 
     data.setdefault("title", "Unknown title")
     data.setdefault("artist", "Unknown artist")
@@ -1039,7 +1052,6 @@ def api_next():
             # Skip if this RID matches the current track filename
             if track_filename != current_filename:
                 upcoming_rids.append(rid)
-        
         upcoming = [_metadata_for_rid(r) for r in upcoming_rids]
         return jsonify(upcoming)
     except Exception as e:
@@ -1277,7 +1289,7 @@ def api_dj_next():
             print(f"DEBUG: XTTS command: {cmd}")
             print(f"DEBUG: Environment XTTS_SPEAKER set to: '{env['XTTS_SPEAKER']}'")
 
-            r = subprocess.run(cmd, capture_output=True, text=True, timeout=60, env=env, cwd="/opt/ai-radio")
+            r = subprocess.run(cmd, capture_output=True, text=True, timeout=180, env=env, cwd="/opt/ai-radio")
             print(f"DEBUG: XTTS return code: {r.returncode}")
             
             if r.stdout:

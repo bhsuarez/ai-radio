@@ -15,7 +15,10 @@ import signal
 import threading
 import requests
 from typing import Dict, Optional, Tuple
-from liquidsoap_connection_pool import get_liquidsoap_pool, liquidsoap_query, liquidsoap_batch_query
+
+# Liquidsoap connection constants
+LS_HOST = "127.0.0.1"
+LS_PORT = 1234
 
 class DJDaemon:
     """Persistent daemon for AI DJ intro generation"""
@@ -153,19 +156,44 @@ class DJDaemon:
         """Get current and next tracks from APIs (not telnet)"""
         try:
             # Use existing APIs to avoid telnet spam
-            current_response = requests.get(f"{self.api_base}/api/now", timeout=5)
-            next_response = requests.get(f"{self.api_base}/api/next", timeout=5)
+            current_response = requests.get(f"{self.api_base}/api/now", timeout=15)
+            next_response = requests.get(f"{self.api_base}/api/next", timeout=15)
             
             current = current_response.json() if current_response.ok else None
             next_list = next_response.json() if next_response.ok else []
             
-            next_track = next_list[0] if next_list else None
+            # Get track that's further ahead - 2nd in queue to account for generation time
+            next_track = next_list[1] if len(next_list) > 1 else (next_list[0] if next_list else None)
             
             return current, next_track
             
         except Exception as e:
             print(f"Failed to get track info: {e}")
             return None, None
+    
+    
+    def push_to_tts_queue(self, file_path: str):
+        """Push intro file to Liquidsoap TTS queue via telnet"""
+        try:
+            import socket
+            with socket.create_connection((LS_HOST, LS_PORT), timeout=5) as s:
+                s.settimeout(5)
+                # Consume banner
+                try:
+                    s.recv(1024)
+                except:
+                    pass
+                
+                # Push file to TTS queue
+                command = f"tts.push {file_path}\n"
+                s.send(command.encode())
+                
+                # Read response
+                response = s.recv(1024).decode().strip()
+                print(f"TTS queue response: {response}")
+                
+        except Exception as e:
+            print(f"Failed to push to TTS queue: {e}")
     
     def is_intro_cached(self, artist: str, title: str) -> Optional[str]:
         """Check if intro is cached and still valid"""
@@ -233,14 +261,14 @@ class DJDaemon:
         
         return None
     
-    def enqueue_intro(self, intro_file: str) -> bool:
-        """Enqueue intro to Liquidsoap TTS queue"""
+    def enqueue_intro(self, intro_file: str, target_track: Dict) -> bool:
+        """Push intro to TTS queue immediately"""
         try:
-            pool = get_liquidsoap_pool()
-            command = f'tts.push file://{intro_file}'
-            result = pool.execute_command(command)
-            print(f"Enqueued intro: {intro_file}")
+            # Push to TTS queue right away so it plays before the target track
+            self.push_to_tts_queue(intro_file)
+            print(f"Enqueued intro for upcoming track: {target_track.get('title')} by {target_track.get('artist')}")
             return True
+            
         except Exception as e:
             print(f"Failed to enqueue intro: {e}")
             return False
@@ -265,9 +293,9 @@ class DJDaemon:
             print(f"Intro already cached for '{title}' by {artist}")
             return False
         
-        # Check remaining time (need at least 90 seconds to generate)
+        # Check remaining time (need at least 120 seconds to generate safely)
         remaining = current.get('remaining_seconds', 0)
-        if remaining > 0 and remaining < 90:
+        if remaining > 0 and remaining < 120:
             print(f"Not enough time remaining ({remaining}s) to generate intro")
             return False
         
@@ -295,12 +323,12 @@ class DJDaemon:
                         # Check cache first
                         cached_intro = self.is_intro_cached(artist, title)
                         if cached_intro:
-                            self.enqueue_intro(cached_intro)
+                            self.enqueue_intro(cached_intro, next_track)
                         else:
                             # Generate new intro
                             intro_file = self.generate_intro(artist, title)
                             if intro_file:
-                                self.enqueue_intro(intro_file)
+                                self.enqueue_intro(intro_file, next_track)
                         
                         self.last_generation_time = time.time()
                     
