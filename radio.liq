@@ -13,8 +13,8 @@ settings.server.telnet.bind_addr := "127.0.0.1"
 settings.server.telnet.port := 1234
 
 # ---------- Sources ----------
-# Queue for DJ/TTS lines - this will play intros
-tts_q = request.queue(id="tts")
+# Queue for DJ/TTS lines - this will play intros with timeout
+tts_q = request.queue(id="tts", timeout=30.0)
 
 # Main music (m3u that points to your library files)
 all_music = playlist(

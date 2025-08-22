@@ -77,6 +77,18 @@ echo "DEBUG: Starting XTTS synthesis..." >&2
 if "${PY}" "${APP}" --text "${TEXT}" --lang "${LANG}" --speaker "${SPEAKER}" --out "${OUT}" 2>&1; then
     if [[ -f "${OUT}" && -s "${OUT}" ]]; then
         file_size=$(stat -c%s "${OUT}")
+        # Validate it's a valid audio file and minimum size
+        if [[ $file_size -lt 1000 ]]; then
+            echo "ERROR: Output file too small (${file_size} bytes), likely corrupted" >&2
+            rm -f "${OUT}"
+            exit 1
+        fi
+        # Quick validation that it's actually an MP3
+        if ! file "${OUT}" | grep -q "Audio\|MPEG\|MP3"; then
+            echo "ERROR: Output file is not valid audio" >&2
+            rm -f "${OUT}"
+            exit 1
+        fi
         echo "DEBUG: Successfully created ${OUT} (${file_size} bytes)" >&2
         
         # Save the transcript to a .txt file
