@@ -408,9 +408,9 @@ def main():
         intro_file = generate_intro_for_track(next_artist, next_title, cache)
         
         if intro_file:
-            # Immediately enqueue the intro to Liquidsoap TTS queue
+            # Immediately enqueue the intro to Liquidsoap TTS queue (whether cached or newly generated)
             if enqueue_intro_to_liquidsoap(intro_file):
-                print(f"Successfully generated and enqueued intro for '{next_title}' by {next_artist}")
+                print(f"Successfully prepared and enqueued intro for '{next_title}' by {next_artist}")
                 # Also store mapping as backup
                 store_intro_mapping(next_artist, next_title, intro_file)
             else:
