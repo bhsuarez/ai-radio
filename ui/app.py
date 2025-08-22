@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, json, socket, time, html, hashlib, io, re, requests, subprocess, threading, glob
+import os, json, socket, time, html, hashlib, io, re, requests, subprocess, threading, glob, sys
 import urllib.parse
 from datetime import datetime
 from pathlib import Path
@@ -952,16 +952,10 @@ def api_now():
     if not now:
         return jsonify({"error": "No track info"}), 404
     
-    # Add timing information from Liquidsoap
-    try:
-        remaining_str = _ls_query("output.icecast.remaining")
-        remaining_seconds = float(remaining_str.strip()) if remaining_str.strip() else 0
-        now["remaining_seconds"] = remaining_seconds
-        now["remaining_ms"] = int(remaining_seconds * 1000)
-    except Exception as e:
-        print(f"DEBUG: Could not get remaining time: {e}", file=sys.stderr)
-        now["remaining_seconds"] = 0
-        now["remaining_ms"] = 0
+    # TEMPORARILY DISABLED: Timing info causes telnet spam
+    # TODO: Implement timing with proper caching to avoid spam
+    now["remaining_seconds"] = 0
+    now["remaining_ms"] = 0
     
     return jsonify(now)
 

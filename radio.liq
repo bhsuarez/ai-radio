@@ -95,8 +95,8 @@ end
 # Normalize metadata
 music = metadata.map(update_metadata, all_music)
 
-# NEW EFFICIENT SYSTEM: Generate intros DURING track playback (not on track change)
-music = source.on_metadata(music, on_track_started)
+# TEMPORARILY DISABLED: Timer system causes process spam and telnet buzz
+# music = source.on_metadata(music, on_track_started)
 
 # Smooth crossfades on music
 music = crossfade(music)

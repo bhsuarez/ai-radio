@@ -146,3 +146,36 @@ Note: Both services need to be restarted for configuration changes to take effec
 5. **Debug audio issues**: Check `./fix_sine_fallback.sh` for common problems
 - There are two systemd processes ai-radio (liquidsoap) and ai-dj-ui (flask). You can restart these for changes to take effect.
 - Always commit changes to git.  update README only if there is functionality changes
+- always suggest removing redundant functions if they exist -- explain why before you suggest
+- here are available telnet commands
+Available commands:
+| exit
+| help [<command>]
+| library_clean_m3u.next
+| library_clean_m3u.reload
+| library_clean_m3u.skip
+| library_clean_m3u.uri [<uri>]
+| output.icecast.metadata
+| output.icecast.remaining
+| output.icecast.skip
+| quit
+| request.all
+| request.metadata <rid>
+| request.resolving
+| request.trace <rid>
+| runtime.gc.compact
+| runtime.gc.full_major
+| runtime.memory
+| shutdown
+| tts.flush_and_skip
+| tts.push <uri>
+| tts.queue
+| tts.skip
+| uptime
+| var.get
+| var.list
+| var.set <name> = <value>
+| version
+- this seems to be a recurring issue that needs fixing
+
+"Still 10/10 telnet connection events even with Flask UI stopped! This means the problem is NOT the Flask UI - it's something else making rapid telnet connections."

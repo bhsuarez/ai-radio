@@ -158,6 +158,12 @@ let lastLiveTrack = null;
 async function loadTimeline(){
   try {
     if (window._timelineLoading) return; window._timelineLoading = true;
+    
+    // Clear any existing countdown timer
+    if (window._currentCountdown) {
+      clearInterval(window._currentCountdown);
+      window._currentCountdown = null;
+    }
 
     const [nowR, nextR, ttsR, histR, djStatusR] = await Promise.allSettled([
       j('/api/now'), j('/api/next'), j('/api/tts_queue'), j('/api/history'), j('/api/dj_status')
@@ -302,6 +308,43 @@ async function loadTimeline(){
         </div>`;
       sec.appendChild(card); box.appendChild(sec);
       setArtworkWithRetry(card.querySelector('img'), live);
+      
+      // Start countdown timer for remaining time
+      if (live.remaining_seconds && live.remaining_seconds > 0) {
+        const startTime = Date.now();
+        const initialRemaining = live.remaining_seconds;
+        
+        const updateCountdown = () => {
+          const elapsed = (Date.now() - startTime) / 1000;
+          const remaining = Math.max(0, initialRemaining - elapsed);
+          const chip = document.getElementById('remainChip');
+          if (chip) {
+            if (remaining > 0) {
+              chip.textContent = Math.ceil(remaining) + 's left';
+              chip.style.background = remaining < 30 ? '#ff5d5d' : remaining < 60 ? '#ffb020' : '#3ddc97';
+              chip.style.color = remaining < 30 ? '#2d0f0f' : remaining < 60 ? '#271400' : '#0d2818';
+            } else {
+              chip.textContent = 'Ending soon...';
+              chip.style.background = '#ff5d5d';
+              chip.style.color = '#2d0f0f';
+            }
+          }
+        };
+        
+        // Update immediately and then every second
+        updateCountdown();
+        const countdownInterval = setInterval(() => {
+          updateCountdown();
+          // Stop countdown when time runs out
+          const elapsed = (Date.now() - startTime) / 1000;
+          if (elapsed >= initialRemaining + 10) { // Give 10s buffer
+            clearInterval(countdownInterval);
+          }
+        }, 1000);
+        
+        // Store interval ID to clear on next timeline refresh
+        window._currentCountdown = countdownInterval;
+      }
     }
 
     // Just played
