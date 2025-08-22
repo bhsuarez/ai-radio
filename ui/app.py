@@ -1413,12 +1413,43 @@ def api_dj_status():
                 "last_updated": 0
             }
         
+        # Clean up old entries (older than 1 hour)
+        current_time = time.time()
+        if "recent_intros" in status:
+            status["recent_intros"] = [
+                intro for intro in status["recent_intros"]
+                if current_time - intro.get("completed_at", intro.get("started_at", 0)) < 3600
+            ]
+        
         # Add real-time info
         status["intro_cache_exists"] = os.path.exists("/opt/ai-radio/intro_cache.json")
         status["tts_queue_size"] = len(glob.glob("/opt/ai-radio/tts_queue/*.mp3"))
         status["generation_active"] = os.path.exists("/tmp/dj_intro_generation.lock")
         
         return jsonify(status)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/dj_status/clear", methods=["POST"])
+def api_dj_status_clear():
+    """Clear DJ intro generation history"""
+    try:
+        status_file = "/opt/ai-radio/dj_status.json"
+        
+        # Create clean status
+        clean_status = {
+            "current_generation": None,
+            "generation_queue": [],
+            "recent_intros": [],
+            "last_updated": time.time(),
+            "status_message": "DJ intro status cleared"
+        }
+        
+        # Save clean status
+        with open(status_file, 'w') as f:
+            json.dump(clean_status, f, indent=2)
+        
+        return jsonify({"success": True, "message": "DJ status cleared"})
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

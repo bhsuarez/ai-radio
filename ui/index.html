@@ -56,13 +56,8 @@
 <body>
   <aside class="sidebar">
     <h1>🎧 AI Radio</h1>
-    <a class="btn" id="openLink" href="#" target="_blank" rel="noopener">🔗 Open Stream</a>
-    <a class="btn" href="http://icecast.zorro.network:8000" target="_blank">📊 Icecast Admin</a>
     <audio id="livePlayer" controls preload="none"></audio>
     <button class="btn warn" id="skipBtn">⏭️ Skip Track</button>
-    <button class="btn accent" id="genBtn">✨ Generate DJ Line</button>
-    <button class="btn" id="debugDjBtn">🔍 Debug DJ Status</button>
-    <button class="btn" id="testFullDjBtn">🧪 Test Full DJ</button>
   </aside>
 
   <div class="main">
@@ -76,7 +71,7 @@ const STREAM_URL = "http://icecast.zorro.local:8000/stream.mp3";
 const DEFAULT_ART = "/static/station-cover.jpg"; // server-served placeholder
 
 const $ = (id) => document.getElementById(id);
-$("livePlayer").src = STREAM_URL; $("livePlayer").load(); $("openLink").href = STREAM_URL;
+$("livePlayer").src = STREAM_URL; $("livePlayer").load();
 
 async function j(url, opts={}) {
   const r = await fetch(url, { headers: { "Content-Type": "application/json" }, ...opts });
@@ -235,6 +230,12 @@ async function loadTimeline(){
     if (djStatus.current_generation || (djStatus.recent_intros && djStatus.recent_intros.length > 0)) {
       const djSec = section('🎙️ DJ INTRO STATUS');
       
+      // Add clear button
+      const clearBtn = h('button', 'clear-dj-status-btn', '✕ Clear');
+      clearBtn.onclick = clearDjStatus;
+      clearBtn.style.cssText = 'float:right; background:#ff5d5d; color:white; border:none; padding:4px 8px; border-radius:3px; cursor:pointer; font-size:12px; margin-top:-2px;';
+      djSec.firstChild.appendChild(clearBtn);
+      
       // Current generation
       if (djStatus.current_generation) {
         const gen = djStatus.current_generation;
@@ -386,38 +387,6 @@ async function loadTimeline(){
 
 $('skipBtn').onclick = async () => { try{ await j('/api/skip',{method:'POST'}); loadTimeline(); } catch(e){} };
 
-$('debugDjBtn').onclick = async () => {
-  try {
-    const result = await j('/api/debug-dj-status');
-    const summary = `\nDJ Status:\n- Auto DJ Enabled: ${result.config.auto_dj_enabled}\n- Script Exists: ${result.config.script_exists}\n- Recent DJ Events: ${result.recent_dj_events.length}\n- TTS Files: ${result.tts_files.length}\n- Queue Length: ${result.liquidsoap_queue_length}\n\nCheck console for full details.`;
-    console.log('DJ Debug Status:', result); alert(summary);
-  } catch { alert('Debug failed - check console'); }
-};
-
-$('testFullDjBtn').onclick = async () => {
-  try {
-    const original = $('testFullDjBtn').textContent; $('testFullDjBtn').disabled = true; $('testFullDjBtn').textContent = 'Testing...';
-    const result = await j('/api/test-full-dj', { method:'POST' });
-    console.log('Full DJ Test:', result);
-    if (result.ok) { $('testFullDjBtn').textContent='Test Complete!'; $('testFullDjBtn').style.backgroundColor='#3ddc97'; alert(`Full DJ Test Results:\nAI Generation: ${result.steps.ai_generation ? 'SUCCESS' : 'FAILED'}\nAudio Created: ${result.steps.audio_exists ? 'YES' : 'NO'}\nQueued in Liquidsoap: ${result.steps.queue_result ? 'YES' : 'NO'}\nQueue Length: ${result.steps.queue_length}\n\nCheck console for details.`); }
-    else { $('testFullDjBtn').textContent='Test Failed!'; $('testFullDjBtn').style.backgroundColor='#ff5d5d'; alert(`Test failed: ${result.error}`); }
-    setTimeout(()=>{ $('testFullDjBtn').disabled=false; $('testFullDjBtn').textContent=original; $('testFullDjBtn').style.backgroundColor=''; }, 3000);
-  } catch(e) { console.error(e); }
-};
-
-$('genBtn').onclick = async () => {
-  try {
-    const original = $('genBtn').textContent; $('genBtn').disabled = true; $('genBtn').textContent = 'Generating...';
-    const result = await j('/api/dj-now', { method:'POST' });
-    console.log('DJ generation result:', result);
-    if (result.skipped) { $('genBtn').textContent='Already Generated!'; $('genBtn').style.backgroundColor='#ffb020'; }
-    else { $('genBtn').textContent='Generated!'; $('genBtn').style.backgroundColor='#3ddc97'; loadTimeline(); }
-    setTimeout(()=>{ $('genBtn').disabled=false; $('genBtn').textContent=original; $('genBtn').style.backgroundColor=''; }, 3000);
-  } catch (e) {
-    console.error(e); $('genBtn').textContent='Error!'; $('genBtn').style.backgroundColor='#ff5d5d'; setTimeout(()=>{ $('genBtn').disabled=false; $('genBtn').textContent='✨ Generate DJ Line'; $('genBtn').style.backgroundColor=''; }, 3000);
-  }
-};
-
 loadTimeline();
 setInterval(loadTimeline, 10000);
 </script>
@@ -425,6 +394,24 @@ setInterval(loadTimeline, 10000);
 </html>
 
 <script>
+async function clearDjStatus() {
+  try {
+    const response = await fetch('/api/dj_status/clear', { 
+      method: 'POST',
+      headers: {'Content-Type': 'application/json'}
+    });
+    
+    if (response.ok) {
+      // Reload timeline to refresh display
+      loadTimeline();
+    } else {
+      console.error('Failed to clear DJ status');
+    }
+  } catch (e) {
+    console.error('Error clearing DJ status:', e);
+  }
+}
+
 async function loadTtsSettings() {
   try {
     const r = await fetch('/api/settings', {cache:'no-store'});
