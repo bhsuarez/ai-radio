@@ -182,7 +182,17 @@ async function loadTimeline(){
     let upcoming = Array.isArray(next) ? next : [];
     upcoming = upcoming
       .filter(s => !sameTrack(s, live))
-      .map(s => ({ type:'upcoming', time: Date.now() + Math.random()*1e5, title: s.title || 'Unknown title', artist: s.artist || '', album: s.album || '', filename: s.filename || '', artwork_url: ensureArtPath(s.artwork_url || getCover(s)) }));
+      .map(s => ({ 
+        type: s.type === 'dj' ? 'dj' : 'upcoming', 
+        time: Date.now() + Math.random()*1e5, 
+        title: s.title || 'Unknown title', 
+        artist: s.artist || '', 
+        album: s.album || '', 
+        filename: s.filename || '', 
+        text: s.text || '', 
+        audio_url: s.audio_url || '', 
+        artwork_url: ensureArtPath(s.artwork_url || getCover(s)) 
+      }));
 
     // No client-side lookup; just ensure a usable cover URL or fallback
     upcoming = upcoming.map(t => {
@@ -190,9 +200,23 @@ async function loadTimeline(){
       return t;
     });
 
-    // de-dupe upcoming by title|artist
+    // de-dupe upcoming by title|artist (but don't dedupe DJ intros as they may have different text)
     const seenU = new Set();
-    upcoming = upcoming.filter(t=>{ const k=`${(t.title||'').toLowerCase()}|${(t.artist||'').toLowerCase()}`; if(seenU.has(k)) return false; seenU.add(k); return true; });
+    upcoming = upcoming.filter(t=>{ 
+      if (t.type === 'dj') {
+        // For DJ intros, dedupe by text content instead of title/artist
+        const k=`dj:${(t.text||'').toLowerCase()}`;
+        if(seenU.has(k)) return false; 
+        seenU.add(k); 
+        return true;
+      } else {
+        // For songs, dedupe by title/artist as before
+        const k=`${(t.title||'').toLowerCase()}|${(t.artist||'').toLowerCase()}`; 
+        if(seenU.has(k)) return false; 
+        seenU.add(k); 
+        return true; 
+      }
+    });
 
     // HISTORY + DJ
     const events = [...(history||[])];
@@ -278,20 +302,34 @@ async function loadTimeline(){
       box.appendChild(djSec);
     }
 
-    // Upcoming
+    // Upcoming (songs and DJ intros)
     if (upcoming.length) {
       const sec = section('⏭️ UPCOMING');
       for (const ev of upcoming.slice(0,10)) {
-        const div=h('div','event upcoming song');
-        div.innerHTML = `
-          <img alt="Album artwork" loading="lazy" decoding="async">
-          <div class="event-details">
-            <div class="event-meta"><span>${fmtTime(ev.time)}</span><span class="voice-chip">Upcoming</span></div>
-            <div class="event-title">${ev.title || 'Unknown title'}</div>
-            <div class="event-sub">${[ev.artist, ev.album].filter(Boolean).join(' • ') || 'Unknown artist'}</div>
-          </div>`;
-        sec.appendChild(div);
-        setArtworkWithRetry(div.querySelector('img'), ev);
+        if (ev.type === 'dj') {
+          // DJ Intro - show as commentary, not as upcoming track
+          const div=h('div','event dj upcoming');
+          div.innerHTML = `
+            <div style="width:60px; height:60px; display:flex; align-items:center; justify-content:center; background:var(--accent); border-radius:8px; color:white; font-size:24px;">🎙️</div>
+            <div class="event-details">
+              <div class="event-meta"><span>${fmtTime(ev.time)}</span><span class="voice-chip" style="background:var(--accent); color:white;">DJ Intro</span></div>
+              <div class="event-title" style="color:var(--accent);">AI DJ Commentary</div>
+              <div class="event-sub">${ev.text || 'DJ intro for upcoming track'}</div>
+            </div>`;
+          sec.appendChild(div);
+        } else {
+          // Regular upcoming song
+          const div=h('div','event upcoming song');
+          div.innerHTML = `
+            <img alt="Album artwork" loading="lazy" decoding="async">
+            <div class="event-details">
+              <div class="event-meta"><span>${fmtTime(ev.time)}</span><span class="voice-chip">Upcoming</span></div>
+              <div class="event-title">${ev.title || 'Unknown title'}</div>
+              <div class="event-sub">${[ev.artist, ev.album].filter(Boolean).join(' • ') || 'Unknown artist'}</div>
+            </div>`;
+          sec.appendChild(div);
+          setArtworkWithRetry(div.querySelector('img'), ev);
+        }
       }
       box.appendChild(sec);
     }

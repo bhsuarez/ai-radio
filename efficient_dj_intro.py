@@ -14,6 +14,7 @@ import socket
 import subprocess
 import threading
 import re
+import requests
 from typing import Dict, List, Optional, Tuple
 
 # Configuration
@@ -142,55 +143,30 @@ class IntroCache:
         self._save_cache()
 
 def get_queue_metadata() -> Tuple[Optional[Dict], Optional[Dict]]:
-    """Get current and next track metadata efficiently"""
-    telnet_mgr = EfficientTelnetManager()
-    
-    # First, get all request IDs
-    results = telnet_mgr.batch_query(["request.all"])
-    all_rids_text = results.get("request.all", "")
-    
-    print(f"DEBUG: request.all response: '{all_rids_text}'", file=sys.stderr)
-    
-    # Parse RIDs - lower RID is currently playing
-    import re
-    rids = [int(x) for x in re.findall(r'\b\d+\b', all_rids_text)]
-    
-    print(f"DEBUG: Found RIDs: {rids}", file=sys.stderr)
-    
-    if len(rids) < 2:
-        print(f"DEBUG: Not enough RIDs ({len(rids)}), need at least 2", file=sys.stderr)
+    """Get current and next track metadata using Flask API (more reliable than telnet)"""
+    try:
+        # Use Flask API which handles telnet efficiently
+        current_response = requests.get("http://127.0.0.1:5055/api/now", timeout=5)
+        next_response = requests.get("http://127.0.0.1:5055/api/next", timeout=5)
+        
+        current = current_response.json() if current_response.ok else None
+        next_list = next_response.json() if next_response.ok else []
+        
+        # Get the first actual song (not DJ content) from next list
+        next_track = None
+        for item in next_list:
+            if item.get('type') == 'song':
+                next_track = item
+                break
+        
+        print(f"DEBUG: Current track: {current.get('title', 'Unknown') if current else 'None'} by {current.get('artist', 'Unknown') if current else 'None'}", file=sys.stderr)
+        print(f"DEBUG: Next track: {next_track.get('title', 'Unknown') if next_track else 'None'} by {next_track.get('artist', 'Unknown') if next_track else 'None'}", file=sys.stderr)
+        
+        return current, next_track
+        
+    except Exception as e:
+        print(f"ERROR: Failed to get track metadata via API: {e}", file=sys.stderr)
         return None, None
-    
-    rids.sort()  # Lower RID = current, next RID = next track
-    current_rid, next_rid = rids[0], rids[1]
-    
-    # Batch query metadata for both tracks
-    commands = [f"request.metadata {current_rid}", f"request.metadata {next_rid}"]
-    metadata_results = telnet_mgr.batch_query(commands)
-    
-    def parse_metadata(metadata_text: str) -> Dict[str, str]:
-        """Parse key="value" metadata lines"""
-        kv_re = re.compile(r'([a-zA-Z0-9_]+)="([^"]*)"')
-        metadata = {}
-        
-        for line in metadata_text.split('\n'):
-            match = kv_re.match(line.strip())
-            if match:
-                key, value = match.groups()
-                try:
-                    # Unescape unicode sequences
-                    value = bytes(value, "utf-8").decode("unicode_escape")
-                except:
-                    pass
-                metadata[key] = value
-        
-        return metadata
-    
-    current_meta = parse_metadata(metadata_results.get(commands[0], ""))
-    next_meta = parse_metadata(metadata_results.get(commands[1], ""))
-    
-    return (current_meta if current_meta.get('title') else None,
-            next_meta if next_meta.get('title') else None)
 
 def generate_intro_for_track(artist: str, title: str, cache: IntroCache) -> Optional[str]:
     """Generate TTS intro for a track, using cache if available"""
@@ -418,9 +394,13 @@ def main():
         intro_file = generate_intro_for_track(next_artist, next_title, cache)
         
         if intro_file:
-            # Store intro mapping instead of immediately enqueuing
-            store_intro_mapping(next_artist, next_title, intro_file)
-            print(f"Successfully prepared intro for '{next_title}' by {next_artist} - stored for later playback")
+            # Immediately enqueue the intro to Liquidsoap TTS queue
+            if enqueue_intro_to_liquidsoap(intro_file):
+                print(f"Successfully generated and enqueued intro for '{next_title}' by {next_artist}")
+                # Also store mapping as backup
+                store_intro_mapping(next_artist, next_title, intro_file)
+            else:
+                print(f"Generated intro file but failed to enqueue it: {intro_file}")
         else:
             print("Failed to generate intro")
     

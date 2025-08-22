@@ -19,7 +19,7 @@ tts_q = request.queue(id="tts")
 
 # Main music (m3u that points to your library files)
 all_music = playlist(
-  mode="random",
+  mode="shuffle",
   reload=300,
   reload_mode="watch",
   "/opt/ai-radio/library_clean.m3u"
@@ -95,8 +95,8 @@ end
 # Normalize metadata
 music = metadata.map(update_metadata, all_music)
 
-# TEMPORARILY DISABLED: Timer system causes process spam and telnet buzz
-# music = source.on_metadata(music, on_track_started)
+# FIXED: Re-enable proactive intro generation with better timing
+music = source.on_metadata(music, on_track_started)
 
 # Smooth crossfades on music
 music = crossfade(music)

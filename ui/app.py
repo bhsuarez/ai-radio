@@ -519,14 +519,52 @@ def _metadata_for_rid(rid: str | int):
     # Liquidsoap often returns "file:///..." as initial_uri
     if fname.startswith("file://"):
         fname = fname[7:]
-    out = {
-        "title": d.get("title", "") or "",
-        "artist": d.get("artist", "") or "",
-        "album": d.get("album", "") or "",
-        "filename": fname or "",
-    }
-    if out["filename"]:
+    
+    # Check if this is a TTS/DJ intro file
+    if fname and ("/tts/" in fname or fname.startswith("/opt/ai-radio/tts/") or "intro_" in os.path.basename(fname)):
+        # This is a DJ intro - format it as DJ content
+        transcript_text = ""
+        
+        # Try to read the transcript file
+        try:
+            transcript_file = os.path.splitext(fname)[0] + '.txt'
+            if os.path.exists(transcript_file):
+                with open(transcript_file, 'r', encoding='utf-8') as f:
+                    transcript_text = f.read().strip()
+        except:
+            pass
+        
+        # If no transcript, try to parse from filename or use fallback
+        if not transcript_text:
+            # Try to extract artist/title from filename pattern
+            basename = os.path.basename(fname)
+            if "intro_" in basename:
+                transcript_text = "DJ Intro"
+            else:
+                transcript_text = "AI DJ Commentary"
+        
+        out = {
+            "type": "dj",  # Mark as DJ content
+            "title": "DJ Intro",
+            "artist": "AI DJ", 
+            "album": "",
+            "filename": fname,
+            "text": transcript_text,  # Include the spoken text
+            "audio_url": f"/tts/{os.path.basename(fname)}" if fname else None
+        }
+    else:
+        # Regular music track
+        out = {
+            "type": "song",
+            "title": d.get("title", "") or "",
+            "artist": d.get("artist", "") or "",
+            "album": d.get("album", "") or "",
+            "filename": fname or "",
+        }
+    
+    if out["filename"] and out.get("type") != "dj":
         out["artwork_url"] = f"/api/cover?file={urllib.parse.quote(out['filename'])}"
+    
     return out
 
 def _ls_cmd(cmd: str, timeout: float = 2.5):
@@ -987,8 +1025,10 @@ def api_next():
         rids = []
         for ln in rid_lines:
             rids.extend(x for x in ln.strip().split() if x.isdigit())
-        # Keep ordering as returned by LS (first up next first)
-        upcoming = [_metadata_for_rid(r) for r in rids]
+        
+        # Skip the first RID (currently playing track) and return only upcoming tracks
+        upcoming_rids = rids[1:] if len(rids) > 1 else []
+        upcoming = [_metadata_for_rid(r) for r in upcoming_rids]
         return jsonify(upcoming)
     except Exception as e:
         app.logger.exception("next endpoint failed")
@@ -1115,7 +1155,7 @@ def api_dj_next():
         print("DEBUG: Getting current track and queue to find next track")
         
         # Get current playing track
-        current_track = get_now()
+        current_track = read_now()
         current_title = current_track.get("title", "").strip()
         current_artist = current_track.get("artist", "").strip()
         current_filename = current_track.get("filename", "").strip()
@@ -1272,9 +1312,7 @@ def api_dj_next():
                 # Push to Liquidsoap TTS queue
                 try:
                     print(f"DEBUG: Pushing to Liquidsoap TTS queue: {candidate_file}")
-                    safe_line = line.replace('"', '\\"').replace("'", "\\'")
-                    metadata = f'title="DJ Intro",artist="AI DJ",comment="{safe_line}"'
-                    push_cmd = f"tts.push annotate:{metadata}:{candidate_file}"
+                    push_cmd = f"tts.push file://{candidate_file}"
                     
                     print(f"DEBUG: Push command: {push_cmd}")
                     liq_result = subprocess.run(
