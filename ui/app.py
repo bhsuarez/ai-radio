@@ -1640,6 +1640,91 @@ def api_cover():
         return send_file(placeholder, mimetype="image/jpeg")
     return abort(404)
 
+@app.route("/api/dj-prompts", methods=["GET"])
+def get_dj_prompts():
+    """Get current DJ prompt configuration"""
+    try:
+        with open("/opt/ai-radio/dj_settings.json", "r") as f:
+            config = json.load(f)
+        
+        prompts = config.get("ai_prompts", {})
+        return jsonify({
+            "intro_prompts": prompts.get("intro_prompts", []),
+            "outro_prompts": prompts.get("outro_prompts", []),
+            "active_intro_prompt": prompts.get("active_intro_prompt", "Default Energetic"),
+            "active_outro_prompt": prompts.get("active_outro_prompt", "Default Conversational")
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/dj-prompts/active", methods=["POST"])
+def set_active_prompts():
+    """Set active prompt styles"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "JSON data required"}), 400
+        
+        with open("/opt/ai-radio/dj_settings.json", "r") as f:
+            config = json.load(f)
+        
+        if "ai_prompts" not in config:
+            config["ai_prompts"] = {}
+        
+        if "active_intro_prompt" in data:
+            config["ai_prompts"]["active_intro_prompt"] = data["active_intro_prompt"]
+        
+        if "active_outro_prompt" in data:
+            config["ai_prompts"]["active_outro_prompt"] = data["active_outro_prompt"]
+        
+        with open("/opt/ai-radio/dj_settings.json", "w") as f:
+            json.dump(config, f, indent=2)
+        
+        return jsonify({"success": True, "message": "Active prompts updated"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@app.route("/api/dj-prompts/custom", methods=["POST"])
+def add_custom_prompt():
+    """Add a custom prompt template"""
+    try:
+        data = request.get_json()
+        if not data or not all(k in data for k in ["name", "prompt", "type"]):
+            return jsonify({"error": "name, prompt, and type (intro/outro) required"}), 400
+        
+        with open("/opt/ai-radio/dj_settings.json", "r") as f:
+            config = json.load(f)
+        
+        if "ai_prompts" not in config:
+            config["ai_prompts"] = {"intro_prompts": [], "outro_prompts": []}
+        
+        prompt_type = data["type"]
+        if prompt_type not in ["intro", "outro"]:
+            return jsonify({"error": "type must be 'intro' or 'outro'"}), 400
+        
+        prompt_list = f"{prompt_type}_prompts"
+        if prompt_list not in config["ai_prompts"]:
+            config["ai_prompts"][prompt_list] = []
+        
+        new_prompt = {
+            "name": data["name"],
+            "prompt": data["prompt"]
+        }
+        
+        # Check if prompt with same name exists
+        existing = [p for p in config["ai_prompts"][prompt_list] if p.get("name") == data["name"]]
+        if existing:
+            return jsonify({"error": f"Prompt '{data['name']}' already exists"}), 400
+        
+        config["ai_prompts"][prompt_list].append(new_prompt)
+        
+        with open("/opt/ai-radio/dj_settings.json", "w") as f:
+            json.dump(config, f, indent=2)
+        
+        return jsonify({"success": True, "message": f"Custom {prompt_type} prompt added"})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
 @app.route("/api/cover/online", methods=["GET"])
 def api_cover_online():
     """

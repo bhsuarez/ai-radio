@@ -45,6 +45,28 @@
   @keyframes spin { 0% { transform:rotate(0deg); } 100% { transform:rotate(360deg); } }
   .loading-text { color:var(--text); margin-left:12px; font-size:14px; }
 
+  /* Modal styles */
+  .modal { position:fixed; top:0; left:0; width:100%; height:100%; background:rgba(0,0,0,0.8); display:none; align-items:center; justify-content:center; z-index:2000; }
+  .modal-content { background:var(--card); border-radius:var(--radius); padding:24px; max-width:600px; width:90%; max-height:80vh; overflow-y:auto; }
+  .modal-header { display:flex; justify-content:space-between; align-items:center; margin-bottom:20px; }
+  .modal-title { font-size:18px; font-weight:600; }
+  .close-btn { background:none; border:none; color:var(--muted); font-size:24px; cursor:pointer; padding:0; }
+  .close-btn:hover { color:var(--text); }
+  
+  .form-group { margin-bottom:16px; }
+  .form-label { display:block; margin-bottom:4px; font-weight:500; color:var(--text); }
+  .form-select { width:100%; padding:8px 12px; border:1px solid #2a2f3a; background:var(--bg); color:var(--text); border-radius:6px; }
+  .form-select:focus { border-color:var(--accent); outline:none; }
+  .form-textarea { width:100%; padding:8px 12px; border:1px solid #2a2f3a; background:var(--bg); color:var(--text); border-radius:6px; resize:vertical; min-height:80px; }
+  .form-textarea:focus { border-color:var(--accent); outline:none; }
+  .form-input { width:100%; padding:8px 12px; border:1px solid #2a2f3a; background:var(--bg); color:var(--text); border-radius:6px; }
+  .form-input:focus { border-color:var(--accent); outline:none; }
+  
+  .prompt-section { margin-bottom:24px; }
+  .prompt-section h3 { margin:0 0 12px; color:var(--accent); font-size:16px; }
+  .add-custom { margin-top:12px; padding:8px 16px; background:var(--accent); color:#041427; border:none; border-radius:6px; cursor:pointer; font-weight:500; }
+  .add-custom:hover { opacity:0.9; }
+
   /* Mobile */
   @media (max-width: 768px) {
     body { flex-direction:column; }
@@ -53,6 +75,7 @@
     .btn { flex:1; font-size:14px; padding:8px; text-align:center; }
     audio { position:sticky; top:0; z-index:10; background:#13161d; }
     .timeline { padding:8px; }
+    .modal-content { width:95%; padding:16px; }
   }
 </style>
 </head>
@@ -61,11 +84,63 @@
     <h1>🎧 AI Radio</h1>
     <audio id="livePlayer" controls preload="none"></audio>
     <button class="btn warn" id="skipBtn">⏭️ Skip Track</button>
+    <button class="btn" id="djSettingsBtn">🤖 DJ Settings</button>
   </aside>
 
   <div class="main">
     <header><div class="title">📜 Live Timeline</div></header>
     <div id="timeline" class="timeline"></div>
+  </div>
+
+  <!-- DJ Settings Modal -->
+  <div id="djSettingsModal" class="modal">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="modal-title">🤖 DJ Settings</h2>
+        <button class="close-btn" onclick="closeDJSettings()">&times;</button>
+      </div>
+
+      <div class="prompt-section">
+        <h3>Intro Prompts (ChatGPT/Ollama)</h3>
+        <div class="form-group">
+          <label class="form-label">Active Intro Style:</label>
+          <select id="activeIntroSelect" class="form-select" onchange="updateActivePrompts()">
+            <!-- Options loaded dynamically -->
+          </select>
+        </div>
+      </div>
+
+      <div class="prompt-section">
+        <h3>Outro Prompts (ChatGPT/Ollama)</h3>
+        <div class="form-group">
+          <label class="form-label">Active Outro Style:</label>
+          <select id="activeOutroSelect" class="form-select" onchange="updateActivePrompts()">
+            <!-- Options loaded dynamically -->
+          </select>
+        </div>
+      </div>
+
+      <div class="prompt-section">
+        <h3>Add Custom Prompt</h3>
+        <div class="form-group">
+          <label class="form-label">Prompt Name:</label>
+          <input type="text" id="customPromptName" class="form-input" placeholder="e.g., 'My Custom Style'">
+        </div>
+        <div class="form-group">
+          <label class="form-label">Type:</label>
+          <select id="customPromptType" class="form-select">
+            <option value="intro">Intro</option>
+            <option value="outro">Outro</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label class="form-label">Prompt Text:</label>
+          <textarea id="customPromptText" class="form-textarea" 
+                    placeholder="e.g., 'You are a chill late-night DJ. In 1-2 sentences, introduce {title} by {artist} with a smooth, relaxed vibe.'"></textarea>
+        </div>
+        <button class="add-custom" onclick="addCustomPrompt()">Add Custom Prompt</button>
+      </div>
+    </div>
   </div>
 
   <!-- Loading overlay -->
@@ -507,6 +582,112 @@ async function saveTtsProvider() {
 
 document.addEventListener('change', (ev)=>{
   if (ev.target && ev.target.id === 'ttsProvider') saveTtsProvider();
+});
+
+// DJ Settings functionality
+let djPromptsData = {};
+
+async function openDJSettings() {
+  try {
+    djPromptsData = await j('/api/dj-prompts');
+    populatePromptSelects();
+    $('djSettingsModal').style.display = 'flex';
+  } catch (error) {
+    console.error('Failed to load DJ prompts:', error);
+    alert('Failed to load DJ settings');
+  }
+}
+
+function closeDJSettings() {
+  $('djSettingsModal').style.display = 'none';
+}
+
+function populatePromptSelects() {
+  const introSelect = $('activeIntroSelect');
+  const outroSelect = $('activeOutroSelect');
+  
+  // Clear existing options
+  introSelect.innerHTML = '';
+  outroSelect.innerHTML = '';
+  
+  // Populate intro prompts
+  djPromptsData.intro_prompts.forEach(prompt => {
+    const option = document.createElement('option');
+    option.value = prompt.name;
+    option.textContent = prompt.name;
+    option.selected = prompt.name === djPromptsData.active_intro_prompt;
+    introSelect.appendChild(option);
+  });
+  
+  // Populate outro prompts
+  djPromptsData.outro_prompts.forEach(prompt => {
+    const option = document.createElement('option');
+    option.value = prompt.name;
+    option.textContent = prompt.name;
+    option.selected = prompt.name === djPromptsData.active_outro_prompt;
+    outroSelect.appendChild(option);
+  });
+}
+
+async function updateActivePrompts() {
+  try {
+    const activeIntro = $('activeIntroSelect').value;
+    const activeOutro = $('activeOutroSelect').value;
+    
+    await j('/api/dj-prompts/active', {
+      method: 'POST',
+      body: JSON.stringify({
+        active_intro_prompt: activeIntro,
+        active_outro_prompt: activeOutro
+      })
+    });
+    
+    console.log('Active prompts updated');
+  } catch (error) {
+    console.error('Failed to update active prompts:', error);
+    alert('Failed to update active prompts');
+  }
+}
+
+async function addCustomPrompt() {
+  const name = $('customPromptName').value.trim();
+  const type = $('customPromptType').value;
+  const prompt = $('customPromptText').value.trim();
+  
+  if (!name || !prompt) {
+    alert('Please fill in both name and prompt text');
+    return;
+  }
+  
+  try {
+    await j('/api/dj-prompts/custom', {
+      method: 'POST',
+      body: JSON.stringify({ name, type, prompt })
+    });
+    
+    // Clear form
+    $('customPromptName').value = '';
+    $('customPromptText').value = '';
+    
+    // Reload prompts
+    djPromptsData = await j('/api/dj-prompts');
+    populatePromptSelects();
+    
+    alert(`Custom ${type} prompt "${name}" added successfully!`);
+  } catch (error) {
+    console.error('Failed to add custom prompt:', error);
+    alert('Failed to add custom prompt: ' + error.message);
+  }
+}
+
+// Event listeners
+$('djSettingsBtn').addEventListener('click', openDJSettings);
+
+// Close modal when clicking outside
+$('djSettingsModal').addEventListener('click', (e) => {
+  if (e.target === $('djSettingsModal')) {
+    closeDJSettings();
+  }
 });
 
 // Ensure it loads with the rest of the dashboard

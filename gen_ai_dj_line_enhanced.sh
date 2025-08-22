@@ -158,10 +158,10 @@ run_openai_tier() {
     local models timeout max_retries rate_delay
     
     if command -v jq >/dev/null 2>&1; then
-        models=($(echo "$CONFIG_DATA" | jq -r ".ai_fallback_config.tier2_openai.models[]" 2>/dev/null || echo "gpt-4o-mini"))
-        timeout=$(echo "$CONFIG_DATA" | jq -r ".ai_fallback_config.tier2_openai.timeout // 15" 2>/dev/null)
-        max_retries=$(echo "$CONFIG_DATA" | jq -r ".ai_fallback_config.tier2_openai.max_retries // 2" 2>/dev/null)
-        rate_delay=$(echo "$CONFIG_DATA" | jq -r ".ai_fallback_config.tier2_openai.rate_limit_delay // 1" 2>/dev/null)
+        models=($(echo "$CONFIG_DATA" | jq -r ".ai_fallback_config.tier1_openai.models[]" 2>/dev/null || echo "gpt-4o-mini"))
+        timeout=$(echo "$CONFIG_DATA" | jq -r ".ai_fallback_config.tier1_openai.timeout // 15" 2>/dev/null)
+        max_retries=$(echo "$CONFIG_DATA" | jq -r ".ai_fallback_config.tier1_openai.max_retries // 2" 2>/dev/null)
+        rate_delay=$(echo "$CONFIG_DATA" | jq -r ".ai_fallback_config.tier1_openai.rate_limit_delay // 1" 2>/dev/null)
     else
         models=("gpt-4o-mini" "gpt-3.5-turbo")
         timeout=15
@@ -300,30 +300,62 @@ main() {
         if [[ -n "$CUSTOM_PROMPT" ]]; then
             PROMPT="$CUSTOM_PROMPT"
         else
-            PROMPT="You are an energetic radio DJ introducing the next song. 
+            # Get intro prompt from config
+            local active_intro_prompt="Default Energetic"
+            local prompt_template=""
+            
+            if command -v jq >/dev/null 2>&1; then
+                active_intro_prompt=$(echo "$CONFIG_DATA" | jq -r ".ai_prompts.active_intro_prompt // \"Default Energetic\"" 2>/dev/null)
+                prompt_template=$(echo "$CONFIG_DATA" | jq -r ".ai_prompts.intro_prompts[] | select(.name == \"$active_intro_prompt\") | .prompt" 2>/dev/null)
+            fi
+            
+            if [[ -n "$prompt_template" ]]; then
+                # Replace placeholders in template
+                PROMPT="${prompt_template//\{title\}/${TITLE:-this track}}"
+                PROMPT="${PROMPT//\{artist\}/${ARTIST:-an unknown artist}}"
+            else
+                # Fallback to default prompt
+                PROMPT="You are an energetic radio DJ introducing the next song. 
 In 1-2 sentences (under 25 words), introduce '${TITLE:-this track}' by ${ARTIST:-an unknown artist}.
 CRITICAL: Use the artist name EXACTLY as written: '${ARTIST:-an unknown artist}'. Copy it character-for-character.
 Do NOT describe the song's genre, style, instruments, or musical elements unless you are 100% certain.
 Use phrases like 'Coming up next', 'Here's', 'Time for', 'Let's hear', etc.
 Keep it brief, energetic, and natural. No emojis or hashtags. NEVER invent details about the music.
 Never mention AI, computers, databases, archives, or digital systems. Speak as a human DJ would."
+            fi
         fi
     else
-        PROMPT="You are a radio DJ. 
+        # Get outro prompt from config
+        local active_outro_prompt="Default Conversational"
+        local prompt_template=""
+        
+        if command -v jq >/dev/null 2>&1; then
+            active_outro_prompt=$(echo "$CONFIG_DATA" | jq -r ".ai_prompts.active_outro_prompt // \"Default Conversational\"" 2>/dev/null)
+            prompt_template=$(echo "$CONFIG_DATA" | jq -r ".ai_prompts.outro_prompts[] | select(.name == \"$active_outro_prompt\") | .prompt" 2>/dev/null)
+        fi
+        
+        if [[ -n "$prompt_template" ]]; then
+            # Replace placeholders in template
+            PROMPT="${prompt_template//\{title\}/${TITLE:-this track}}"
+            PROMPT="${PROMPT//\{artist\}/${ARTIST:-an unknown artist}}"
+        else
+            # Fallback to default prompt
+            PROMPT="You are a radio DJ. 
 In 1–2 sentences, speak about the song '${TITLE:-this track}' by ${ARTIST:-an unknown artist} that just played.
 CRITICAL: Use the artist name EXACTLY as written: '${ARTIST:-an unknown artist}'. Copy it character-for-character.
 Do NOT describe the song's genre, style, instruments, or musical elements unless you are 100% certain. 
 Keep it simple and conversational. No emojis or hashtags. NEVER invent details about the music.
 Never mention AI, computers, databases, archives, digital systems, or phrases like 'as far as I know'. Speak as a human DJ would."
+        fi
     fi
     
-    # Tier 1: Primary Ollama models
-    if run_ollama_tier "tier1_ollama"; then
+    # Tier 1: OpenAI/ChatGPT (Primary)
+    if run_openai_tier; then
         return 0
     fi
     
-    # Tier 2: OpenAI/ChatGPT
-    if run_openai_tier; then
+    # Tier 2: Primary Ollama models
+    if run_ollama_tier "tier2_ollama"; then
         return 0
     fi
     
