@@ -1,0 +1,297 @@
+#!/usr/bin/env python3
+"""
+Efficient DJ Intro Generation System
+
+This script generates DJ intros for the NEXT track while the current track is playing,
+using efficient batched telnet queries to avoid connection spam.
+"""
+
+import os
+import sys
+import json
+import time
+import socket
+import subprocess
+import threading
+import re
+from typing import Dict, List, Optional, Tuple
+
+# Configuration
+LS_HOST = "127.0.0.1"
+LS_PORT = 1234
+TTS_DIR = "/opt/ai-radio/tts"
+INTRO_CACHE_FILE = "/opt/ai-radio/intro_cache.json"
+LOCK_FILE = "/tmp/dj_intro_generation.lock"
+
+class EfficientTelnetManager:
+    """Manages efficient telnet connections with batched queries"""
+    
+    def __init__(self, host: str = LS_HOST, port: int = LS_PORT, timeout: float = 3.0):
+        self.host = host
+        self.port = port
+        self.timeout = timeout
+    
+    def batch_query(self, commands: List[str]) -> Dict[str, str]:
+        """Execute multiple commands in one telnet session"""
+        results = {}
+        
+        try:
+            with socket.create_connection((self.host, self.port), timeout=self.timeout) as s:
+                s.settimeout(self.timeout)
+                
+                # Consume any banner
+                try:
+                    s.recv(1024)
+                except:
+                    pass
+                
+                for cmd in commands:
+                    # Send command
+                    s.sendall(f"{cmd}\n".encode("utf-8"))
+                    
+                    # Read response - simple approach, just collect everything until timeout
+                    response = b""
+                    start_time = time.time()
+                    
+                    while time.time() - start_time < 2.0:  # 2 second timeout per command
+                        try:
+                            chunk = s.recv(4096)
+                            if not chunk:
+                                break
+                            response += chunk
+                            
+                            # Check if we got END marker
+                            if b"END" in response:
+                                break
+                                
+                        except socket.timeout:
+                            break
+                    
+                    # Parse the response - data comes directly, ends with END
+                    response_text = response.decode('utf-8', errors='ignore')
+                    lines = response_text.replace('\r', '').split('\n')
+                    
+                    # Collect all lines before "END"
+                    collected_lines = []
+                    
+                    for line in lines:
+                        line = line.strip()
+                        if line == "END":
+                            break
+                        elif line:  # Skip empty lines
+                            collected_lines.append(line)
+                    
+                    results[cmd] = '\n'.join(collected_lines)
+                
+                # Clean disconnect
+                s.sendall(b"quit\n")
+                
+        except Exception as e:
+            print(f"ERROR: Telnet batch query failed: {e}", file=sys.stderr)
+            
+        return results
+
+class IntroCache:
+    """Manages intro generation cache to avoid duplicate work"""
+    
+    def __init__(self, cache_file: str = INTRO_CACHE_FILE):
+        self.cache_file = cache_file
+        self.cache = self._load_cache()
+    
+    def _load_cache(self) -> Dict[str, Dict]:
+        try:
+            if os.path.exists(self.cache_file):
+                with open(self.cache_file, 'r') as f:
+                    return json.load(f)
+        except Exception:
+            pass
+        return {}
+    
+    def _save_cache(self):
+        try:
+            os.makedirs(os.path.dirname(self.cache_file), exist_ok=True)
+            with open(self.cache_file, 'w') as f:
+                json.dump(self.cache, f, indent=2)
+        except Exception as e:
+            print(f"WARNING: Could not save cache: {e}", file=sys.stderr)
+    
+    def get_intro_path(self, artist: str, title: str) -> Optional[str]:
+        """Get cached intro file path if it exists and is recent"""
+        key = f"{artist}|{title}".lower()
+        
+        if key in self.cache:
+            entry = self.cache[key]
+            file_path = entry.get('file_path')
+            
+            # Check if file exists and is less than 1 hour old
+            if (file_path and os.path.exists(file_path) and 
+                time.time() - entry.get('timestamp', 0) < 3600):
+                return file_path
+        
+        return None
+    
+    def cache_intro(self, artist: str, title: str, file_path: str):
+        """Cache a generated intro file"""
+        key = f"{artist}|{title}".lower()
+        self.cache[key] = {
+            'artist': artist,
+            'title': title,
+            'file_path': file_path,
+            'timestamp': time.time()
+        }
+        self._save_cache()
+
+def get_queue_metadata() -> Tuple[Optional[Dict], Optional[Dict]]:
+    """Get current and next track metadata efficiently"""
+    telnet_mgr = EfficientTelnetManager()
+    
+    # First, get all request IDs
+    results = telnet_mgr.batch_query(["request.all"])
+    all_rids_text = results.get("request.all", "")
+    
+    print(f"DEBUG: request.all response: '{all_rids_text}'", file=sys.stderr)
+    
+    # Parse RIDs - lower RID is currently playing
+    import re
+    rids = [int(x) for x in re.findall(r'\b\d+\b', all_rids_text)]
+    
+    print(f"DEBUG: Found RIDs: {rids}", file=sys.stderr)
+    
+    if len(rids) < 2:
+        print(f"DEBUG: Not enough RIDs ({len(rids)}), need at least 2", file=sys.stderr)
+        return None, None
+    
+    rids.sort()  # Lower RID = current, next RID = next track
+    current_rid, next_rid = rids[0], rids[1]
+    
+    # Batch query metadata for both tracks
+    commands = [f"request.metadata {current_rid}", f"request.metadata {next_rid}"]
+    metadata_results = telnet_mgr.batch_query(commands)
+    
+    def parse_metadata(metadata_text: str) -> Dict[str, str]:
+        """Parse key="value" metadata lines"""
+        kv_re = re.compile(r'([a-zA-Z0-9_]+)="([^"]*)"')
+        metadata = {}
+        
+        for line in metadata_text.split('\n'):
+            match = kv_re.match(line.strip())
+            if match:
+                key, value = match.groups()
+                try:
+                    # Unescape unicode sequences
+                    value = bytes(value, "utf-8").decode("unicode_escape")
+                except:
+                    pass
+                metadata[key] = value
+        
+        return metadata
+    
+    current_meta = parse_metadata(metadata_results.get(commands[0], ""))
+    next_meta = parse_metadata(metadata_results.get(commands[1], ""))
+    
+    return (current_meta if current_meta.get('title') else None,
+            next_meta if next_meta.get('title') else None)
+
+def generate_intro_for_track(artist: str, title: str, cache: IntroCache) -> Optional[str]:
+    """Generate TTS intro for a track, using cache if available"""
+    
+    # Check cache first
+    cached_path = cache.get_intro_path(artist, title)
+    if cached_path:
+        print(f"Using cached intro for '{title}' by {artist}: {cached_path}")
+        return cached_path
+    
+    # Generate new intro
+    print(f"Generating new intro for '{title}' by {artist}")
+    
+    try:
+        # Use existing XTTS generation script
+        result = subprocess.run([
+            "/opt/ai-radio/dj_enqueue_xtts.sh",
+            artist, title, "en", os.getenv("XTTS_SPEAKER", "Damien Black")
+        ], capture_output=True, text=True, timeout=30)
+        
+        if result.returncode == 0 and result.stdout.strip():
+            output_file = result.stdout.strip()
+            if os.path.exists(output_file):
+                cache.cache_intro(artist, title, output_file)
+                print(f"Successfully generated intro: {output_file}")
+                return output_file
+        
+        print(f"ERROR: Intro generation failed: {result.stderr}")
+        
+    except Exception as e:
+        print(f"ERROR: Exception during intro generation: {e}")
+    
+    return None
+
+def enqueue_intro_to_liquidsoap(intro_file: str) -> bool:
+    """Enqueue generated intro to Liquidsoap TTS queue"""
+    if not os.path.exists(intro_file):
+        return False
+    
+    try:
+        telnet_mgr = EfficientTelnetManager()
+        command = f'tts.push file://{intro_file}'
+        results = telnet_mgr.batch_query([command])
+        
+        print(f"Enqueued intro to Liquidsoap: {intro_file}")
+        return True
+        
+    except Exception as e:
+        print(f"ERROR: Failed to enqueue intro: {e}")
+        return False
+
+def main():
+    """Main intro generation logic"""
+    
+    # Simple file lock to prevent multiple instances
+    if os.path.exists(LOCK_FILE):
+        print("Another intro generation process is running, exiting.")
+        sys.exit(0)
+    
+    try:
+        # Create lock
+        with open(LOCK_FILE, 'w') as f:
+            f.write(str(os.getpid()))
+        
+        cache = IntroCache()
+        
+        # Get current and next track metadata
+        current_track, next_track = get_queue_metadata()
+        
+        if not next_track:
+            print("No next track found, nothing to generate")
+            return
+        
+        next_artist = next_track.get('artist', 'Unknown Artist')
+        next_title = next_track.get('title', 'Unknown Title')
+        
+        if not next_title or next_title == 'Unknown Title':
+            print("Next track has no title, skipping intro generation")
+            return
+        
+        print(f"Current track: {current_track.get('title', 'Unknown')} by {current_track.get('artist', 'Unknown')}")
+        print(f"Next track: {next_title} by {next_artist}")
+        
+        # Generate intro for next track
+        intro_file = generate_intro_for_track(next_artist, next_title, cache)
+        
+        if intro_file:
+            # Enqueue to Liquidsoap
+            if enqueue_intro_to_liquidsoap(intro_file):
+                print(f"Successfully prepared intro for '{next_title}' by {next_artist}")
+            else:
+                print("Failed to enqueue intro to Liquidsoap")
+        else:
+            print("Failed to generate intro")
+    
+    finally:
+        # Remove lock
+        try:
+            os.remove(LOCK_FILE)
+        except:
+            pass
+
+if __name__ == "__main__":
+    main()

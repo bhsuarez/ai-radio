@@ -51,24 +51,25 @@ def announce_song(m)
   ignore(process.run(cmd))
 end
 
-# Generate XTTS intro for UPCOMING track (this is the key fix)
-def generate_intro_for_next(m)
-  artist = meta_get(m, "artist", "Unknown Artist")
-  title  = meta_get(m, "title",  "Unknown Title")
-  
-  # Generate intro for THIS track (which will be the "next" track when it starts)
-  log("XTTS: Generating intro for upcoming track: " ^ title ^ " by " ^ artist)
-  
-  # Use XTTS script directly
-  cmd = "bash -lc \"(/opt/ai-radio/dj_enqueue_xtts.sh \\\"" ^ artist ^ "\\\" \\\"" ^ title ^ "\\\" " ^
-        ">>/var/tmp/xtts_enqueue.log 2>&1) &\""
+# Smart DJ intro generation - runs DURING current track, not on track change
+# This prevents telnet spam by using efficient batched queries
+def smart_intro_generation()
+  # Use Python script for efficient intro generation
+  cmd = "bash -lc \"(/opt/ai-radio/efficient_dj_intro.py > /tmp/intro_gen.log 2>&1) &\""
   ignore(process.run(cmd))
 end
 
-# Schedule intro generation when track is about to start
-def on_track_ready(m)
-  # This fires when a track is prepared/ready but before it actually plays
-  generate_intro_for_next(m)
+# Timer-based intro generation: generate intro 30 seconds after track starts
+# This gives enough time for track to start playing and queue to stabilize
+def on_track_started(m)
+  # This fires when a track actually starts playing
+  artist = meta_get(m, "artist", "Unknown Artist")
+  title  = meta_get(m, "title",  "Unknown Title")
+  
+  log("Track started: " ^ title ^ " by " ^ artist ^ " - scheduling intro generation")
+  
+  # Schedule intro generation in 30 seconds (non-blocking)
+  thread.run(delay=30., fun() -> smart_intro_generation())
 end
 
 # Ensure sane metadata defaults
@@ -94,8 +95,8 @@ end
 # Normalize metadata
 music = metadata.map(update_metadata, all_music)
 
-# Generate intros when tracks are selected/ready
-music = source.on_metadata(music, on_track_ready)
+# NEW EFFICIENT SYSTEM: Generate intros DURING track playback (not on track change)
+music = source.on_metadata(music, on_track_started)
 
 # Smooth crossfades on music
 music = crossfade(music)
