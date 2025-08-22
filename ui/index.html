@@ -189,6 +189,13 @@ async function loadTimeline(){
     if (window._timelineLoading) return; 
     window._timelineLoading = true;
     showLoading();
+    
+    // Safety timeout to prevent loading spinner from getting stuck
+    const safetyTimeout = setTimeout(() => {
+      console.warn('Timeline loading timed out, forcing cleanup');
+      window._timelineLoading = false;
+      hideLoading();
+    }, 15000); // 15 second timeout
 
     const [nowR, nextR, ttsR, histR] = await Promise.allSettled([
       j('/api/now'), j('/api/next'), j('/api/tts_queue'), j('/api/history')
@@ -376,6 +383,7 @@ async function loadTimeline(){
     console.error(e);
     $("timeline").innerHTML = '<div class="event-meta" style="text-align:center; padding:20px"><strong>Unable to load timeline</strong><br>Retrying in a few seconds...</div>';
   } finally {
+    clearTimeout(safetyTimeout);
     window._timelineLoading = false;
     hideLoading();
     
@@ -405,7 +413,7 @@ $('skipBtn').onclick = async () => {
 // Removed: DJ generation and cleanup button handlers
 
 loadTimeline();
-setInterval(loadTimeline, 60000); // Increased to 60s to reduce load
+setInterval(loadTimeline, 90000); // Reduced frequency to 90s to prevent loading issues
 
 // Real-time progress updates
 let progressInterval = null;
@@ -425,6 +433,8 @@ function startProgressUpdates() {
     if (remaining <= 0) {
       // Track finished, reload timeline to move to "Just Played"
       chip.textContent = 'Track ending...';
+      // Clear the interval to prevent multiple reloads
+      if (progressInterval) clearInterval(progressInterval);
       setTimeout(() => loadTimeline(), 2000);
       return;
     }
