@@ -854,6 +854,9 @@ def api_event():
             "album": request.args.get("album", "")[:512],
             "filename": request.args.get("filename", ""),
         }
+        
+        # Check for pending intro for this track
+        check_and_play_pending_intro(row)
     elif ev_type == "dj":
         row = {
             "type": "dj",
@@ -868,6 +871,24 @@ def api_event():
     hist.append(row)
     _write_history(hist)
     return jsonify({"ok": True})
+
+def check_and_play_pending_intro(track_info: dict):
+    """Check if there's a pending intro for this track and play it"""
+    try:
+        artist = track_info.get('artist', '').strip()
+        title = track_info.get('title', '').strip()
+        
+        if not artist or not title:
+            return
+            
+        # Use the check_pending_intro.py script
+        subprocess.run([
+            "python3", "/opt/ai-radio/check_pending_intro.py", 
+            artist, title
+        ], capture_output=True, text=True, timeout=10)
+        
+    except Exception as e:
+        print(f"Error checking pending intros: {e}")
 
 def _build_art_url(path: str) -> str:
     """Return a URL that always resolves to cover art (or your default)."""

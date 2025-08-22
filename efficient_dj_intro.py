@@ -307,6 +307,77 @@ def enqueue_intro_to_liquidsoap(intro_file: str) -> bool:
         print(f"ERROR: Failed to enqueue intro: {e}")
         return False
 
+def store_intro_mapping(artist: str, title: str, intro_file: str):
+    """Store mapping between track and intro file for later playback"""
+    mapping_file = "/opt/ai-radio/intro_mapping.json"
+    
+    try:
+        # Load existing mappings
+        mappings = {}
+        if os.path.exists(mapping_file):
+            with open(mapping_file, 'r') as f:
+                mappings = json.load(f)
+        
+        # Store new mapping
+        key = f"{artist}|{title}".lower()
+        mappings[key] = {
+            "artist": artist,
+            "title": title,
+            "intro_file": intro_file,
+            "created_at": time.time(),
+            "played": False
+        }
+        
+        # Save mappings
+        with open(mapping_file, 'w') as f:
+            json.dump(mappings, f, indent=2)
+            
+        print(f"Stored intro mapping: {artist} - {title} -> {intro_file}")
+        
+    except Exception as e:
+        print(f"ERROR: Failed to store intro mapping: {e}")
+
+def check_and_play_pending_intro(artist: str, title: str) -> bool:
+    """Check if there's a pending intro for this track and play it"""
+    mapping_file = "/opt/ai-radio/intro_mapping.json"
+    
+    try:
+        if not os.path.exists(mapping_file):
+            return False
+            
+        with open(mapping_file, 'r') as f:
+            mappings = json.load(f)
+        
+        key = f"{artist}|{title}".lower()
+        
+        if key in mappings and not mappings[key].get("played", False):
+            intro_info = mappings[key]
+            intro_file = intro_info["intro_file"]
+            
+            # Check if intro file still exists
+            if os.path.exists(intro_file):
+                # Enqueue the intro
+                if enqueue_intro_to_liquidsoap(intro_file):
+                    # Mark as played
+                    mappings[key]["played"] = True
+                    mappings[key]["played_at"] = time.time()
+                    
+                    # Save updated mappings
+                    with open(mapping_file, 'w') as f:
+                        json.dump(mappings, f, indent=2)
+                    
+                    print(f"Successfully played pending intro for '{title}' by {artist}")
+                    return True
+                else:
+                    print(f"Failed to enqueue pending intro for '{title}' by {artist}")
+            else:
+                print(f"Intro file missing for '{title}' by {artist}: {intro_file}")
+        
+    except Exception as e:
+        print(f"ERROR: Failed to check pending intro: {e}")
+    
+    return False
+
 def main():
     """Main intro generation logic"""
     
@@ -343,11 +414,9 @@ def main():
         intro_file = generate_intro_for_track(next_artist, next_title, cache)
         
         if intro_file:
-            # Enqueue to Liquidsoap
-            if enqueue_intro_to_liquidsoap(intro_file):
-                print(f"Successfully prepared intro for '{next_title}' by {next_artist}")
-            else:
-                print("Failed to enqueue intro to Liquidsoap")
+            # Store intro mapping instead of immediately enqueuing
+            store_intro_mapping(next_artist, next_title, intro_file)
+            print(f"Successfully prepared intro for '{next_title}' by {next_artist} - stored for later playback")
         else:
             print("Failed to generate intro")
     
