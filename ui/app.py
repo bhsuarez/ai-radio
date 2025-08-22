@@ -572,8 +572,8 @@ def _get_now_playing() -> dict | None:
                         # Try to get filename for duration calculation
                         filename = d.get("filename") or ""
                         
-                        # For DJ intros, try to find the actual file from request metadata  
-                        if not filename and d.get("title") == "DJ Intro" and d.get("artist") == "AI DJ":
+                        # If no filename in metadata, get it from request metadata
+                        if not filename:
                             try:
                                 # Find the current RID and get its metadata with filename
                                 rid_lines = _ls_cmd("request.all", timeout=1.0)
@@ -585,10 +585,12 @@ def _get_now_playing() -> dict | None:
                                         current_rid = rids[0]  # First RID is currently playing
                                         metadata = _metadata_for_rid(current_rid)
                                         filename = metadata.get("filename") or ""
+                                        # Update d with the filename for the result
+                                        d["filename"] = filename
                             except Exception:
                                 pass
                         
-                        if filename.endswith('.mp3') and os.path.isfile(filename):
+                        if filename and filename.endswith('.mp3') and os.path.isfile(filename):
                             try:
                                 import mutagen
                                 audio = mutagen.File(filename)

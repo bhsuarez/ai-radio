@@ -129,6 +129,13 @@ function getCover(ev) {
   if (ev.filename) {
     const u = new URL('/api/cover', location.origin); u.searchParams.set('file', ev.filename); return u.toString();
   }
+  // Fallback to online cover API using artist/album
+  if (ev.artist && ev.album) {
+    const u = new URL('/api/cover/online', location.origin);
+    u.searchParams.set('artist', ev.artist);
+    u.searchParams.set('album', ev.album);
+    return u.toString();
+  }
   return DEFAULT_ART;
 }
 
@@ -285,8 +292,9 @@ async function loadTimeline(){
         const sec = section('🎙️ ON AIR');
         const card=h('div','event dj');
         const transcript = live.comment || live.text || 'DJ Commentary';
-        const progressText = (live.duration_ms && live.elapsed_ms) 
-          ? `${Math.floor(live.elapsed_ms/1000)}s / ${Math.floor(live.duration_ms/1000)}s`
+        const remaining_ms = (live.duration_ms && live.elapsed_ms) ? (live.duration_ms - live.elapsed_ms) : null;
+        const progressText = remaining_ms 
+          ? `${Math.floor(remaining_ms/1000)}s remaining`
           : '—';
         card.innerHTML = `
           <div class="event-details" style="width:100%">
@@ -309,8 +317,9 @@ async function loadTimeline(){
         // Show music track as "LIVE NOW"  
         const sec = section('🔴 LIVE NOW');
         const card=h('div','event song');
-        const progressText = (live.duration_ms && live.elapsed_ms) 
-          ? `${Math.floor(live.elapsed_ms/1000)}s / ${Math.floor(live.duration_ms/1000)}s`
+        const remaining_ms = (live.duration_ms && live.elapsed_ms) ? (live.duration_ms - live.elapsed_ms) : null;
+        const progressText = remaining_ms 
+          ? `${Math.floor(remaining_ms/1000)}s remaining`
           : '—';
         card.innerHTML = `
           <img alt="Album artwork" loading="eager" decoding="sync">
@@ -396,7 +405,7 @@ $('skipBtn').onclick = async () => {
 // Removed: DJ generation and cleanup button handlers
 
 loadTimeline();
-setInterval(loadTimeline, 15000);
+setInterval(loadTimeline, 60000); // Increased to 60s to reduce load
 
 // Real-time progress updates
 let progressInterval = null;
@@ -415,13 +424,35 @@ function startProgressUpdates() {
     
     if (remaining <= 0) {
       // Track finished, reload timeline to move to "Just Played"
-      loadTimeline();
+      chip.textContent = 'Track ending...';
+      setTimeout(() => loadTimeline(), 2000);
       return;
     }
     
-    const elapsedSec = Math.floor(elapsed / 1000);
-    const totalSec = Math.floor(duration_ms / 1000);
-    chip.textContent = `${elapsedSec}s / ${totalSec}s`;
+    const remainingSec = Math.floor(remaining / 1000);
+    const minutes = Math.floor(remainingSec / 60);
+    const seconds = remainingSec % 60;
+    
+    // Add visual indication when track is ending soon
+    if (remainingSec <= 10) {
+      chip.style.backgroundColor = 'var(--warn)';
+      chip.style.color = '#271400';
+      chip.style.fontWeight = 'bold';
+    } else if (remainingSec <= 30) {
+      chip.style.backgroundColor = 'var(--err)';
+      chip.style.color = 'white';
+      chip.style.fontWeight = 'bold';
+    } else {
+      chip.style.backgroundColor = '';
+      chip.style.color = '';
+      chip.style.fontWeight = '';
+    }
+    
+    if (minutes > 0) {
+      chip.textContent = `${minutes}m ${seconds}s remaining`;
+    } else {
+      chip.textContent = `${seconds}s remaining`;
+    }
   }, 1000);
 }
 </script>
