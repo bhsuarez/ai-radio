@@ -33,6 +33,7 @@ elif [[ "$MODE" == "outro" ]]; then
 else
     # Custom mode - use provided text or fallback
     AI_TEXT="${CUSTOM_TEXT:-Up next: ${TITLE} by ${ARTIST}.}"
+    echo "DEBUG: Using custom text from environment: ${AI_TEXT}" >&2
 fi
 
 # Clean up the AI text (remove any control characters, extra whitespace)

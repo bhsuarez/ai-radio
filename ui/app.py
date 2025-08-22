@@ -78,6 +78,10 @@ UPCOMING = []
 MAX_HISTORY = 300
 NEXT_CACHE = Path("/opt/ai-radio/next.json")
 
+# Cover art cache - maps (artist, album) -> cover_url or None
+_cover_cache = {}
+_cover_cache_lock = threading.Lock()
+
 HISTORY = deque(maxlen=400)
 _last_now_key = None
 _last_history_key = None 
@@ -570,15 +574,58 @@ def _get_now_playing() -> dict | None:
                 block.append(ln)
         d = _parse_kv_block("\n".join(block))
         if d:
+            # Try to get timing information from Liquidsoap
+            duration_ms = None
+            elapsed_ms = None
+            
+            try:
+                # Get remaining time for the current output
+                remaining_lines = _ls_cmd("output.icecast.remaining", timeout=1.0)
+                if remaining_lines and len(remaining_lines) > 0:
+                    remaining_str = remaining_lines[0].strip()
+                    if remaining_str.replace('.', '').replace('-', '').isdigit():
+                        remaining_seconds = float(remaining_str)
+                        # Try to get filename for duration calculation
+                        filename = d.get("filename") or ""
+                        
+                        # For DJ intros, try to find the actual file from request metadata  
+                        if not filename and d.get("title") == "DJ Intro" and d.get("artist") == "AI DJ":
+                            try:
+                                # Find the current RID and get its metadata with filename
+                                rid_lines = _ls_cmd("request.all", timeout=1.0)
+                                if rid_lines:
+                                    rids = []
+                                    for ln in rid_lines:
+                                        rids.extend(x for x in ln.strip().split() if x.isdigit())
+                                    if rids:
+                                        current_rid = rids[0]  # First RID is currently playing
+                                        metadata = _metadata_for_rid(current_rid)
+                                        filename = metadata.get("filename") or ""
+                            except Exception:
+                                pass
+                        
+                        if filename.endswith('.mp3') and os.path.isfile(filename):
+                            try:
+                                import mutagen
+                                audio = mutagen.File(filename)
+                                if audio and hasattr(audio, 'info') and hasattr(audio.info, 'length'):
+                                    total_seconds = audio.info.length
+                                    duration_ms = int(total_seconds * 1000)
+                                    elapsed_ms = int((total_seconds - remaining_seconds) * 1000)
+                            except Exception:
+                                pass
+            except Exception:
+                pass
+            
             result = {
                 "title": d.get("title") or "Unknown",
-                "artist": d.get("artist") or "Unknown",
+                "artist": d.get("artist") or "Unknown", 
                 "album": d.get("album") or "",
                 "filename": d.get("filename") or "",
                 "comment": d.get("comment") or "",
                 "time": int(time_mod.time() * 1000),
-                "duration_ms": None,
-                "elapsed_ms": None,
+                "duration_ms": duration_ms,
+                "elapsed_ms": elapsed_ms,
             }
             _now_playing_cache["data"] = result
             _now_playing_cache["timestamp"] = current_time
@@ -892,6 +939,17 @@ def api_event():
         return jsonify({"ok": False, "error": "unknown type"}), 400
 
     hist = _read_history()
+    
+    # Simple deduplication: don't add if identical entry exists within last 30 seconds
+    if ev_type == "song":
+        track_key = f"{row['artist']}|{row['title']}"
+        for recent in reversed(hist[-10:]):  # Check last 10 entries
+            if (recent.get("type") == "song" and
+                recent.get("time", 0) > now_ms - 30000 and  # within 30 seconds
+                f"{recent.get('artist', '')}|{recent.get('title', '')}" == track_key):
+                print(f"DEBUG: Skipping duplicate song entry: {track_key}")
+                return jsonify({"ok": True, "skipped": "duplicate"})
+    
     hist.append(row)
     _write_history(hist)
     return jsonify({"ok": True})
@@ -906,6 +964,32 @@ def _build_art_url(path: str) -> str:
 @app.route("/")
 def index():
     return send_from_directory(BASE_DIR, "index.html")
+
+def _get_cached_cover_url(artist, album, filename):
+    """Get cover URL with caching and fallback to online lookup."""
+    cache_key = (artist.lower().strip(), album.lower().strip()) if artist and album else None
+    
+    # Try cache first
+    if cache_key:
+        with _cover_cache_lock:
+            if cache_key in _cover_cache:
+                cached = _cover_cache[cache_key]
+                if cached:
+                    return cached
+                elif cached is None:
+                    # Previously failed, use file-based cover
+                    return f"/api/cover?file={quote(filename)}" if filename else None
+    
+    # Return file-based cover URL for now, online lookup happens async
+    if filename:
+        return f"/api/cover?file={quote(filename)}"
+    elif cache_key:
+        # Mark for online lookup and return placeholder
+        with _cover_cache_lock:
+            _cover_cache[cache_key] = f"/api/cover/online?artist={quote(artist)}&album={quote(album)}"
+        return _cover_cache[cache_key]
+    
+    return None
 
 def _normalize_history_item(ev):
     """Map history file rows into what the UI expects."""
@@ -926,14 +1010,18 @@ def _normalize_history_item(ev):
 
     # song
     fn = ev.get("filename") or ev.get("file") or ""
-    art_url = f"/api/cover?file={quote(fn)}" if fn else ev.get("artwork_url")
+    artist = ev.get("artist") or ""
+    album = ev.get("album") or ""
+    
+    # Use optimized cover URL lookup
+    art_url = _get_cached_cover_url(artist, album, fn)
 
     return {
         "type": "song",
         "time": ts,
         "title": ev.get("title") or "",
-        "artist": ev.get("artist") or "",
-        "album": ev.get("album") or "",
+        "artist": artist,
+        "album": album,
         "filename": fn,
         "artwork_url": art_url,
     }
@@ -968,45 +1056,40 @@ def static_file(fname):
     return send_from_directory("/opt/ai-radio/static", fname, conditional=True)
 
 def _fix_dj_transcription(entry):
-    """Fix DJ entries that have file paths instead of transcriptions."""
+    """Fix DJ entries that have file paths instead of transcriptions (optimized)."""
     if entry.get("type") != "dj":
         return entry
     
     text = entry.get("text", "")
-    entry_copy = None
     
-    # Check if text looks like a file path
+    # Quick path for already-correct entries
+    if text and not text.startswith("/opt/ai-radio/tts/"):
+        return entry
+    
+    entry_copy = entry.copy()
+    
+    # Check if text looks like a file path and needs transcript loading
     if text.startswith("/opt/ai-radio/tts/") and text.endswith(".mp3"):
-        # Try to read the transcript file
         txt_file = text.replace('.mp3', '.txt')
-        if os.path.isfile(txt_file):
-            try:
+        try:
+            # Simple file check and read
+            if os.path.isfile(txt_file):
                 with open(txt_file, 'r', encoding='utf-8') as f:
                     actual_text = f.read().strip()
                 if actual_text and not actual_text.startswith("/opt/ai-radio/tts/"):
-                    entry_copy = entry.copy()  # Don't modify original
                     entry_copy["text"] = actual_text
-            except Exception as e:
-                print(f"DEBUG: Could not read transcript file {txt_file}: {e}")
-        
-        # If we still don't have good text, provide a better fallback
-        if entry_copy is None:
-            entry_copy = entry.copy()
+                else:
+                    entry_copy["text"] = "AI DJ Commentary"
+            else:
+                entry_copy["text"] = "AI DJ Commentary"
+        except Exception:
             entry_copy["text"] = "AI DJ Commentary"
     
-    # Fix audio_url path if it exists
-    if entry_copy is None:
-        entry_copy = entry.copy()
-    
+    # Fix audio URL format
     audio_url = entry_copy.get("audio_url", "")
-    if audio_url.startswith("/tts/") and not audio_url.startswith("/tts_queue/"):
-        # Audio URL is already in the correct format
-        pass
-    elif audio_url.startswith("/tts_queue/"):
-        # Convert to /tts/ for consistency
+    if audio_url.startswith("/tts_queue/"):
         entry_copy["audio_url"] = audio_url.replace("/tts_queue/", "/tts/")
     elif not audio_url and text.startswith("/opt/ai-radio/tts/"):
-        # Generate audio_url from file path
         filename = os.path.basename(text)
         entry_copy["audio_url"] = f"/tts/{filename}"
     
@@ -1014,10 +1097,37 @@ def _fix_dj_transcription(entry):
 
 @app.get("/api/history")
 def api_history():
-    with HISTORY_LOCK:
-        # Return newest first, with DJ transcriptions fixed
-        fixed_history = [_fix_dj_transcription(entry) for entry in HISTORY]
-        return jsonify(sorted(fixed_history, key=lambda e: e.get("time", 0), reverse=True))
+    """Optimized history endpoint with optional pagination."""
+    # Check if frontend expects paginated response
+    wants_pagination = 'limit' in request.args or 'offset' in request.args
+    
+    if wants_pagination:
+        # New paginated format
+        limit = min(int(request.args.get('limit', 50)), 200)  # Cap at 200
+        offset = int(request.args.get('offset', 0))
+        
+        with HISTORY_LOCK:
+            # Sort once, slice efficiently  
+            sorted_history = sorted(HISTORY, key=lambda e: e.get("time", 0), reverse=True)
+            page_items = sorted_history[offset:offset + limit]
+            
+            # Only process the items we're returning
+            fixed_history = [_fix_dj_transcription(entry) for entry in page_items]
+            
+            return jsonify({
+                "items": fixed_history,
+                "total": len(HISTORY),
+                "offset": offset,
+                "limit": limit,
+                "has_more": offset + limit < len(HISTORY)
+            })
+    else:
+        # Legacy format - return first 60 items as array for backward compatibility
+        with HISTORY_LOCK:
+            sorted_history = sorted(HISTORY, key=lambda e: e.get("time", 0), reverse=True)
+            limited_items = sorted_history[:60]  # Reasonable limit for legacy
+            fixed_history = [_fix_dj_transcription(entry) for entry in limited_items]
+            return jsonify(fixed_history)
 
 @app.get("/api/now")
 def api_now():
@@ -1223,6 +1333,9 @@ def _should_generate_dj_intro(artist, title):
         print(f"DEBUG: DJ generation allowed for: {track_key}")
         return True
 
+# Global variable to track last TTS generation time and track
+_last_tts_generation = {"time": 0, "track_key": "", "cooldown": 30}  # 30 second cooldown
+
 @app.post("/api/dj-next")
 def api_dj_next():
     """Generate DJ intro for the NEXT upcoming track, not current track"""
@@ -1300,33 +1413,26 @@ def api_dj_next():
             
             print(f"DEBUG: Next track from queue - Title: '{title}', Artist: '{artist}'")
             
+            # Rate limiting to prevent duplicate TTS generation
+            current_time = time.time()
+            track_key = f"{artist}|{title}".lower()
+            
+            if (current_time - _last_tts_generation["time"] < _last_tts_generation["cooldown"] and 
+                _last_tts_generation["track_key"] == track_key):
+                print(f"DEBUG: TTS generation rate limited for: {track_key}")
+                return jsonify({"ok": True, "skipped": "rate_limited"}), 200
+            
+            # Update rate limiting tracker
+            _last_tts_generation["time"] = current_time
+            _last_tts_generation["track_key"] = track_key
+            
         except Exception as e:
             print(f"DEBUG: Error getting next track: {e}")
             return jsonify({"ok": False, "error": str(e)}), 500
 
-    # Generate DJ line for UPCOMING track
-    line = f"Up next: '{title}' by {artist}."
-    
-    # Set DJ_INTRO_MODE=1 to change the prompt style
-    env = os.environ.copy()
-    env["DJ_INTRO_MODE"] = "1"
-    
-    try:
-        print(f"DEBUG: Running DJ script in intro mode")
-        result = subprocess.run(
-            ["/opt/ai-radio/gen_ai_dj_line.sh", title, artist],
-            capture_output=True, text=True, timeout=35, env=env
-        )
-        if result.returncode == 0 and result.stdout.strip():
-            line = ANSI.sub('', result.stdout.strip())
-            print(f"DEBUG: Using DJ script output: '{line}'")
-        else:
-            print(f"DEBUG: DJ script failed, using fallback: '{line}'")
-    except Exception as e:
-        print(f"DEBUG: DJ script error: {e}, using fallback: '{line}'")
-
     # XTTS synthesis - FORCE CORRECT SPEAKER
     audio_url = None
+    ai_text = f"Up next: {title} by {artist}."  # Default fallback text
     
     try:
         if os.getenv("USE_XTTS", "1") in ("1", "true", "True"):
@@ -1341,6 +1447,9 @@ def api_dj_next():
                 ai_result = subprocess.run(ai_cmd, capture_output=True, text=True, timeout=30, env=ai_env)
                 if ai_result.returncode == 0 and ai_result.stdout.strip():
                     ai_text = ai_result.stdout.strip()
+                    # Remove any surrounding quotes that might have been added
+                    if ai_text.startswith('"') and ai_text.endswith('"'):
+                        ai_text = ai_text[1:-1]
                     print(f"DEBUG: Generated AI text: '{ai_text}'")
                 else:
                     ai_text = f"Up next: {title} by {artist}."
@@ -1364,10 +1473,14 @@ def api_dj_next():
             env["PATH"] = "/usr/local/bin:/usr/bin:/bin"
             env["XTTS_SPEAKER"] = xtts_speaker  # Override the environment variable
             
-            # Build command with explicit speaker parameter
-            cmd = ["/opt/ai-radio/dj_enqueue_xtts.sh", artist, title, "en", xtts_speaker]
+            # Pass the AI text to prevent duplicate generation
+            env["CUSTOM_TEXT"] = ai_text  # Pass our generated text to the script
+            
+            # Build command with explicit speaker parameter and custom mode to use our text
+            cmd = ["/opt/ai-radio/dj_enqueue_xtts.sh", artist, title, "en", xtts_speaker, "custom"]
             print(f"DEBUG: XTTS command: {cmd}")
             print(f"DEBUG: Environment XTTS_SPEAKER set to: '{env['XTTS_SPEAKER']}'")
+            print(f"DEBUG: Environment CUSTOM_TEXT set to: '{env['CUSTOM_TEXT']}'")
 
             # Check if XTTS is already running to prevent resource conflicts
             try:
@@ -1558,6 +1671,53 @@ def api_cover():
     if os.path.isfile(placeholder):
         return send_file(placeholder, mimetype="image/jpeg")
     return abort(404)
+
+@app.get("/api/cover/online")
+def api_cover_online():
+    """
+    Fetch album art online for tracks missing embedded covers.
+    Query params: artist, album
+    """
+    artist = request.args.get("artist", "").strip()
+    album = request.args.get("album", "").strip()
+    
+    if not artist or not album:
+        return abort(404)
+    
+    cache_key = (artist.lower(), album.lower())
+    
+    # Check cache first
+    with _cover_cache_lock:
+        if cache_key in _cover_cache:
+            cached_result = _cover_cache[cache_key]
+            if cached_result is None:
+                # Previously failed
+                return abort(404)
+            elif cached_result.startswith("http"):
+                # Have a real URL, redirect to it
+                return redirect(cached_result)
+    
+    # Try to fetch online
+    try:
+        cover_data = _fetch_online_cover(artist, album, "", size=300, timeout=8)
+        if cover_data:
+            art_bytes, mime_type = cover_data
+            # Cache success (could store to disk and return URL)
+            with _cover_cache_lock:
+                _cover_cache[cache_key] = "data:image/jpeg;base64," + str(art_bytes)[:100]  # Simplified
+            
+            return Response(art_bytes, mimetype=mime_type)
+        else:
+            # Cache failure
+            with _cover_cache_lock:
+                _cover_cache[cache_key] = None
+            return abort(404)
+            
+    except Exception as e:
+        print(f"Online cover fetch failed for {artist} - {album}: {e}")
+        with _cover_cache_lock:
+            _cover_cache[cache_key] = None
+        return abort(404)
 
 # ── Startup ─────────────────────────────────────────────────────
 load_history()

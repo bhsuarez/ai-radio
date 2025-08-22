@@ -59,12 +59,8 @@
 <body>
   <aside class="sidebar">
     <h1>🎧 AI Radio</h1>
-    <a class="btn" id="openLink" href="#" target="_blank" rel="noopener">🔗 Open Stream</a>
-    <a class="btn" href="http://icecast.zorro.network:8000" target="_blank">📊 Icecast Admin</a>
     <audio id="livePlayer" controls preload="none"></audio>
     <button class="btn warn" id="skipBtn">⏭️ Skip Track</button>
-    <button class="btn accent" id="genBtn">✨ Generate DJ Line</button>
-    <button class="btn" id="cleanupBtn">🧹 Fix History</button>
   </aside>
 
   <div class="main">
@@ -84,15 +80,30 @@ const STREAM_URL = "http://icecast.zorro.local:8000/stream.mp3";
 const DEFAULT_ART = "/static/station-cover.jpg"; // server-served placeholder
 
 const $ = (id) => document.getElementById(id);
-$("livePlayer").src = STREAM_URL; $("livePlayer").load(); $("openLink").href = STREAM_URL;
+$("livePlayer").src = STREAM_URL; $("livePlayer").load();
 
 function showLoading() { $("loadingOverlay").style.display = "flex"; }
 function hideLoading() { $("loadingOverlay").style.display = "none"; }
 
 async function j(url, opts={}) {
-  const r = await fetch(url, { headers: { "Content-Type": "application/json" }, ...opts });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+  try {
+    const r = await fetch(url, { 
+      headers: { "Content-Type": "application/json" }, 
+      signal: controller.signal,
+      ...opts 
+    });
+    clearTimeout(timeoutId);
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      console.warn(`Request to ${url} timed out`);
+    }
+    throw error;
+  }
 }
 
 const toTime = (ts) => {
@@ -180,13 +191,13 @@ async function loadTimeline(){
     const tts     = ttsR.status==='fulfilled' ? ttsR.value : [];
     const history = histR.status==='fulfilled' ? histR.value : [];
 
-    // LIVE NOW - filter out TTS intros
-    const live = (now && (now.title || now.filename) && 
-                  now.title !== 'DJ Intro' && 
-                  !now.title?.startsWith('AI DJ') &&
-                  now.artist !== 'AI DJ') ? {
-      ...now, type:'song', liveNow:true,
-      title: now.title || 'Unknown Track', artist: now.artist || 'Unknown Artist'
+    // LIVE NOW - include DJ intros but mark them specially
+    const live = (now && (now.title || now.filename)) ? {
+      ...now, type: now.title === 'DJ Intro' && now.artist === 'AI DJ' ? 'dj' : 'song', 
+      liveNow: true,
+      title: now.title || 'Unknown Track', 
+      artist: now.artist || 'Unknown Artist',
+      text: now.comment || '' // For DJ intros, show the comment as text
     } : null;
 
     const currentLiveKey = live ? `${live.title}|${live.artist}` : null;
@@ -267,31 +278,60 @@ async function loadTimeline(){
       box.appendChild(sec);
     }
 
-    // Live now
+    // Live now - distinguish between music and DJ intros
     if (live) {
-      const sec = section('🔴 LIVE NOW');
-      const card=h('div','event song');
-      card.innerHTML = `
-        <img alt="Album artwork" loading="eager" decoding="sync">
-        <div class="event-details">
-          <div class="event-meta"><span>${fmtTime(live.time)}</span><span class="live-chip">LIVE NOW</span><span class="voice-chip" id="remainChip">—</span></div>
-          <div class="event-title">${live.title || 'Unknown title'}</div>
-          <div class="event-sub">${[live.artist, live.album].filter(Boolean).join(' • ') || 'Unknown artist'}</div>
-        </div>`;
-      sec.appendChild(card); box.appendChild(sec);
-      setArtworkWithRetry(card.querySelector('img'), live);
-    } else if (now && (now.title === 'DJ Intro' || now.artist === 'AI DJ')) {
-      // Show TTS status when playing
-      const sec = section('🎙️ ON AIR');
-      const card=h('div','event dj');
-      const transcript = now.comment || 'DJ Commentary';
-      card.innerHTML = `
-        <div class="event-details" style="width:100%">
-          <div class="event-meta"><span>${fmtTime(now.time)}</span><span class="live-chip">LIVE</span><span class="voice-chip">AI DJ</span></div>
-          <div class="event-title">🎙️ ${transcript}</div>
-          <div class="event-sub">AI DJ Commentary</div>
-        </div>`;
-      sec.appendChild(card); box.appendChild(sec);
+      if (live.type === 'dj' || live.title === 'DJ Intro') {
+        // Show DJ intro as "ON AIR"
+        const sec = section('🎙️ ON AIR');
+        const card=h('div','event dj');
+        const transcript = live.comment || live.text || 'DJ Commentary';
+        const progressText = (live.duration_ms && live.elapsed_ms) 
+          ? `${Math.floor(live.elapsed_ms/1000)}s / ${Math.floor(live.duration_ms/1000)}s`
+          : '—';
+        card.innerHTML = `
+          <div class="event-details" style="width:100%">
+            <div class="event-meta"><span>${fmtTime(live.time)}</span><span class="live-chip">LIVE</span><span class="voice-chip">AI DJ</span><span class="voice-chip" id="remainChip">${progressText}</span></div>
+            <div class="event-title">🎙️ ${transcript}</div>
+            <div class="event-sub">AI DJ Commentary</div>
+          </div>`;
+        sec.appendChild(card); box.appendChild(sec);
+        
+        // Set up real-time progress tracking for DJ intros
+        if (live.duration_ms && live.elapsed_ms) {
+          window.currentTrackProgress = {
+            duration_ms: live.duration_ms,
+            elapsed_start: live.elapsed_ms,
+            start_time: Date.now()
+          };
+          startProgressUpdates();
+        }
+      } else {
+        // Show music track as "LIVE NOW"  
+        const sec = section('🔴 LIVE NOW');
+        const card=h('div','event song');
+        const progressText = (live.duration_ms && live.elapsed_ms) 
+          ? `${Math.floor(live.elapsed_ms/1000)}s / ${Math.floor(live.duration_ms/1000)}s`
+          : '—';
+        card.innerHTML = `
+          <img alt="Album artwork" loading="eager" decoding="sync">
+          <div class="event-details">
+            <div class="event-meta"><span>${fmtTime(live.time)}</span><span class="live-chip">LIVE NOW</span><span class="voice-chip" id="remainChip">${progressText}</span></div>
+            <div class="event-title">${live.title || 'Unknown title'}</div>
+            <div class="event-sub">${[live.artist, live.album].filter(Boolean).join(' • ') || 'Unknown artist'}</div>
+          </div>`;
+        sec.appendChild(card); box.appendChild(sec);
+        setArtworkWithRetry(card.querySelector('img'), live);
+        
+        // Set up real-time progress tracking for music tracks
+        if (live.duration_ms && live.elapsed_ms) {
+          window.currentTrackProgress = {
+            duration_ms: live.duration_ms,
+            elapsed_start: live.elapsed_ms,
+            start_time: Date.now()
+          };
+          startProgressUpdates();
+        }
+      }
     }
 
     // Just played
@@ -329,6 +369,12 @@ async function loadTimeline(){
   } finally {
     window._timelineLoading = false;
     hideLoading();
+    
+    // Clear progress tracking if no live track
+    if (!live) {
+      if (progressInterval) clearInterval(progressInterval);
+      window.currentTrackProgress = null;
+    }
   }
 }
 
@@ -347,41 +393,37 @@ $('skipBtn').onclick = async () => {
 };
 
 
-$('genBtn').onclick = async () => {
-  try {
-    const original = $('genBtn').textContent; $('genBtn').disabled = true; $('genBtn').textContent = 'Generating...';
-    const result = await j('/api/dj-now', { method:'POST' });
-    console.log('DJ generation result:', result);
-    if (result.skipped) { $('genBtn').textContent='Already Generated!'; $('genBtn').style.backgroundColor='#ffb020'; }
-    else { $('genBtn').textContent='Generated!'; $('genBtn').style.backgroundColor='#3ddc97'; loadTimeline(); }
-    setTimeout(()=>{ $('genBtn').disabled=false; $('genBtn').textContent=original; $('genBtn').style.backgroundColor=''; }, 3000);
-  } catch (e) {
-    console.error(e); $('genBtn').textContent='Error!'; $('genBtn').style.backgroundColor='#ff5d5d'; setTimeout(()=>{ $('genBtn').disabled=false; $('genBtn').textContent='✨ Generate DJ Line'; $('genBtn').style.backgroundColor=''; }, 3000);
-  }
-};
-
-$('cleanupBtn').onclick = async () => {
-  try {
-    const original = $('cleanupBtn').textContent; $('cleanupBtn').disabled = true; $('cleanupBtn').textContent = 'Cleaning...';
-    const result = await j('/api/cleanup-history', { method:'POST' });
-    console.log('Cleanup result:', result);
-    if (result.ok) { 
-      $('cleanupBtn').textContent=`Removed ${result.removed}!`; 
-      $('cleanupBtn').style.backgroundColor='#3ddc97'; 
-      loadTimeline(); 
-    } else { 
-      $('cleanupBtn').textContent='Failed!'; 
-      $('cleanupBtn').style.backgroundColor='#ff5d5d'; 
-    }
-    setTimeout(()=>{ $('cleanupBtn').disabled=false; $('cleanupBtn').textContent=original; $('cleanupBtn').style.backgroundColor=''; }, 3000);
-  } catch (e) {
-    console.error(e); $('cleanupBtn').textContent='Error!'; $('cleanupBtn').style.backgroundColor='#ff5d5d'; 
-    setTimeout(()=>{ $('cleanupBtn').disabled=false; $('cleanupBtn').textContent='🧹 Fix History'; $('cleanupBtn').style.backgroundColor=''; }, 3000);
-  }
-};
+// Removed: DJ generation and cleanup button handlers
 
 loadTimeline();
 setInterval(loadTimeline, 15000);
+
+// Real-time progress updates
+let progressInterval = null;
+function startProgressUpdates() {
+  if (progressInterval) clearInterval(progressInterval);
+  
+  progressInterval = setInterval(() => {
+    const chip = document.getElementById('remainChip');
+    if (!chip || !window.currentTrackProgress) return;
+    
+    const { duration_ms, start_time, elapsed_start } = window.currentTrackProgress;
+    if (!duration_ms || !start_time) return;
+    
+    const elapsed = elapsed_start + (Date.now() - start_time);
+    const remaining = Math.max(0, duration_ms - elapsed);
+    
+    if (remaining <= 0) {
+      // Track finished, reload timeline to move to "Just Played"
+      loadTimeline();
+      return;
+    }
+    
+    const elapsedSec = Math.floor(elapsed / 1000);
+    const totalSec = Math.floor(duration_ms / 1000);
+    chip.textContent = `${elapsedSec}s / ${totalSec}s`;
+  }, 1000);
+}
 </script>
 </body>
 </html>
