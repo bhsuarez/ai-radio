@@ -38,6 +38,12 @@
   .event-title { font-weight:600; }
   .event-sub { font-size:14px; color:var(--muted); }
   .live-chip { display:inline-block; padding:2px 8px; border-radius:999px; background:#ff4d4d; color:white; font-size:11px; font-weight:bold; margin-right:6px; }
+  
+  /* Loading spinner */
+  .loading-overlay { position:fixed; top:20px; right:20px; background:rgba(15,17,21,0.9); border-radius:8px; padding:12px 16px; display:flex; align-items:center; z-index:1000; box-shadow:0 4px 12px rgba(0,0,0,0.3); }
+  .spinner { width:20px; height:20px; border:2px solid var(--card); border-top:2px solid var(--accent); border-radius:50%; animation:spin 1s linear infinite; }
+  @keyframes spin { 0% { transform:rotate(0deg); } 100% { transform:rotate(360deg); } }
+  .loading-text { color:var(--text); margin-left:12px; font-size:14px; }
 
   /* Mobile */
   @media (max-width: 768px) {
@@ -53,18 +59,19 @@
 <body>
   <aside class="sidebar">
     <h1>🎧 AI Radio</h1>
-    <a class="btn" id="openLink" href="#" target="_blank" rel="noopener">🔗 Open Stream</a>
-    <a class="btn" href="http://icecast.zorro.network:8000" target="_blank">📊 Icecast Admin</a>
     <audio id="livePlayer" controls preload="none"></audio>
     <button class="btn warn" id="skipBtn">⏭️ Skip Track</button>
-    <button class="btn accent" id="genBtn">✨ Generate DJ Line</button>
-    <button class="btn" id="debugDjBtn">🔍 Debug DJ Status</button>
-    <button class="btn" id="testFullDjBtn">🧪 Test Full DJ</button>
   </aside>
 
   <div class="main">
     <header><div class="title">📜 Live Timeline</div></header>
     <div id="timeline" class="timeline"></div>
+  </div>
+
+  <!-- Loading overlay -->
+  <div id="loadingOverlay" class="loading-overlay" style="display:none;">
+    <div class="spinner"></div>
+    <div class="loading-text">Loading timeline...</div>
   </div>
 
 <script>
@@ -73,12 +80,30 @@ const STREAM_URL = "http://icecast.zorro.local:8000/stream.mp3";
 const DEFAULT_ART = "/static/station-cover.jpg"; // server-served placeholder
 
 const $ = (id) => document.getElementById(id);
-$("livePlayer").src = STREAM_URL; $("livePlayer").load(); $("openLink").href = STREAM_URL;
+$("livePlayer").src = STREAM_URL; $("livePlayer").load();
+
+function showLoading() { $("loadingOverlay").style.display = "flex"; }
+function hideLoading() { $("loadingOverlay").style.display = "none"; }
 
 async function j(url, opts={}) {
-  const r = await fetch(url, { headers: { "Content-Type": "application/json" }, ...opts });
-  if (!r.ok) throw new Error(await r.text());
-  return r.json();
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000); // 10 second timeout
+  try {
+    const r = await fetch(url, { 
+      headers: { "Content-Type": "application/json" }, 
+      signal: controller.signal,
+      ...opts 
+    });
+    clearTimeout(timeoutId);
+    if (!r.ok) throw new Error(await r.text());
+    return r.json();
+  } catch (error) {
+    clearTimeout(timeoutId);
+    if (error.name === 'AbortError') {
+      console.warn(`Request to ${url} timed out`);
+    }
+    throw error;
+  }
 }
 
 const toTime = (ts) => {
@@ -103,6 +128,13 @@ function getCover(ev) {
   if (ev.artwork_url && ev.artwork_url !== DEFAULT_ART) return ensureArtPath(ev.artwork_url);
   if (ev.filename) {
     const u = new URL('/api/cover', location.origin); u.searchParams.set('file', ev.filename); return u.toString();
+  }
+  // Fallback to online cover API using artist/album
+  if (ev.artist && ev.album) {
+    const u = new URL('/api/cover/online', location.origin);
+    u.searchParams.set('artist', ev.artist);
+    u.searchParams.set('album', ev.album);
+    return u.toString();
   }
   return DEFAULT_ART;
 }
@@ -154,7 +186,16 @@ let lastLiveTrack = null;
 
 async function loadTimeline(){
   try {
-    if (window._timelineLoading) return; window._timelineLoading = true;
+    if (window._timelineLoading) return; 
+    window._timelineLoading = true;
+    showLoading();
+    
+    // Safety timeout to prevent loading spinner from getting stuck
+    const safetyTimeout = setTimeout(() => {
+      console.warn('Timeline loading timed out, forcing cleanup');
+      window._timelineLoading = false;
+      hideLoading();
+    }, 15000); // 15 second timeout
 
     const [nowR, nextR, ttsR, histR] = await Promise.allSettled([
       j('/api/now'), j('/api/next'), j('/api/tts_queue'), j('/api/history')
@@ -164,10 +205,13 @@ async function loadTimeline(){
     const tts     = ttsR.status==='fulfilled' ? ttsR.value : [];
     const history = histR.status==='fulfilled' ? histR.value : [];
 
-    // LIVE NOW
+    // LIVE NOW - include DJ intros but mark them specially
     const live = (now && (now.title || now.filename)) ? {
-      ...now, type:'song', liveNow:true,
-      title: now.title || 'Unknown Track', artist: now.artist || 'Unknown Artist'
+      ...now, type: now.title === 'DJ Intro' && now.artist === 'AI DJ' ? 'dj' : 'song', 
+      liveNow: true,
+      title: now.title || 'Unknown Track', 
+      artist: now.artist || 'Unknown Artist',
+      text: now.comment || '' // For DJ intros, show the comment as text
     } : null;
 
     const currentLiveKey = live ? `${live.title}|${live.artist}` : null;
@@ -177,6 +221,7 @@ async function loadTimeline(){
     let upcoming = Array.isArray(next) ? next : [];
     upcoming = upcoming
       .filter(s => !sameTrack(s, live))
+      .filter(s => s.title !== 'DJ Intro' && s.artist !== 'AI DJ') // Filter out TTS from upcoming too
       .map(s => ({ type:'upcoming', time: Date.now() + Math.random()*1e5, title: s.title || 'Unknown title', artist: s.artist || '', album: s.album || '', filename: s.filename || '', artwork_url: ensureArtPath(s.artwork_url || getCover(s)) }));
 
     // No client-side lookup; just ensure a usable cover URL or fallback
@@ -185,13 +230,22 @@ async function loadTimeline(){
       return t;
     });
 
-    // de-dupe upcoming by title|artist
+    // de-dupe upcoming by title|artist and limit to just the next one
     const seenU = new Set();
-    upcoming = upcoming.filter(t=>{ const k=`${(t.title||'').toLowerCase()}|${(t.artist||'').toLowerCase()}`; if(seenU.has(k)) return false; seenU.add(k); return true; });
+    upcoming = upcoming.filter(t=>{ const k=`${(t.title||'').toLowerCase()}|${(t.artist||'').toLowerCase()}`; if(seenU.has(k)) return false; seenU.add(k); return true; }).slice(0, 1);
 
-    // HISTORY + DJ
+    // HISTORY (already includes DJ entries from backend)
     const events = [...(history||[])];
-    (tts||[]).forEach(t=>{ const dj={...t,type:'dj',time:t.time||Date.now()}; const exists = events.find(e=> e.type==='dj' && e.text===dj.text && Math.abs((e.time||0)-(dj.time||0))<60000); if(!exists) events.push(dj); });
+    // Only add TTS queue items that aren't already in history
+    (tts||[]).forEach(t=>{
+      const dj={...t,type:'dj',time:t.time||Date.now()};
+      const exists = events.find(e=> 
+        e.type==='dj' && 
+        (e.text===dj.text || e.audio_url===dj.audio_url) && 
+        Math.abs((e.time||0)-(dj.time||0))<120000 // 2 minute window
+      );
+      if(!exists) events.push(dj);
+    });
     events.sort((a,b)=> new Date(b.time) - new Date(a.time));
 
     const songEvents = await enrichEventsWithArtwork(events.filter(e=>e.type==='song'));
@@ -212,8 +266,8 @@ async function loadTimeline(){
       const k=`${(tr.title||'').toLowerCase()}|${(tr.artist||'').toLowerCase()}`; if(seenP.has(k)) return false; seenP.add(k); return true;
     });
 
-    const sig = dedupedPlayed.map(e=>[e.type||'song', e.filename||'', e.title||'', e.artist||'', e.artwork_url||'', Math.floor((e.time||0)/60000)].join('|')).join('||') + upcoming.map(u=>`up:${u.title}|${u.artist}|${u.artwork_url||'noart'}`).join('||') + (live?`|live:${live.title}|${live.artist}|${live.artwork_url||''}`:'');
-    if (sig === lastSig) { window._timelineLoading=false; return; } lastSig = sig;
+    const sig = dedupedPlayed.map(e=>[e.type||'song', e.filename||'', e.title||'', e.artist||'', Math.floor((e.time||0)/60000)].join('|')).join('||') + upcoming.map(u=>`up:${u.title}|${u.artist}`).join('||') + (live?`|live:${live.title}|${live.artist}`:'');
+    if (sig === lastSig) { window._timelineLoading=false; hideLoading(); return; } lastSig = sig;
 
     // --- render
     const box = $("timeline"); box.innerHTML = '';
@@ -223,7 +277,7 @@ async function loadTimeline(){
     // Upcoming
     if (upcoming.length) {
       const sec = section('⏭️ UPCOMING');
-      for (const ev of upcoming.slice(0,10)) {
+      for (const ev of upcoming) {
         const div=h('div','event upcoming song');
         div.innerHTML = `
           <img alt="Album artwork" loading="lazy" decoding="async">
@@ -238,19 +292,62 @@ async function loadTimeline(){
       box.appendChild(sec);
     }
 
-    // Live now
+    // Live now - distinguish between music and DJ intros
     if (live) {
-      const sec = section('🔴 LIVE NOW');
-      const card=h('div','event song');
-      card.innerHTML = `
-        <img alt="Album artwork" loading="eager" decoding="sync">
-        <div class="event-details">
-          <div class="event-meta"><span>${fmtTime(live.time)}</span><span class="live-chip">LIVE NOW</span><span class="voice-chip" id="remainChip">—</span></div>
-          <div class="event-title">${live.title || 'Unknown title'}</div>
-          <div class="event-sub">${[live.artist, live.album].filter(Boolean).join(' • ') || 'Unknown artist'}</div>
-        </div>`;
-      sec.appendChild(card); box.appendChild(sec);
-      setArtworkWithRetry(card.querySelector('img'), live);
+      if (live.type === 'dj' || live.title === 'DJ Intro') {
+        // Show DJ intro as "ON AIR"
+        const sec = section('🎙️ ON AIR');
+        const card=h('div','event dj');
+        const transcript = live.comment || live.text || 'DJ Commentary';
+        const remaining_ms = (live.duration_ms && live.elapsed_ms) ? (live.duration_ms - live.elapsed_ms) : null;
+        const progressText = remaining_ms 
+          ? `${Math.floor(remaining_ms/1000)}s remaining`
+          : '—';
+        card.innerHTML = `
+          <div class="event-details" style="width:100%">
+            <div class="event-meta"><span>${fmtTime(live.time)}</span><span class="live-chip">LIVE</span><span class="voice-chip">AI DJ</span><span class="voice-chip" id="remainChip">${progressText}</span></div>
+            <div class="event-title">🎙️ ${transcript}</div>
+            <div class="event-sub">AI DJ Commentary</div>
+          </div>`;
+        sec.appendChild(card); box.appendChild(sec);
+        
+        // Set up real-time progress tracking for DJ intros
+        if (live.duration_ms && live.elapsed_ms) {
+          window.currentTrackProgress = {
+            duration_ms: live.duration_ms,
+            elapsed_start: live.elapsed_ms,
+            start_time: Date.now()
+          };
+          startProgressUpdates();
+        }
+      } else {
+        // Show music track as "LIVE NOW"  
+        const sec = section('🔴 LIVE NOW');
+        const card=h('div','event song');
+        const remaining_ms = (live.duration_ms && live.elapsed_ms) ? (live.duration_ms - live.elapsed_ms) : null;
+        const progressText = remaining_ms 
+          ? `${Math.floor(remaining_ms/1000)}s remaining`
+          : '—';
+        card.innerHTML = `
+          <img alt="Album artwork" loading="eager" decoding="sync">
+          <div class="event-details">
+            <div class="event-meta"><span>${fmtTime(live.time)}</span><span class="live-chip">LIVE NOW</span><span class="voice-chip" id="remainChip">${progressText}</span></div>
+            <div class="event-title">${live.title || 'Unknown title'}</div>
+            <div class="event-sub">${[live.artist, live.album].filter(Boolean).join(' • ') || 'Unknown artist'}</div>
+          </div>`;
+        sec.appendChild(card); box.appendChild(sec);
+        setArtworkWithRetry(card.querySelector('img'), live);
+        
+        // Set up real-time progress tracking for music tracks
+        if (live.duration_ms && live.elapsed_ms) {
+          window.currentTrackProgress = {
+            duration_ms: live.duration_ms,
+            elapsed_start: live.elapsed_ms,
+            start_time: Date.now()
+          };
+          startProgressUpdates();
+        }
+      }
     }
 
     // Just played
@@ -286,46 +383,88 @@ async function loadTimeline(){
     console.error(e);
     $("timeline").innerHTML = '<div class="event-meta" style="text-align:center; padding:20px"><strong>Unable to load timeline</strong><br>Retrying in a few seconds...</div>';
   } finally {
+    clearTimeout(safetyTimeout);
     window._timelineLoading = false;
+    hideLoading();
+    
+    // Clear progress tracking if no live track
+    if (!live) {
+      if (progressInterval) clearInterval(progressInterval);
+      window.currentTrackProgress = null;
+    }
   }
 }
 
-$('skipBtn').onclick = async () => { try{ await j('/api/skip',{method:'POST'}); loadTimeline(); } catch(e){} };
-
-$('debugDjBtn').onclick = async () => {
-  try {
-    const result = await j('/api/debug-dj-status');
-    const summary = `\nDJ Status:\n- Auto DJ Enabled: ${result.config.auto_dj_enabled}\n- Script Exists: ${result.config.script_exists}\n- Recent DJ Events: ${result.recent_dj_events.length}\n- TTS Files: ${result.tts_files.length}\n- Queue Length: ${result.liquidsoap_queue_length}\n\nCheck console for full details.`;
-    console.log('DJ Debug Status:', result); alert(summary);
-  } catch { alert('Debug failed - check console'); }
+$('skipBtn').onclick = async () => { 
+  try{ 
+    $('skipBtn').disabled = true; 
+    $('skipBtn').textContent = 'Skipping...'; 
+    await j('/api/skip',{method:'POST'}); 
+    loadTimeline(); 
+    $('skipBtn').textContent = 'Skipped!';
+    setTimeout(() => { $('skipBtn').disabled = false; $('skipBtn').textContent = '⏭️ Skip Track'; }, 1500);
+  } catch(e){ 
+    $('skipBtn').disabled = false; 
+    $('skipBtn').textContent = '⏭️ Skip Track'; 
+  } 
 };
 
-$('testFullDjBtn').onclick = async () => {
-  try {
-    const original = $('testFullDjBtn').textContent; $('testFullDjBtn').disabled = true; $('testFullDjBtn').textContent = 'Testing...';
-    const result = await j('/api/test-full-dj', { method:'POST' });
-    console.log('Full DJ Test:', result);
-    if (result.ok) { $('testFullDjBtn').textContent='Test Complete!'; $('testFullDjBtn').style.backgroundColor='#3ddc97'; alert(`Full DJ Test Results:\nAI Generation: ${result.steps.ai_generation ? 'SUCCESS' : 'FAILED'}\nAudio Created: ${result.steps.audio_exists ? 'YES' : 'NO'}\nQueued in Liquidsoap: ${result.steps.queue_result ? 'YES' : 'NO'}\nQueue Length: ${result.steps.queue_length}\n\nCheck console for details.`); }
-    else { $('testFullDjBtn').textContent='Test Failed!'; $('testFullDjBtn').style.backgroundColor='#ff5d5d'; alert(`Test failed: ${result.error}`); }
-    setTimeout(()=>{ $('testFullDjBtn').disabled=false; $('testFullDjBtn').textContent=original; $('testFullDjBtn').style.backgroundColor=''; }, 3000);
-  } catch(e) { console.error(e); }
-};
 
-$('genBtn').onclick = async () => {
-  try {
-    const original = $('genBtn').textContent; $('genBtn').disabled = true; $('genBtn').textContent = 'Generating...';
-    const result = await j('/api/dj-now', { method:'POST' });
-    console.log('DJ generation result:', result);
-    if (result.skipped) { $('genBtn').textContent='Already Generated!'; $('genBtn').style.backgroundColor='#ffb020'; }
-    else { $('genBtn').textContent='Generated!'; $('genBtn').style.backgroundColor='#3ddc97'; loadTimeline(); }
-    setTimeout(()=>{ $('genBtn').disabled=false; $('genBtn').textContent=original; $('genBtn').style.backgroundColor=''; }, 3000);
-  } catch (e) {
-    console.error(e); $('genBtn').textContent='Error!'; $('genBtn').style.backgroundColor='#ff5d5d'; setTimeout(()=>{ $('genBtn').disabled=false; $('genBtn').textContent='✨ Generate DJ Line'; $('genBtn').style.backgroundColor=''; }, 3000);
-  }
-};
+// Removed: DJ generation and cleanup button handlers
 
 loadTimeline();
-setInterval(loadTimeline, 10000);
+setInterval(loadTimeline, 90000); // Reduced frequency to 90s to prevent loading issues
+
+// Real-time progress updates
+let progressInterval = null;
+function startProgressUpdates() {
+  if (progressInterval) clearInterval(progressInterval);
+  
+  progressInterval = setInterval(() => {
+    const chip = document.getElementById('remainChip');
+    if (!chip || !window.currentTrackProgress) return;
+    
+    const { duration_ms, start_time, elapsed_start } = window.currentTrackProgress;
+    if (!duration_ms || !start_time) return;
+    
+    const elapsed = elapsed_start + (Date.now() - start_time);
+    const remaining = Math.max(0, duration_ms - elapsed);
+    
+    if (remaining <= 0) {
+      // Track finished, reload timeline to move to "Just Played"
+      chip.textContent = 'Track ending...';
+      // Clear the interval to prevent multiple reloads
+      if (progressInterval) clearInterval(progressInterval);
+      setTimeout(() => loadTimeline(), 2000);
+      return;
+    }
+    
+    const remainingSec = Math.floor(remaining / 1000);
+    const minutes = Math.floor(remainingSec / 60);
+    const seconds = remainingSec % 60;
+    
+    // Add visual indication when track is ending soon
+    if (remainingSec <= 10) {
+      chip.style.backgroundColor = 'var(--warn)';
+      chip.style.color = '#271400';
+      chip.style.fontWeight = 'bold';
+    } else if (remainingSec <= 30) {
+      chip.style.backgroundColor = 'var(--err)';
+      chip.style.color = 'white';
+      chip.style.fontWeight = 'bold';
+    } else {
+      chip.style.backgroundColor = '';
+      chip.style.color = '';
+      chip.style.fontWeight = '';
+    }
+    
+    if (minutes > 0) {
+      chip.textContent = `${minutes}m ${seconds}s remaining`;
+    } else {
+      chip.textContent = `${seconds}s remaining`;
+    }
+  }, 1000);
+}
 </script>
 </body>
 </html>

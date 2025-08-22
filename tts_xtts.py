@@ -49,10 +49,37 @@ def main():
     # Synthesize
     try:
         print(f" > Starting synthesis...", file=sys.stderr)
-        tts.tts_to_file(**kw)
-        print(f" > Synthesis completed", file=sys.stderr)
         
-        # Verify the file was created
+        # If output is .mp3, generate to a temporary .wav first
+        if args.out.endswith('.mp3'):
+            temp_wav = args.out.replace('.mp3', '_temp.wav')
+            kw["file_path"] = temp_wav
+            tts.tts_to_file(**kw)
+            print(f" > Synthesis to WAV completed", file=sys.stderr)
+            
+            # Convert WAV to MP3 using ffmpeg
+            if os.path.exists(temp_wav):
+                print(f" > Converting WAV to MP3...", file=sys.stderr)
+                import subprocess
+                result = subprocess.run([
+                    'ffmpeg', '-i', temp_wav, '-y', args.out
+                ], capture_output=True, text=True)
+                
+                if result.returncode == 0:
+                    print(f" > MP3 conversion completed", file=sys.stderr)
+                    os.remove(temp_wav)  # Clean up temp file
+                else:
+                    print(f" > ERROR: MP3 conversion failed: {result.stderr}", file=sys.stderr)
+                    sys.exit(1)
+            else:
+                print(f" > ERROR: Temp WAV file was not created", file=sys.stderr)
+                sys.exit(1)
+        else:
+            # For non-MP3 outputs, use original behavior
+            tts.tts_to_file(**kw)
+            print(f" > Synthesis completed", file=sys.stderr)
+        
+        # Verify the final file was created
         if os.path.exists(args.out):
             file_size = os.path.getsize(args.out)
             print(f" > Output file created: {args.out} ({file_size} bytes)", file=sys.stderr)
