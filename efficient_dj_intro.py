@@ -273,18 +273,32 @@ def update_dj_status(status_type: str, data: dict = None):
 def enqueue_intro_to_liquidsoap(intro_file: str) -> bool:
     """Enqueue generated intro to Liquidsoap TTS queue"""
     if not os.path.exists(intro_file):
+        print(f"ERROR: Intro file does not exist: {intro_file}")
         return False
     
     try:
-        telnet_mgr = EfficientTelnetManager()
+        # Use simple subprocess approach like the Flask API does
         command = f'tts.push file://{intro_file}'
-        results = telnet_mgr.batch_query([command])
+        result = subprocess.run(
+            ["nc", "127.0.0.1", "1234"],
+            input=f"{command}\nquit\n".encode(),
+            capture_output=True,
+            timeout=5
+        )
         
-        print(f"Enqueued intro to Liquidsoap: {intro_file}")
-        return True
+        if result.returncode == 0:
+            print(f"Successfully enqueued intro to Liquidsoap: {intro_file}")
+            if result.stdout:
+                print(f"Liquidsoap response: {result.stdout.decode().strip()}")
+            return True
+        else:
+            print(f"ERROR: Failed to enqueue intro, return code: {result.returncode}")
+            if result.stderr:
+                print(f"Stderr: {result.stderr.decode()}")
+            return False
         
     except Exception as e:
-        print(f"ERROR: Failed to enqueue intro: {e}")
+        print(f"ERROR: Exception while enqueueing intro: {e}")
         return False
 
 def store_intro_mapping(artist: str, title: str, intro_file: str):
