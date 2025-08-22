@@ -1079,23 +1079,58 @@ def api_dj_next():
     os.makedirs(TTS_DIR, exist_ok=True)
     ts = int(time.time())
 
-    # Get NEXT track from Liquidsoap queue
+    # Get NEXT track by comparing current playing track with queue RIDs
     try:
-        print("DEBUG: Getting next track from Liquidsoap queue")
+        print("DEBUG: Getting current track and queue to find next track")
+        
+        # Get current playing track
+        current_track = get_now()
+        current_title = current_track.get("title", "").strip()
+        current_artist = current_track.get("artist", "").strip()
+        current_filename = current_track.get("filename", "").strip()
+        
+        print(f"DEBUG: Current track - Title: '{current_title}', Artist: '{current_artist}', File: '{current_filename}'")
+        
+        # Get all RIDs in queue
         rid_lines = _ls_cmd("request.all")
         rids = []
         for ln in rid_lines:
             rids.extend(x for x in ln.strip().split() if x.isdigit())
         
-        if not rids:
-            print("DEBUG: No tracks in queue")
-            return jsonify({"ok": False, "error": "No tracks in queue"}), 400
-            
-        # Get metadata for the next track - rids[0] is current, rids[1] is next
         if len(rids) < 2:
             print("DEBUG: Not enough tracks in queue for next track")
             return jsonify({"ok": False, "error": "Not enough tracks in queue"}), 400
-        next_rid = rids[1]
+            
+        # Find which RID matches the currently playing track
+        current_rid = None
+        for rid in rids:
+            rid_track = _metadata_for_rid(rid)
+            if not rid_track:
+                continue
+                
+            rid_title = rid_track.get("title", "").strip()
+            rid_artist = rid_track.get("artist", "").strip() 
+            rid_filename = rid_track.get("filename", "").strip()
+            
+            # Match by filename first (most reliable), then by title+artist
+            if ((current_filename and rid_filename == current_filename) or 
+                (current_title and current_artist and 
+                 rid_title == current_title and rid_artist == current_artist)):
+                current_rid = rid
+                print(f"DEBUG: Found current playing track as RID {rid}")
+                break
+        
+        if not current_rid:
+            print("DEBUG: Could not match current track to any RID, using first RID as fallback")
+            current_rid = rids[0]
+        
+        # Find the next RID in the list
+        current_index = rids.index(current_rid)
+        if current_index >= len(rids) - 1:
+            print("DEBUG: Current track is last in queue")
+            return jsonify({"ok": False, "error": "Current track is last in queue"}), 400
+            
+        next_rid = rids[current_index + 1]
         next_track = _metadata_for_rid(next_rid)
         
         if not next_track or not next_track.get("title"):
@@ -1105,7 +1140,7 @@ def api_dj_next():
         title = next_track.get("title", "Unknown Title")
         artist = next_track.get("artist", "Unknown Artist")
         
-        print(f"DEBUG: Next track - Title: '{title}', Artist: '{artist}'")
+        print(f"DEBUG: Next track (RID {next_rid}) - Title: '{title}', Artist: '{artist}'")
         
     except Exception as e:
         print(f"DEBUG: Error getting next track: {e}")
