@@ -26,9 +26,9 @@ echo "DEBUG: Speaker parameter: '$SPEAKER'" >&2
 echo "DEBUG: Expected output file: '$OUT'" >&2
 echo "DEBUG: Full command: $PY $APP --text '$TEXT' --lang '$LANG' --speaker '$SPEAKER' --out '$OUT'" >&2
 
-# Run the Python script and capture both stdout and stderr
-# Fix: Properly quote the speaker parameter
-if "${PY}" "${APP}" --text "${TEXT}" --lang "${LANG}" --speaker "${SPEAKER}" --out "${OUT}" 2>&1; then
+# Run the Python script and redirect TTS output to stderr to keep stdout clean
+# Fix: Properly quote the speaker parameter  
+if "${PY}" "${APP}" --text "${TEXT}" --lang "${LANG}" --speaker "${SPEAKER}" --out "${OUT}" >&2; then
     if [[ -f "${OUT}" ]]; then
         echo "DEBUG: Successfully created ${OUT}" >&2
         echo "DEBUG: File size: $(stat -c%s "${OUT}") bytes" >&2

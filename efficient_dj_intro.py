@@ -212,11 +212,15 @@ def generate_intro_for_track(artist: str, title: str, cache: IntroCache) -> Opti
         result = subprocess.run([
             "/opt/ai-radio/dj_enqueue_xtts.sh",
             artist, title, "en", os.getenv("XTTS_SPEAKER", "Damien Black")
-        ], capture_output=True, text=True, timeout=30)
+        ], capture_output=True, text=True, timeout=120)
         
-        if result.returncode == 0 and result.stdout.strip():
-            output_file = result.stdout.strip()
-            if os.path.exists(output_file):
+        if result.returncode == 0:
+            # Extract the output file path from stdout (last line should be the file path)
+            stdout_lines = result.stdout.strip().split('\n')
+            output_file = stdout_lines[-1].strip() if stdout_lines else ""
+            
+            # Validate it's a file path and exists
+            if output_file and output_file.startswith('/') and os.path.exists(output_file):
                 cache.cache_intro(artist, title, output_file)
                 print(f"Successfully generated intro: {output_file}")
                 
