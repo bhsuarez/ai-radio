@@ -30,6 +30,9 @@
   .event { background:var(--card); border-radius:var(--radius); padding:12px; border:1px solid #202634; display:flex; gap:12px; }
   .event.dj { border-left:4px solid var(--accent); }
   .event.song { border-left:4px solid var(--ok); }
+  .event.dj.generating { border-left-color: var(--warn); background: linear-gradient(90deg, var(--card), rgba(255, 176, 32, 0.05)); }
+  .event.dj.completed { border-left-color: var(--ok); background: linear-gradient(90deg, var(--card), rgba(61, 220, 151, 0.05)); }
+  .event.dj.failed { border-left-color: var(--err); background: linear-gradient(90deg, var(--card), rgba(255, 93, 93, 0.05)); }
   .event.upcoming { opacity:0.85; }
   .event img { width:60px; height:60px; border-radius:8px; object-fit:cover; background:#0b0d12; border:1px solid #1f2531; }
   .event-details { flex:1; }
@@ -156,13 +159,14 @@ async function loadTimeline(){
   try {
     if (window._timelineLoading) return; window._timelineLoading = true;
 
-    const [nowR, nextR, ttsR, histR] = await Promise.allSettled([
-      j('/api/now'), j('/api/next'), j('/api/tts_queue'), j('/api/history')
+    const [nowR, nextR, ttsR, histR, djStatusR] = await Promise.allSettled([
+      j('/api/now'), j('/api/next'), j('/api/tts_queue'), j('/api/history'), j('/api/dj_status')
     ]);
     const now     = nowR.status==='fulfilled' ? nowR.value : {};
     const next    = nextR.status==='fulfilled' ? nextR.value : [];
     const tts     = ttsR.status==='fulfilled' ? ttsR.value : [];
     const history = histR.status==='fulfilled' ? histR.value : [];
+    const djStatus = djStatusR.status==='fulfilled' ? djStatusR.value : {};
 
     // LIVE NOW
     const live = (now && (now.title || now.filename)) ? {
@@ -212,13 +216,60 @@ async function loadTimeline(){
       const k=`${(tr.title||'').toLowerCase()}|${(tr.artist||'').toLowerCase()}`; if(seenP.has(k)) return false; seenP.add(k); return true;
     });
 
-    const sig = dedupedPlayed.map(e=>[e.type||'song', e.filename||'', e.title||'', e.artist||'', e.artwork_url||'', Math.floor((e.time||0)/60000)].join('|')).join('||') + upcoming.map(u=>`up:${u.title}|${u.artist}|${u.artwork_url||'noart'}`).join('||') + (live?`|live:${live.title}|${live.artist}|${live.artwork_url||''}`:'');
+    const djSig = djStatus.current_generation ? `gen:${djStatus.current_generation.title}|${djStatus.current_generation.status}|${djStatus.current_generation.started_at}` : '' + (djStatus.recent_intros || []).map(i => `recent:${i.title}|${i.status}|${i.completed_at || i.started_at}`).join('||');
+    const sig = dedupedPlayed.map(e=>[e.type||'song', e.filename||'', e.title||'', e.artist||'', e.artwork_url||'', Math.floor((e.time||0)/60000)].join('|')).join('||') + upcoming.map(u=>`up:${u.title}|${u.artist}|${u.artwork_url||'noart'}`).join('||') + (live?`|live:${live.title}|${live.artist}|${live.artwork_url||''}`:'') + `|dj:${djSig}`;
     if (sig === lastSig) { window._timelineLoading=false; return; } lastSig = sig;
 
     // --- render
     const box = $("timeline"); box.innerHTML = '';
     const h = (tag,cls,html='')=>{ const el=document.createElement(tag); if(cls) el.className=cls; if(html) el.innerHTML=html; return el; };
     const section = (title)=>{ const wrap=h('div',null); wrap.appendChild(h('div','event-meta',`<strong>${title}</strong>`)); return wrap; };
+
+    // DJ Status Section
+    if (djStatus.current_generation || (djStatus.recent_intros && djStatus.recent_intros.length > 0)) {
+      const djSec = section('🎙️ DJ INTRO STATUS');
+      
+      // Current generation
+      if (djStatus.current_generation) {
+        const gen = djStatus.current_generation;
+        const div = h('div', 'event dj generating');
+        div.innerHTML = `
+          <img alt="DJ" src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAiIGhlaWdodD0iNjAiIGZpbGw9IiM0ZGEzZmYiIHZpZXdCb3g9IjAgMCAyNCAyNCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBkPSJNMTIgMTRjMS42NiAwIDItMS4zNCAyLTNWNWMwLTEuNjYtLjM0LTMtMi0zUzEwIDMuMzQgMTAgNXY2YzAgMS42Ni4zNCAzIDIgM3ptNS41LTN2MWMwIDIuNzYtMi4yNCA1LTUgNXMtNS0yLjI0LTUtNXYtMUg1LjV2MWMwIDMuNTMgMi42MSA2LjQzIDYgNi45MlYyMGgtMnYxLjVoNi41VjIwaC0ydi0xLjA4YzMuMzktLjQ5IDYtMy4zOSA2LTYuOTJ2LTFoLTEuNXoiLz48L3N2Zz4=" loading="lazy">
+          <div class="event-details">
+            <div class="event-meta">
+              <span>⏳ Generating...</span>
+              <span class="voice-chip" style="background: #ffb020; color: #271400;">In Progress</span>
+            </div>
+            <div class="event-title">Generating DJ intro for "${gen.title}"</div>
+            <div class="event-sub">by ${gen.artist} • Started ${Math.floor((Date.now() - gen.started_at * 1000) / 1000)}s ago</div>
+          </div>`;
+        djSec.appendChild(div);
+      }
+      
+      // Recent intros
+      if (djStatus.recent_intros && djStatus.recent_intros.length > 0) {
+        for (const intro of djStatus.recent_intros.slice(0, 3)) {
+          const div = h('div', `event dj ${intro.status}`);
+          const statusIcon = intro.status === 'completed' ? '✅' : intro.status === 'failed' ? '❌' : '⏳';
+          const statusText = intro.status === 'completed' ? 'Ready' : intro.status === 'failed' ? 'Failed' : 'Processing';
+          const statusColor = intro.status === 'completed' ? '#3ddc97' : intro.status === 'failed' ? '#ff5d5d' : '#ffb020';
+          
+          div.innerHTML = `
+            <img alt="DJ" src="data:image/svg+xml;base64,PHN2ZyB3aWR0aD0iNjAiIGhlaWdodD0iNjAiIGZpbGw9IiM0ZGEzZmYiIHZpZXdCb3g9IjAgMCAyNCAyNCIgeG1sbnM9Imh0dHA6Ly93d3cudzMub3JnLzIwMDAvc3ZnIj48cGF0aCBkPSJNMTIgMTRjMS42NiAwIDItMS4zNCAyLTNWNWMwLTEuNjYtLjM0LTMtMi0zUzEwIDMuMzQgMTAgNXY2YzAgMS42Ni4zNCAzIDIgM3ptNS41LTN2MWMwIDIuNzYtMi4yNCA1LTUgNXMtNS0yLjI0LTUtNXYtMUg1LjV2MWMwIDMuNTMgMi42MSA2LjQzIDYgNi45MlYyMGgtMnYxLjVoNi41VjIwaC0ydi0xLjA4YzMuMzktLjQ5IDYtMy4zOSA2LTYuOTJ2LTFoLTEuNXoiLz48L3N2Zz4=" loading="lazy">
+            <div class="event-details">
+              <div class="event-meta">
+                <span>${statusIcon} ${statusText}</span>
+                <span class="voice-chip" style="background: ${statusColor}; color: ${statusColor === '#3ddc97' ? '#0d2818' : statusColor === '#ff5d5d' ? '#2d0f0f' : '#271400'};">${statusText}</span>
+              </div>
+              <div class="event-title">DJ intro for "${intro.title}"</div>
+              <div class="event-sub">by ${intro.artist}${intro.error ? ' • ' + intro.error : ''}</div>
+            </div>`;
+          djSec.appendChild(div);
+        }
+      }
+      
+      box.appendChild(djSec);
+    }
 
     // Upcoming
     if (upcoming.length) {
@@ -245,7 +296,7 @@ async function loadTimeline(){
       card.innerHTML = `
         <img alt="Album artwork" loading="eager" decoding="sync">
         <div class="event-details">
-          <div class="event-meta"><span>${fmtTime(live.time)}</span><span class="live-chip">LIVE NOW</span><span class="voice-chip" id="remainChip">—</span></div>
+          <div class="event-meta"><span>${fmtTime(live.time)}</span><span class="live-chip">LIVE NOW</span><span class="voice-chip" id="remainChip">${live.remaining_seconds ? Math.ceil(live.remaining_seconds) + 's left' : '—'}</span></div>
           <div class="event-title">${live.title || 'Unknown title'}</div>
           <div class="event-sub">${[live.artist, live.album].filter(Boolean).join(' • ') || 'Unknown artist'}</div>
         </div>`;

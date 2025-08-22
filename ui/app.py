@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, json, socket, time, html, hashlib, io, re, requests, subprocess, threading
+import os, json, socket, time, html, hashlib, io, re, requests, subprocess, threading, glob
 import urllib.parse
 from datetime import datetime
 from pathlib import Path
@@ -951,6 +951,18 @@ def api_now():
     now = _get_now_playing()
     if not now:
         return jsonify({"error": "No track info"}), 404
+    
+    # Add timing information from Liquidsoap
+    try:
+        remaining_str = _ls_query("output.icecast.remaining")
+        remaining_seconds = float(remaining_str.strip()) if remaining_str.strip() else 0
+        now["remaining_seconds"] = remaining_seconds
+        now["remaining_ms"] = int(remaining_seconds * 1000)
+    except Exception as e:
+        print(f"DEBUG: Could not get remaining time: {e}", file=sys.stderr)
+        now["remaining_seconds"] = 0
+        now["remaining_ms"] = 0
+    
     return jsonify(now)
 
 @app.get("/api/next")
@@ -1321,6 +1333,31 @@ def api_cover():
     if os.path.isfile(placeholder):
         return send_file(placeholder, mimetype="image/jpeg")
     return abort(404)
+
+@app.get("/api/dj_status")
+def api_dj_status():
+    """Get current DJ intro generation status"""
+    try:
+        status_file = "/opt/ai-radio/dj_status.json"
+        if os.path.exists(status_file):
+            with open(status_file, 'r') as f:
+                status = json.load(f)
+        else:
+            status = {
+                "current_generation": None,
+                "generation_queue": [],
+                "recent_intros": [],
+                "last_updated": 0
+            }
+        
+        # Add real-time info
+        status["intro_cache_exists"] = os.path.exists("/opt/ai-radio/intro_cache.json")
+        status["tts_queue_size"] = len(glob.glob("/opt/ai-radio/tts_queue/*.mp3"))
+        status["generation_active"] = os.path.exists("/tmp/dj_intro_generation.lock")
+        
+        return jsonify(status)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
 
 # ── Startup ─────────────────────────────────────────────────────
 load_history()

@@ -204,6 +204,9 @@ def generate_intro_for_track(artist: str, title: str, cache: IntroCache) -> Opti
     # Generate new intro
     print(f"Generating new intro for '{title}' by {artist}")
     
+    # Update status - starting generation
+    update_dj_status("start_generation", {"artist": artist, "title": title})
+    
     try:
         # Use existing XTTS generation script
         result = subprocess.run([
@@ -216,14 +219,76 @@ def generate_intro_for_track(artist: str, title: str, cache: IntroCache) -> Opti
             if os.path.exists(output_file):
                 cache.cache_intro(artist, title, output_file)
                 print(f"Successfully generated intro: {output_file}")
+                
+                # Update status - generation complete
+                update_dj_status("complete_generation", {"intro_file": output_file})
                 return output_file
         
-        print(f"ERROR: Intro generation failed: {result.stderr}")
+        error_msg = f"Script failed: {result.stderr}"
+        print(f"ERROR: Intro generation failed: {error_msg}")
+        update_dj_status("fail_generation", {"error": error_msg})
         
     except Exception as e:
-        print(f"ERROR: Exception during intro generation: {e}")
+        error_msg = f"Exception during generation: {e}"
+        print(f"ERROR: {error_msg}")
+        update_dj_status("fail_generation", {"error": error_msg})
     
     return None
+
+def update_dj_status(status_type: str, data: dict = None):
+    """Update the DJ generation status file for web UI"""
+    try:
+        status_file = "/opt/ai-radio/dj_status.json"
+        
+        # Load current status
+        if os.path.exists(status_file):
+            with open(status_file, 'r') as f:
+                status = json.load(f)
+        else:
+            status = {
+                "current_generation": None,
+                "generation_queue": [],
+                "recent_intros": [],
+                "last_updated": 0
+            }
+        
+        status["last_updated"] = time.time()
+        
+        if status_type == "start_generation":
+            status["current_generation"] = {
+                "artist": data.get("artist"),
+                "title": data.get("title"),
+                "started_at": time.time(),
+                "status": "generating"
+            }
+        elif status_type == "complete_generation":
+            if status["current_generation"]:
+                # Move to recent intros
+                completed = status["current_generation"].copy()
+                completed["completed_at"] = time.time()
+                completed["status"] = "completed"
+                completed["intro_file"] = data.get("intro_file")
+                
+                status["recent_intros"].insert(0, completed)
+                status["recent_intros"] = status["recent_intros"][:5]  # Keep last 5
+                status["current_generation"] = None
+        elif status_type == "fail_generation":
+            if status["current_generation"]:
+                failed = status["current_generation"].copy()
+                failed["completed_at"] = time.time()
+                failed["status"] = "failed"
+                failed["error"] = data.get("error", "Unknown error")
+                
+                status["recent_intros"].insert(0, failed)
+                status["recent_intros"] = status["recent_intros"][:5]
+                status["current_generation"] = None
+        
+        # Write back to file
+        with open(status_file, 'w') as f:
+            json.dump(status, f, indent=2)
+            
+    except Exception as e:
+        print(f"WARNING: Could not update DJ status: {e}", file=sys.stderr)
 
 def enqueue_intro_to_liquidsoap(intro_file: str) -> bool:
     """Enqueue generated intro to Liquidsoap TTS queue"""
