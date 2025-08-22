@@ -33,6 +33,12 @@ if "${PY}" "${APP}" --text "${TEXT}" --lang "${LANG}" --speaker "${SPEAKER}" --o
         echo "DEBUG: Successfully created ${OUT}" >&2
         echo "DEBUG: File size: $(stat -c%s "${OUT}") bytes" >&2
         echo "DEBUG: File permissions: $(ls -la "${OUT}")" >&2
+        
+        # Save transcript for web UI display
+        TRANSCRIPT_FILE="${OUT%.*}.txt"
+        echo "${TEXT}" > "${TRANSCRIPT_FILE}"
+        echo "DEBUG: Saved transcript to ${TRANSCRIPT_FILE}" >&2
+        
         # This is the critical line - output the file path for the calling script
         echo "${OUT}"
         exit 0

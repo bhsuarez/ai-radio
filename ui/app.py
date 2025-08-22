@@ -1043,10 +1043,20 @@ def api_tts_queue():
         artist = meta["artist"]
         when   = meta["ts"] or int(st.st_mtime * 1000)
 
-        # Build friendly text line
-        text = (f"That was {title} by {artist}."
-                if title or artist
-                else os.path.splitext(f)[0])
+        # Build friendly text line - check for transcript file first
+        transcript_file = os.path.splitext(p)[0] + '.txt'
+        if os.path.exists(transcript_file):
+            try:
+                with open(transcript_file, 'r', encoding='utf-8') as tf:
+                    text = tf.read().strip()
+            except Exception:
+                text = (f"That was {title} by {artist}."
+                        if title or artist
+                        else os.path.splitext(f)[0])
+        else:
+            text = (f"That was {title} by {artist}."
+                    if title or artist
+                    else os.path.splitext(f)[0])
 
         events.append({
             "type": "dj",              # <--- important
@@ -1387,7 +1397,7 @@ def api_cover():
         return send_file(placeholder, mimetype="image/jpeg")
     return abort(404)
 
-@app.get("/api/dj_status")
+@app.route("/api/dj_status")
 def api_dj_status():
     """Get current DJ intro generation status"""
     try:
