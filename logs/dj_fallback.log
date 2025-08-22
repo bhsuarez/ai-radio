@@ -1,0 +1,6 @@
+[2025-08-22 16:56:46] Starting DJ line generation for: 'One More Time' by 'Daft Punk'
+[2025-08-22 16:56:46] Trying Ollama model: llama3.2:3b (tier: tier1_ollama)
+[2025-08-22 16:57:00] SUCCESS: Ollama llama3.2:3b generated valid text
+[2025-08-22 16:57:40] Starting DJ line generation for: 'One More Time' by 'Daft Punk'
+[2025-08-22 16:57:40] Trying Ollama model: llama3.2:3b (tier: tier1_ollama)
+[2025-08-22 16:57:54] SUCCESS: Ollama llama3.2:3b generated valid text
