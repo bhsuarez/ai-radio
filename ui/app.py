@@ -3,7 +3,7 @@ import os, json, socket, time, html, hashlib, io, re, requests, subprocess, thre
 import urllib.parse
 from datetime import datetime
 from pathlib import Path
-from flask import Flask, jsonify, request, send_from_directory, send_file, abort
+from flask import Flask, jsonify, request, send_from_directory, send_file, abort, Response
 from urllib.parse import quote
 from urllib.parse import unquote, unquote_plus
 from contextlib import closing
@@ -91,27 +91,9 @@ _last_now_payload = None
 _dj_generation_lock = threading.Lock()
 _last_dj_generation = 0
 _last_dj_track_key = ""
-DJ_GENERATION_COOLDOWN = 15  # seconds between generations 
+DJ_GENERATION_COOLDOWN = 60  # seconds between generations - increased to prevent connection storm 
 
 # ── Helpers ─────────────────────────────────────────────────────
-def telnet_cmd(cmd: str, timeout=5) -> str:
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(timeout)
-    s.connect((TELNET_HOST, TELNET_PORT))
-    s.sendall((cmd + "\n").encode())
-    chunks = []
-    try:
-        while True:
-            try:
-                b = s.recv(65535)
-            except socket.timeout:
-                break
-            if not b:
-                break
-            chunks.append(b)
-    finally:
-        s.close()
-    return (b"".join(chunks).decode(errors="ignore") or "").strip()
 
 def _history_key(ev: dict) -> str:
     """Stable key: prefer filename; else title|artist|album."""
@@ -238,8 +220,9 @@ def read_now() -> dict:
     # Fallback: Liquidsoap telnet - FIXED VERSION
     if not data.get("title"):
         try:
-            # Use the correct telnet command
-            raw = telnet_cmd("output.icecast.metadata")
+            # Use the standardized telnet command
+            lines = _ls_lines("output.icecast.metadata")
+            raw = '\n'.join(lines)
             print(f"DEBUG: Raw telnet response: {raw}")
             
             # Parse the response - look for "--- 1 ---" section (current track)
@@ -560,7 +543,8 @@ def _get_now_playing() -> dict | None:
     
     try:
         # Use just the metadata fallback method to avoid multiple queries
-        raw2 = _ls_query("output.icecast.metadata")
+        lines2 = _ls_lines("output.icecast.metadata")
+        raw2 = '\n'.join(lines2)
         # capture lines between --- 1 --- and next --- or END
         block = []
         in_one = False
@@ -668,37 +652,8 @@ _key_val_re = re.compile(r'([^=]+)="(.*)"$')
 
 # Simple cache for now playing to avoid repeated slow Liquidsoap calls
 _now_playing_cache = {"data": None, "timestamp": 0}
-_CACHE_DURATION = 3  # seconds
+_CACHE_DURATION = 8  # seconds - increased to reduce liquidsoap calls
 
-def _ls_query(cmd: str, host: str = "127.0.0.1", port: int = 1234, timeout: float = 2.0) -> str:
-    """Send one command to LS telnet interface and return raw text (until END)."""
-    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    s.settimeout(timeout)
-    s.connect((host, port))
-    try:
-        # some LS builds print a banner; ignore
-        try:
-            _ = s.recv(4096)
-        except Exception:
-            pass
-        s.sendall((cmd + "\n").encode("utf-8"))
-
-        buf = b""
-        while True:
-            chunk = s.recv(4096)
-            if not chunk:
-                break
-            buf += chunk
-            if b"\nEND\n" in buf or buf.endswith(b"END\n") or b"END\r\n" in buf:
-                break
-        # be polite
-        try:
-            s.sendall(b"quit\n")
-        except Exception:
-            pass
-        return buf.decode("utf-8", "ignore")
-    finally:
-        s.close()
 
 def _ls_kv(cmd: str, timeout=2.5) -> dict:
     """
@@ -727,32 +682,49 @@ def _art_url_from_file(fname: str) -> str:
         return None
     return f"/api/cover?file={urllib.parse.quote(fname)}"
 
-def _ls_lines(cmd: str, timeout: float = 2.5):
+# Global lock to prevent connection storms to liquidsoap
+_liquidsoap_conn_lock = threading.Lock()
+
+def _ls_lines(cmd: str, timeout: float = 1.5):
     """
     Send a command to Liquidsoap's telnet interface and return a list of lines,
-    with trailing 'END' removed.
+    with trailing 'END' removed. Uses a global lock to prevent connection storms.
     """
-    data = b""
-    with socket.create_connection((LS_HOST, LS_PORT), timeout=timeout) as s:
-        s.settimeout(timeout)
-        s.sendall((cmd + "\n").encode("utf-8"))
-        s.sendall(b"quit\n")
-        start = time.time()
-        while time.time() - start < timeout:
-            try:
-                chunk = s.recv(4096)
-                if not chunk:
+    with _liquidsoap_conn_lock:
+        data = b""
+        s = None
+        try:
+            s = socket.create_connection((LS_HOST, LS_PORT), timeout=timeout)
+            s.settimeout(timeout)
+            s.sendall((cmd + "\n").encode("utf-8"))
+            s.sendall(b"quit\n")
+            s.shutdown(socket.SHUT_WR)  # Signal we're done sending
+            
+            start = time.time()
+            while time.time() - start < timeout:
+                try:
+                    chunk = s.recv(4096)
+                    if not chunk:
+                        break
+                    data += chunk
+                    # LS ends most responses with a line 'END'
+                    if b"\nEND" in data or data.rstrip().endswith(b"END"):
+                        break
+                except socket.timeout:
                     break
-                data += chunk
-                # LS ends most responses with a line 'END'
-                if b"\nEND" in data or data.rstrip().endswith(b"END"):
-                    break
-            except socket.timeout:
-                break
+        except (socket.error, ConnectionRefusedError, OSError) as e:
+            print(f"Liquidsoap connection error: {e}")
+            return []
+        finally:
+            if s:
+                try:
+                    s.close()
+                except:
+                    pass
 
-    lines = data.decode("utf-8", errors="ignore").splitlines()
-    # Strip any prompt/blank and the END sentinel
-    return [ln for ln in lines if ln.strip() and ln.strip() != "END"]
+        lines = data.decode("utf-8", errors="ignore").splitlines()
+        # Strip any prompt/blank and the END sentinel
+        return [ln for ln in lines if ln.strip() and ln.strip() != "END"]
 
 def _parse_kv_lines(lines):
     """
@@ -1267,7 +1239,7 @@ def tts_queue_post():
 @app.post("/api/skip")
 def api_skip():
     try:
-        telnet_cmd("output.icecast.skip")
+        _ls_lines("output.icecast.skip")
         return {"ok": True}
     except Exception as e:
         return {"ok": False, "error": str(e)}, 500
@@ -1356,33 +1328,27 @@ def api_dj_next():
         if not _should_generate_dj_intro(artist, title):
             return jsonify({"ok": True, "skipped": "throttled", "reason": "generation throttled"}), 200
     else:
-        # Original logic - get from Liquidsoap queue
+        # Original logic - get from Liquidsoap queue (REDUCED TO PREVENT CONNECTION STORM)
         try:
-            print("DEBUG: Getting next track from Liquidsoap queue")
-            # Test Liquidsoap connectivity first
-            try:
-                _ls_cmd("help", timeout=1.0)
-                print("DEBUG: Liquidsoap is responsive")
-            except Exception as conn_e:
-                print(f"DEBUG: Liquidsoap not ready yet: {conn_e}")
-                return jsonify({"ok": True, "skipped": "liquidsoap_not_ready"}), 200
+            print("DEBUG: Getting next track from Liquidsoap queue (throttled)")
+            # MUCH more aggressive throttling to prevent connection storm
+            with _liquidsoap_conn_lock:
+                rid_lines = _ls_cmd("request.all", timeout=1.0)
+                print(f"DEBUG: Raw queue response: {rid_lines}")
+                rids = []
+                for ln in rid_lines:
+                    rids.extend(x for x in ln.strip().split() if x.isdigit())
                 
-            rid_lines = _ls_cmd("request.all")
-            print(f"DEBUG: Raw queue response: {rid_lines}")
-            rids = []
-            for ln in rid_lines:
-                rids.extend(x for x in ln.strip().split() if x.isdigit())
-            
-            print(f"DEBUG: Found RIDs: {rids}")
-            if not rids:
-                print("DEBUG: No tracks in queue")
-                return jsonify({"ok": False, "error": "No tracks in queue"}), 400
-                
-            # Get metadata for the first (next) track
-            next_rid = rids[0] if len(rids) == 1 else rids[1]
-            print(f"DEBUG: Using RID {next_rid} for next track")
-            next_track = _metadata_for_rid(next_rid)
-            print(f"DEBUG: Metadata for RID {next_rid}: {next_track}")
+                print(f"DEBUG: Found RIDs: {rids}")
+                if not rids:
+                    print("DEBUG: No tracks in queue")
+                    return jsonify({"ok": True, "skipped": "no_tracks_in_queue"}), 200
+                    
+                # Get metadata for the first (next) track
+                next_rid = rids[0] if len(rids) == 1 else rids[1]
+                print(f"DEBUG: Using RID {next_rid} for next track")
+                next_track = _metadata_for_rid(next_rid)
+                print(f"DEBUG: Metadata for RID {next_rid}: {next_track}")
             
             # Extract metadata, with filename fallback
             title = next_track.get("title", "").strip()
@@ -1477,7 +1443,7 @@ def api_dj_next():
             env["CUSTOM_TEXT"] = ai_text  # Pass our generated text to the script
             
             # Build command with explicit speaker parameter and custom mode to use our text
-            cmd = ["/opt/ai-radio/dj_enqueue_xtts.sh", artist, title, "en", xtts_speaker, "custom"]
+            cmd = ["/opt/ai-radio/dj_enqueue_xtts_ai.sh", artist, title, "en", xtts_speaker, "custom"]
             print(f"DEBUG: XTTS command: {cmd}")
             print(f"DEBUG: Environment XTTS_SPEAKER set to: '{env['XTTS_SPEAKER']}'")
             print(f"DEBUG: Environment CUSTOM_TEXT set to: '{env['CUSTOM_TEXT']}'")
@@ -1595,7 +1561,7 @@ def api_dj_now():
     """Redirect to next-track DJ generation"""
     return api_dj_next()
 
-@app.get("/api/cover")
+@app.route("/api/cover", methods=["GET"])
 def api_cover():
     """
     Return embedded album art for a given audio file.
@@ -1672,7 +1638,7 @@ def api_cover():
         return send_file(placeholder, mimetype="image/jpeg")
     return abort(404)
 
-@app.get("/api/cover/online")
+@app.route("/api/cover/online", methods=["GET"])
 def api_cover_online():
     """
     Fetch album art online for tracks missing embedded covers.
