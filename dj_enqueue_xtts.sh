@@ -20,7 +20,20 @@ mkdir -p "${OUT_DIR}"
 
 TS=$(date +%s)
 OUT="${OUT_DIR}/intro_${TS}.mp3"
-TEXT="Up next: ${TITLE} by ${ARTIST}."
+
+# Generate AI-powered intro text using Ollama instead of generic text
+echo "DEBUG: Generating AI intro text for '$TITLE' by '$ARTIST'" >&2
+export DJ_INTRO_MODE=1  # Enable intro mode for AI generation
+AI_TEXT=$(/opt/ai-radio/gen_ai_dj_line.sh "$ARTIST" "$TITLE" 2>/dev/null || echo "")
+
+if [[ -n "$AI_TEXT" && "$AI_TEXT" != "ERROR"* ]]; then
+    TEXT="$AI_TEXT"
+    echo "DEBUG: Generated AI intro: '$TEXT'" >&2
+else
+    # Fallback to generic text if AI generation fails
+    TEXT="Up next: ${TITLE} by ${ARTIST}."
+    echo "DEBUG: AI generation failed, using fallback: '$TEXT'" >&2
+fi
 
 echo "DEBUG: Speaker parameter: '$SPEAKER'" >&2
 echo "DEBUG: Expected output file: '$OUT'" >&2
