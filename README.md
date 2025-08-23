@@ -1,5 +1,21 @@
 # AI Radio
 
+```
+         .-""""""""-.
+       .'            '.
+      /                \
+     ;      .-""-.      ;
+    /      /      \      \
+   ;      ;        ;      ;
+   |      |   🎵   |      |
+   ;      ;        ;      ;
+    \      \      /      /
+     ;      '-__-'      ;
+      \                /
+       '.            .'
+         '-.........-'
+```
+
 An intelligent radio streaming platform that automatically generates DJ commentary and manages music playback using Liquidsoap and AI-powered text-to-speech synthesis.
 
 ## Features
