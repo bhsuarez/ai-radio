@@ -114,7 +114,8 @@ music = source.on_metadata(music, auto_generate_dj_intro)
 music = crossfade(music)
 
 # Announce every real track start (attach once, on the smoothed music)
-music = source.on_metadata(music, announce_song)
+# Temporarily disabled to prevent connection flooding
+# music = source.on_metadata(music, announce_song)
 
 # Optional: Generate outros when tracks end
 # Uncomment this line if you want outro generation too:

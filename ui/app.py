@@ -78,6 +78,8 @@ UPCOMING = []
 MAX_HISTORY = 300
 NEXT_CACHE = Path("/opt/ai-radio/next.json")
 
+# Track history is now handled by metadata_daemon.py
+
 # Cover art cache - maps (artist, album) -> cover_url or None
 _cover_cache = {}
 _cover_cache_lock = threading.Lock()
@@ -529,116 +531,38 @@ _kv_re = re.compile(r'([a-zA-Z0-9_]+)="([^"]*)"')
 
 def _get_now_playing() -> dict | None:
     """
-    Get current track metadata from daemon cache to avoid telnet storms.
-    Falls back to direct Liquidsoap query if cache is unavailable.
+    Get current track metadata from daemon cache ONLY - no direct telnet to avoid storms.
     """
     import time as time_mod
     
-    # Try to read from daemon cache first
+    # ONLY read from daemon cache - no telnet fallback
     cache_file = "/opt/ai-radio/cache/now_metadata.json"
     try:
         if os.path.exists(cache_file):
             with open(cache_file, 'r') as f:
                 cached_data = json.load(f)
             
-            # Check if cache is fresh (less than 10 seconds old)
+            # Accept cache up to 30 seconds old (daemon updates every 5s)
             cache_age = time_mod.time() - cached_data.get("cached_at", 0)
-            if cache_age < 10:
+            if cache_age < 30:
                 print(f"DEBUG: Using cached metadata (age: {cache_age:.1f}s)")
                 return cached_data
             else:
-                print(f"DEBUG: Cache is stale (age: {cache_age:.1f}s), falling back to direct query")
+                print(f"DEBUG: Cache is stale (age: {cache_age:.1f}s) - daemon may be down")
     except Exception as e:
         print(f"DEBUG: Error reading cache file: {e}")
     
-    # Fallback to direct Liquidsoap query (with heavy caching)
-    current_time = time_mod.time()
-    if _now_playing_cache["data"] and (current_time - _now_playing_cache["timestamp"]) < _CACHE_DURATION:
-        return _now_playing_cache["data"]
-    
-    try:
-        print("DEBUG: Making direct Liquidsoap query (cache miss)")
-        # Use just the metadata fallback method to avoid multiple queries
-        lines2 = _ls_lines("output.icecast.metadata")
-        raw2 = '\n'.join(lines2)
-        # capture lines between --- 1 --- and next --- or END
-        block = []
-        in_one = False
-        for ln in raw2.splitlines():
-            if ln.strip().startswith("--- 1 ---"):
-                in_one = True
-                continue
-            if in_one and ln.strip().startswith("--- "):
-                break
-            if in_one and ln.strip() != "END":
-                block.append(ln)
-        d = _parse_kv_block("\n".join(block))
-        if d:
-            # Try to get timing information from Liquidsoap (MINIMAL CALLS)
-            duration_ms = None
-            elapsed_ms = None
-            
-            try:
-                # Get remaining time for the current output
-                remaining_lines = _ls_cmd("output.icecast.remaining", timeout=1.0)
-                if remaining_lines and len(remaining_lines) > 0:
-                    remaining_str = remaining_lines[0].strip()
-                    if remaining_str.replace('.', '').replace('-', '').isdigit():
-                        remaining_seconds = float(remaining_str)
-                        filename = d.get("filename") or ""
-                        
-                        # Support more audio formats and handle file:// URIs
-                        if filename:
-                            # Clean filename if it's a file:// URI
-                            if filename.startswith("file://"):
-                                filename = filename[7:]
-                                
-                            if os.path.isfile(filename) and filename.lower().endswith(('.mp3', '.m4a', '.flac', '.wav', '.ogg')):
-                                try:
-                                    import mutagen
-                                    audio = mutagen.File(filename)
-                                    if audio and hasattr(audio, 'info') and hasattr(audio.info, 'length'):
-                                        total_seconds = audio.info.length
-                                        duration_ms = int(total_seconds * 1000)
-                                        elapsed_ms = int((total_seconds - remaining_seconds) * 1000)
-                                        # Ensure elapsed_ms is not negative
-                                        elapsed_ms = max(0, elapsed_ms)
-                                except Exception as e:
-                                    print(f"DEBUG: Error getting duration from {filename}: {e}")
-                                    pass
-            except Exception:
-                pass
-            
-            result = {
-                "title": d.get("title") or "Unknown",
-                "artist": d.get("artist") or "Unknown", 
-                "album": d.get("album") or "",
-                "filename": d.get("filename") or "",
-                "comment": d.get("comment") or "",
-                "time": int(time_mod.time() * 1000),
-                "duration_ms": duration_ms,
-                "elapsed_ms": elapsed_ms,
-            }
-            _now_playing_cache["data"] = result
-            _now_playing_cache["timestamp"] = current_time
-            return result
-        return None
-    except Exception as e:
-        print(f"DEBUG: Liquidsoap query failed: {e}")
-        # Return cached data if available, even if stale
-        if _now_playing_cache["data"]:
-            print("DEBUG: Returning stale cached data due to Liquidsoap failure")
-            return _now_playing_cache["data"]
-        # Ultimate fallback
-        return {
-            "title": "Loading...",
-            "artist": "AI Radio",
-            "album": "",
-            "filename": "",
-            "time": int(time_mod.time() * 1000),
-            "duration_ms": None,
-            "elapsed_ms": None,
-        }
+    # NO TELNET FALLBACK - return placeholder to avoid connection storms
+    print("DEBUG: Returning placeholder data - daemon cache unavailable")
+    return {
+        "title": "Stream Loading...",
+        "artist": "AI Radio",
+        "album": "",
+        "filename": "",
+        "time": int(time_mod.time() * 1000),
+        "duration_ms": None,
+        "elapsed_ms": None,
+    }
 
 def _parse_kv_block(text: str) -> dict:
     """Parse lines like key="val" into dict; ignores '--- n ---' separators."""
@@ -1135,22 +1059,35 @@ def api_next():
     except Exception as e:
         print(f"DEBUG: Error reading next tracks cache: {e}")
     
-    # Fallback to direct Liquidsoap query
+    # NO TELNET FALLBACK - return empty array to avoid connection storms
+    print("DEBUG: Next tracks cache unavailable - daemon may be down")
+    return jsonify([])
+
+@app.get("/api/just-played")
+def api_just_played():
+    """Get recently played tracks from metadata daemon cache"""
     try:
-        print("DEBUG: Making direct Liquidsoap query for next tracks")
-        rid_lines = _ls_cmd("request.all")  # e.g. ["78 79"] or ["78", "79"]
-        rids = []
-        for ln in rid_lines:
-            rids.extend(x for x in ln.strip().split() if x.isdigit())
+        count = int(request.args.get('count', 10))
+        count = min(count, 50)  # Cap at 50
         
-        # Skip the first track (currently playing) and return only upcoming tracks
-        upcoming_rids = rids[1:] if len(rids) > 1 else []
-        upcoming = [_metadata_for_rid(r) for r in upcoming_rids]
-        return jsonify(upcoming)
+        # Try to read from daemon cache first
+        cache_file = "/opt/ai-radio/cache/just_played.json"
+        try:
+            if os.path.exists(cache_file):
+                with open(cache_file, 'r') as f:
+                    cached_data = json.load(f)
+                    return jsonify(cached_data[:count])
+        except Exception as e:
+            print(f"Error reading just-played cache: {e}")
+        
+        # Fallback to existing history if cache not available
+        with HISTORY_LOCK:
+            song_history = [item for item in HISTORY if item.get("type") == "song"]
+            return jsonify(song_history[:count])
+            
     except Exception as e:
-        app.logger.exception("next endpoint failed")
-        # return stable empty array on error so UI doesn't explode
-        return jsonify([])  # optionally: jsonify({"error": str(e)})
+        app.logger.exception("just-played endpoint failed")
+        return jsonify({"error": str(e)}), 500
 
 # Serve the synthesized DJ audio files
 @app.get("/tts_queue/<path:fname>")
@@ -1281,11 +1218,8 @@ def tts_queue_post():
 
 @app.post("/api/skip")
 def api_skip():
-    try:
-        _ls_lines("output.icecast.skip")
-        return {"ok": True}
-    except Exception as e:
-        return {"ok": False, "error": str(e)}, 500
+    # DISABLED to prevent telnet storms
+    return {"ok": False, "error": "Skip disabled to prevent connection storms"}, 503
 
 @app.post("/api/log_event")
 def log_event():
@@ -1451,73 +1385,30 @@ def api_dj_next():
         if not _should_generate_dj_intro(artist, title):
             return jsonify({"ok": True, "skipped": "throttled", "reason": "generation throttled"}), 200
     else:
-        # Original logic - get from Liquidsoap queue (REDUCED TO PREVENT CONNECTION STORM)
+        # NO TELNET FALLBACK - get from cache only to prevent connection storms
         try:
-            print("DEBUG: Getting next track from Liquidsoap queue (throttled)")
-            # MUCH more aggressive throttling to prevent connection storm
-            with _liquidsoap_conn_lock:
-                rid_lines = _ls_cmd("request.all", timeout=1.0)
-                print(f"DEBUG: Raw queue response: {rid_lines}")
-                rids = []
-                for ln in rid_lines:
-                    rids.extend(x for x in ln.strip().split() if x.isdigit())
+            print("DEBUG: Getting next track from cache only")
+            cache_file = "/opt/ai-radio/cache/next_metadata.json"
+            if os.path.exists(cache_file):
+                with open(cache_file, 'r') as f:
+                    next_tracks = json.load(f)
                 
-                print(f"DEBUG: Found RIDs: {rids}")
-                if not rids:
-                    print("DEBUG: No tracks in queue")
-                    return jsonify({"ok": True, "skipped": "no_tracks_in_queue"}), 200
-                    
-                # Get metadata for the first (next) track
-                next_rid = rids[0] if len(rids) == 1 else rids[1]
-                print(f"DEBUG: Using RID {next_rid} for next track")
-                next_track = _metadata_for_rid(next_rid)
-                print(f"DEBUG: Metadata for RID {next_rid}: {next_track}")
-            
-            # Extract metadata, with filename fallback
-            title = next_track.get("title", "").strip()
-            artist = next_track.get("artist", "").strip()
-            filename = next_track.get("filename", "")
-            
-            # If metadata is missing, try to extract from filename
-            if (not title or not artist) and filename:
-                print(f"DEBUG: Missing metadata, parsing filename: {filename}")
-                try:
-                    # Extract from path: /mnt/music/Music/Artist/Album/Title.ext
-                    path_parts = filename.split('/')
-                    if len(path_parts) >= 3:
-                        if not artist and len(path_parts) >= 4:
-                            artist = path_parts[-3]  # Artist directory
-                        if not title:
-                            title = os.path.splitext(path_parts[-1])[0]  # Filename without extension
-                        print(f"DEBUG: Extracted from path - Artist: '{artist}', Title: '{title}'")
-                except Exception as e:
-                    print(f"DEBUG: Error parsing filename: {e}")
-            
-            if not title and not artist:
-                print("DEBUG: Could not get metadata for next track")
-                return jsonify({"ok": False, "error": "No metadata for next track"}), 400
+                if next_tracks:
+                    # Use first upcoming track
+                    next_track = next_tracks[0]
+                    title = next_track.get("title", "Unknown Title")
+                    artist = next_track.get("artist", "Unknown Artist")
+                    print(f"DEBUG: Next track from cache - Title: '{title}', Artist: '{artist}'")
+                else:
+                    print("DEBUG: No upcoming tracks in cache")
+                    return jsonify({"ok": True, "skipped": "no_tracks_in_cache"}), 200
+            else:
+                print("DEBUG: Next tracks cache not available")
+                return jsonify({"ok": True, "skipped": "cache_unavailable"}), 200
                 
-            title = title or "Unknown Title"
-            artist = artist or "Unknown Artist"
-            
-            print(f"DEBUG: Next track from queue - Title: '{title}', Artist: '{artist}'")
-            
-            # Rate limiting to prevent duplicate TTS generation
-            current_time = time.time()
-            track_key = f"{artist}|{title}".lower()
-            
-            if (current_time - _last_tts_generation["time"] < _last_tts_generation["cooldown"] and 
-                _last_tts_generation["track_key"] == track_key):
-                print(f"DEBUG: TTS generation rate limited for: {track_key}")
-                return jsonify({"ok": True, "skipped": "rate_limited"}), 200
-            
-            # Update rate limiting tracker
-            _last_tts_generation["time"] = current_time
-            _last_tts_generation["track_key"] = track_key
-            
         except Exception as e:
-            print(f"DEBUG: Error getting next track: {e}")
-            return jsonify({"ok": False, "error": str(e)}), 500
+            print(f"DEBUG: Error reading next track cache: {e}")
+            return jsonify({"ok": False, "error": "Cache read error"}), 500
 
     # XTTS synthesis - FORCE CORRECT SPEAKER
     audio_url = None

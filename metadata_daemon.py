@@ -11,6 +11,8 @@ import os
 import re
 import threading
 from pathlib import Path
+from collections import deque
+from datetime import datetime
 
 # Configuration
 LIQUIDSOAP_HOST = "127.0.0.1"
@@ -23,6 +25,11 @@ LIQUIDSOAP_TIMEOUT = 2.0
 NOW_CACHE = os.path.join(CACHE_DIR, "now_metadata.json")
 NEXT_CACHE = os.path.join(CACHE_DIR, "next_metadata.json")
 REMAINING_CACHE = os.path.join(CACHE_DIR, "remaining_time.json")
+HISTORY_CACHE = os.path.join(CACHE_DIR, "just_played.json")
+
+# Track history state
+track_history = deque(maxlen=50)
+current_track_key = None
 
 # Global lock to prevent concurrent Liquidsoap access
 liquidsoap_lock = threading.Lock()
@@ -87,22 +94,39 @@ def get_current_metadata():
         lines = liquidsoap_command("output.icecast.metadata")
         raw_text = '\n'.join(lines)
         
-        # Parse the "--- 1 ---" section (current track)
-        current_block = []
-        in_current = False
+        # Find the first music track (skip DJ/TTS entries)
+        all_sections = {}
+        current_section = None
         
         for line in raw_text.splitlines():
             line = line.strip()
-            if line == "--- 1 ---":
-                in_current = True
-                continue
-            elif line.startswith("--- ") and line != "--- 1 ---":
-                in_current = False
-                break
-            elif in_current and "=" in line:
-                current_block.append(line)
+            if line.startswith("--- ") and line.endswith(" ---"):
+                section_num = line.strip("--- ")
+                current_section = section_num
+                all_sections[section_num] = []
+            elif current_section and "=" in line:
+                all_sections[current_section].append(line)
         
-        metadata = parse_kv_lines(current_block)
+        # Look for actual music track (not DJ intro)
+        metadata = {}
+        for section_num in sorted(all_sections.keys()):
+            section_data = parse_kv_lines(all_sections[section_num])
+            
+            # Skip AI DJ entries, look for real music
+            if (section_data.get("artist", "").lower() != "ai dj" and 
+                section_data.get("title", "").lower() != "dj intro" and
+                section_data.get("title", "") and 
+                section_data.get("artist", "")):
+                metadata = section_data
+                print(f"Found music track in section {section_num}: {metadata.get('title')} by {metadata.get('artist')}")
+                break
+        
+        # Fallback to section 1 if no music found
+        if not metadata and "1" in all_sections:
+            metadata = parse_kv_lines(all_sections["1"])
+            print(f"Fallback to section 1: {metadata}")
+        
+        print(f"Final metadata: {metadata}")
         
         # Get remaining time
         remaining_lines = liquidsoap_command("output.icecast.remaining")
@@ -226,10 +250,66 @@ def write_cache_file(filepath, data):
     except Exception as e:
         print(f"Error writing cache file {filepath}: {e}")
 
+def is_music_track(metadata):
+    """Check if track is actual music (not DJ/TTS)"""
+    if not metadata:
+        return False
+    artist = metadata.get('artist', '').lower()
+    filename = metadata.get('filename', '')
+    return (artist != 'ai dj' and 
+            not filename.startswith('/opt/ai-radio/tts/') and
+            metadata.get('title', '') and
+            metadata.get('artist', ''))
+
+def update_track_history(current_metadata):
+    """Update just-played history when track changes"""
+    global current_track_key, track_history
+    
+    if not current_metadata or not is_music_track(current_metadata):
+        return
+    
+    # Create unique key for track
+    track_key = f"{current_metadata.get('artist', '')}|{current_metadata.get('title', '')}"
+    
+    if current_track_key and current_track_key != track_key:
+        # Track changed, add previous to history
+        try:
+            # Add timestamp and convert to history format
+            history_entry = {
+                'artist': current_metadata.get('artist', 'Unknown'),
+                'title': current_metadata.get('title', 'Unknown'), 
+                'album': current_metadata.get('album', ''),
+                'filename': current_metadata.get('filename', ''),
+                'artwork_url': f"/api/cover?file={current_metadata.get('filename', '')}" if current_metadata.get('filename') else '',
+                'played_at': datetime.now().isoformat(),
+                'time': int(time.time() * 1000)
+            }
+            
+            track_history.appendleft(history_entry)
+            print(f"Added to history: {history_entry['title']} by {history_entry['artist']}")
+            
+            # Write updated history to cache
+            write_cache_file(HISTORY_CACHE, list(track_history))
+            
+        except Exception as e:
+            print(f"Error updating track history: {e}")
+    
+    current_track_key = track_key
+
 def daemon_loop():
     """Main daemon loop"""
-    print("Starting metadata caching daemon...")
+    print("Starting metadata caching daemon with track history...")
     setup_cache_dir()
+    
+    # Load existing history if available
+    try:
+        if os.path.exists(HISTORY_CACHE):
+            with open(HISTORY_CACHE, 'r') as f:
+                existing_history = json.load(f)
+                track_history.extend(existing_history)
+                print(f"Loaded {len(track_history)} tracks from existing history")
+    except Exception as e:
+        print(f"Could not load existing history: {e}")
     
     while True:
         try:
@@ -237,6 +317,8 @@ def daemon_loop():
             current_metadata = get_current_metadata()
             if current_metadata:
                 write_cache_file(NOW_CACHE, current_metadata)
+                # Update track history when music changes
+                update_track_history(current_metadata)
             
             # Update next tracks (less frequently to avoid overload)
             if time.time() % 15 < UPDATE_INTERVAL:  # Every 15 seconds
