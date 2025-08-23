@@ -1117,9 +1117,9 @@ def api_now():
 
 @app.get("/api/track-check")
 def api_track_check():
-    """Lightweight endpoint to check if track has changed since last check"""
+    """Lightweight endpoint to check if track has changed and provide current + next info"""
     try:
-        # Get minimal track info via single telnet call
+        # Single telnet call gets both current and next track data
         lines = _liquidsoap_telnet_command("output.icecast.metadata")
         if lines:
             # Parse metadata sections
@@ -1140,17 +1140,34 @@ def api_track_check():
             if current_section:
                 sections.append(current_section)
             
-            # Get first non-DJ track (current music track)
-            for section in sections:
-                if section.get("artist", "") != "AI DJ":
-                    title = section.get("title", "Unknown")
-                    artist = section.get("artist", "Unknown")
-                    return jsonify({
-                        "track_id": f"{artist}|{title}",
-                        "title": title,
-                        "artist": artist,
-                        "timestamp": int(time.time())
-                    })
+            # Get current and next music tracks (skip DJ intros)
+            music_tracks = [s for s in sections if s.get("artist", "") != "AI DJ"]
+            
+            if music_tracks:
+                current = music_tracks[0]
+                current_title = current.get("title", "Unknown")
+                current_artist = current.get("artist", "Unknown")
+                
+                # Also include next track if available
+                next_track = None
+                if len(music_tracks) > 1:
+                    next = music_tracks[1]
+                    next_track = {
+                        "title": next.get("title", "Unknown"),
+                        "artist": next.get("artist", "Unknown"),
+                        "album": next.get("album", "")
+                    }
+                
+                return jsonify({
+                    "track_id": f"{current_artist}|{current_title}",
+                    "current": {
+                        "title": current_title,
+                        "artist": current_artist,
+                        "album": current.get("album", "")
+                    },
+                    "next": next_track,
+                    "timestamp": int(time.time())
+                })
     except Exception as e:
         print(f"DEBUG: Track check failed: {e}")
     
