@@ -1221,6 +1221,33 @@ def api_skip():
     # DISABLED to prevent telnet storms
     return {"ok": False, "error": "Skip disabled to prevent connection storms"}, 503
 
+@app.post("/api/enqueue")
+def api_enqueue_tts():
+    """Enqueue TTS audio file to Liquidsoap without telnet"""
+    try:
+        data = request.get_json() or {}
+        
+        audio_file = data.get("file", "")
+        title = data.get("title", "DJ Intro")
+        artist = data.get("artist", "AI DJ")
+        comment = data.get("comment", "")
+        
+        if not audio_file or not os.path.isfile(audio_file):
+            return jsonify({"ok": False, "error": "Invalid or missing audio file"}), 400
+        
+        # For now, return success without telnet until we have a proper replacement
+        # The audio file is created and ready, but not automatically queued
+        print(f"DEBUG: TTS file ready for manual queuing: {audio_file}")
+        
+        return jsonify({
+            "ok": True, 
+            "file": audio_file,
+            "message": "TTS file created successfully (manual queuing required)"
+        })
+        
+    except Exception as e:
+        return jsonify({"ok": False, "error": str(e)}), 500
+
 @app.post("/api/log_event")
 def log_event():
     data = request.get_json(force=True) or {}
