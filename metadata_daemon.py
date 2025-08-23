@@ -10,14 +10,14 @@ import time
 import os
 import re
 import threading
+import requests
 from pathlib import Path
 
 # Configuration
-LIQUIDSOAP_HOST = "127.0.0.1"
-LIQUIDSOAP_PORT = 1234
+FLASK_API_BASE = "http://127.0.0.1:5055/api"
 CACHE_DIR = "/opt/ai-radio/cache"
 UPDATE_INTERVAL = 5  # seconds - much more frequent than before
-LIQUIDSOAP_TIMEOUT = 2.0
+API_TIMEOUT = 5.0
 
 # Cache files
 NOW_CACHE = os.path.join(CACHE_DIR, "now_metadata.json")
@@ -31,7 +31,7 @@ def setup_cache_dir():
     """Ensure cache directory exists"""
     os.makedirs(CACHE_DIR, exist_ok=True)
 
-def liquidsoap_command(cmd, timeout=LIQUIDSOAP_TIMEOUT):
+def liquidsoap_command(cmd, timeout=2.0):
     """
     Execute a single command against Liquidsoap telnet interface.
     Returns list of response lines (without 'END').
@@ -81,94 +81,26 @@ def parse_kv_lines(lines):
     return result
 
 def get_current_metadata():
-    """Get current track metadata from Liquidsoap"""
+    """Get current track metadata from Flask API"""
     try:
-        # Get metadata from output.icecast.metadata
-        lines = liquidsoap_command("output.icecast.metadata")
-        raw_text = '\n'.join(lines)
+        # Call Flask API for current metadata
+        response = requests.get(f"{FLASK_API_BASE}/now", timeout=API_TIMEOUT)
+        response.raise_for_status()
         
-        # Parse the "--- 1 ---" section (current track)
-        current_block = []
-        in_current = False
+        metadata = response.json()
+        print(f"Flask API metadata: {metadata}")
         
-        for line in raw_text.splitlines():
-            line = line.strip()
-            if line == "--- 1 ---":
-                in_current = True
-                continue
-            elif line.startswith("--- ") and line != "--- 1 ---":
-                in_current = False
-                break
-            elif in_current and "=" in line:
-                current_block.append(line)
+        # Add caching timestamp
+        metadata["cached_at"] = time.time()
         
-        metadata = parse_kv_lines(current_block)
+        return metadata
         
-        # Get remaining time
-        remaining_lines = liquidsoap_command("output.icecast.remaining")
-        remaining_time = None
-        if remaining_lines:
-            try:
-                remaining_str = remaining_lines[0].strip()
-                if remaining_str.replace('.', '').replace('-', '').isdigit():
-                    remaining_time = float(remaining_str)
-            except (ValueError, IndexError):
-                pass
-        
-        # Get filename from request metadata if not in main metadata
-        filename = metadata.get("filename", "")
-        if not filename:
-            try:
-                # Get current request ID and its metadata for filename
-                rid_lines = liquidsoap_command("request.all")
-                if rid_lines:
-                    rids = []
-                    for line in rid_lines:
-                        rids.extend(x for x in line.strip().split() if x.isdigit())
-                    if rids:
-                        current_rid = rids[0]
-                        rid_metadata = get_metadata_for_rid(current_rid)
-                        filename = rid_metadata.get("filename", "")
-            except Exception:
-                pass
-        
-        # Enhanced metadata with timing
-        result = {
-            "title": metadata.get("title", "Unknown"),
-            "artist": metadata.get("artist", "Unknown"),
-            "album": metadata.get("album", ""),
-            "filename": filename,
-            "comment": metadata.get("comment", ""),
-            "time": int(time.time() * 1000),
-            "remaining_seconds": remaining_time,
-            "duration_ms": None,
-            "elapsed_ms": None,
-            "cached_at": time.time()
-        }
-        
-        # Try to get duration from file if we have a filename and remaining time
-        if filename and remaining_time:
-            try:
-                import mutagen
-                clean_filename = filename
-                if clean_filename.startswith("file://"):
-                    clean_filename = clean_filename[7:]
-                    
-                if os.path.isfile(clean_filename) and clean_filename.lower().endswith(('.mp3', '.m4a', '.flac', '.wav', '.ogg')):
-                    audio = mutagen.File(clean_filename)
-                    if audio and hasattr(audio, 'info') and hasattr(audio.info, 'length'):
-                        total_seconds = audio.info.length
-                        result["duration_ms"] = int(total_seconds * 1000)
-                        result["elapsed_ms"] = max(0, int((total_seconds - remaining_time) * 1000))
-                        print(f"Added timing: duration={total_seconds:.1f}s, remaining={remaining_time:.1f}s, elapsed={total_seconds - remaining_time:.1f}s")
-            except Exception as e:
-                print(f"Error getting duration from {clean_filename}: {e}")
-        
-        return result
-        
+    except requests.exceptions.RequestException as e:
+        print(f"Error calling Flask API for metadata: {e}")
+        return {}
     except Exception as e:
         print(f"Error getting current metadata: {e}")
-        return None
+        return {}
 
 def get_metadata_for_rid(rid):
     """Get metadata for a specific request ID"""
@@ -192,25 +124,20 @@ def get_metadata_for_rid(rid):
         return {}
 
 def get_next_tracks():
-    """Get upcoming tracks from Liquidsoap queue"""
+    """Get upcoming tracks from Flask API"""
     try:
-        # Get all request IDs
-        rid_lines = liquidsoap_command("request.all")
-        rids = []
-        for line in rid_lines:
-            rids.extend(x for x in line.strip().split() if x.isdigit())
+        # Call Flask API for next tracks
+        response = requests.get(f"{FLASK_API_BASE}/next", timeout=API_TIMEOUT)
+        response.raise_for_status()
         
-        # Skip first RID (currently playing) and get metadata for upcoming tracks
-        upcoming_rids = rids[1:] if len(rids) > 1 else []
-        upcoming = []
+        next_tracks = response.json()
+        print(f"Flask API next tracks: {len(next_tracks)} upcoming")
         
-        for rid in upcoming_rids:
-            metadata = get_metadata_for_rid(rid)
-            if metadata.get("title") or metadata.get("filename"):
-                upcoming.append(metadata)
+        return next_tracks
         
-        return upcoming
-        
+    except requests.exceptions.RequestException as e:
+        print(f"Error calling Flask API for next tracks: {e}")
+        return []
     except Exception as e:
         print(f"Error getting next tracks: {e}")
         return []

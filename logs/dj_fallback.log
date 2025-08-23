@@ -22,3 +22,18 @@
 [2025-08-22 18:13:09] ERROR: OpenAI gpt-3.5-turbo API call failed
 [2025-08-22 18:13:10] Trying Ollama model: llama3.2:3b (tier: tier2_ollama)
 [2025-08-22 18:13:24] SUCCESS: Ollama llama3.2:3b generated valid text
+[2025-08-22 19:44:42] Starting DJ line generation for: 'Daft Punk' by 'One More Time'
+[2025-08-22 19:44:42] Trying OpenAI model: gpt-4o-mini
+[2025-08-22 19:44:43] ERROR: OpenAI gpt-4o-mini API call failed
+[2025-08-22 19:44:44] Retry 1 for gpt-4o-mini after 4s delay
+[2025-08-22 19:44:49] ERROR: OpenAI gpt-4o-mini API call failed
+[2025-08-22 19:44:50] Retry 2 for gpt-4o-mini after 7s delay
+[2025-08-22 19:44:57] ERROR: OpenAI gpt-4o-mini API call failed
+[2025-08-22 19:44:58] Trying OpenAI model: gpt-3.5-turbo
+[2025-08-22 19:44:58] ERROR: OpenAI gpt-3.5-turbo API call failed
+[2025-08-22 19:44:59] Retry 1 for gpt-3.5-turbo after 4s delay
+[2025-08-22 19:45:04] ERROR: OpenAI gpt-3.5-turbo API call failed
+[2025-08-22 19:45:05] Retry 2 for gpt-3.5-turbo after 7s delay
+[2025-08-22 19:45:13] ERROR: OpenAI gpt-3.5-turbo API call failed
+[2025-08-22 19:45:14] Trying Ollama model: llama3.2:3b (tier: tier2_ollama)
+[2025-08-22 19:45:34] SUCCESS: Ollama llama3.2:3b generated valid text

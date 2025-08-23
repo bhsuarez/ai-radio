@@ -1,24 +1,41 @@
 # AI Radio
 
+```
+         .-""""""""-.
+       .'            '.
+      /                \
+     ;      .-""-.      ;
+    /      /      \      \
+   ;      ;        ;      ;
+   |      |   🎵   |      |
+   ;      ;        ;      ;
+    \      \      /      /
+     ;      '-__-'      ;
+      \                /
+       '.            .'
+         '-.........-'
+```
+
 An intelligent radio streaming platform that automatically generates DJ commentary and manages music playback using Liquidsoap and AI-powered text-to-speech synthesis.
 
-## Features
+## Features ✨
 
-- **AI DJ Commentary**: Automatically generates contextual commentary about upcoming tracks using AI models
-- **Multiple TTS Engines**: Supports XTTS, ElevenLabs, and Piper text-to-speech synthesis
-- **Web Interface**: Real-time web UI for monitoring current track, history, and upcoming queue
-- **Automated Streaming**: Liquidsoap-based radio automation with intelligent queuing
-- **Cover Art**: Automatic album cover extraction and display
-- **Track History**: Persistent logging and display of played tracks
-- **API Integration**: RESTful API for external integrations and control
+- 🤖 **AI DJ Commentary**: Automatically generates contextual commentary about upcoming tracks using AI models
+- 🎤 **Multiple TTS Engines**: Supports XTTS, ElevenLabs, and Piper text-to-speech synthesis
+- 🌐 **Web Interface**: Real-time web UI for monitoring current track, history, and upcoming queue
+- 📻 **Automated Streaming**: Liquidsoap-based radio automation with intelligent queuing
+- 🎨 **Cover Art**: Automatic album cover extraction and display
+- 📝 **Track History**: Persistent logging and display of played tracks
+- 🔌 **API Integration**: RESTful API for external integrations and control
+- ⚡ **Telnet Storm Prevention**: Optimized polling system prevents connection flooding while maintaining real-time updates
 
-## Architecture
+## Architecture 🏗️
 
-- **Backend**: Python Flask application (`ui/app.py`) providing REST API and web interface
-- **Streaming**: Liquidsoap (`radio.liq`) handles audio streaming and queue management
-- **TTS Generation**: Multiple shell scripts for different TTS providers
-- **AI Generation**: Ollama integration for intelligent DJ commentary
-- **Storage**: JSON-based persistence for history and metadata
+- 🐍 **Backend**: Python Flask application (`ui/app.py`) providing REST API and web interface
+- 🎧 **Streaming**: Liquidsoap (`radio.liq`) handles audio streaming and queue management
+- 🗣️ **TTS Generation**: Multiple shell scripts for different TTS providers
+- 🧠 **AI Generation**: Ollama integration for intelligent DJ commentary
+- 💾 **Storage**: JSON-based persistence for history and metadata
 
 ## Directory Structure
 
@@ -63,34 +80,58 @@ An intelligent radio streaming platform that automatically generates DJ commenta
 - `dj_enqueue_elevenlabs.sh`: ElevenLabs TTS integration
 - `dj_enqueue_xtts_ai.sh`: AI-enhanced XTTS generation
 
-## API Endpoints
+## API Endpoints 🚀
 
-- `GET /api/now` - Current playing track
-- `GET /api/next` - Upcoming tracks in queue
-- `GET /api/history` - Recently played tracks
-- `GET /api/cover?file=<path>` - Album artwork
-- `POST /api/dj-next` - Generate DJ intro for next track
-- `POST /api/skip` - Skip current track
-- `POST /api/tts_queue` - Add TTS to queue
+- 📡 `GET /api/now` - Current playing track
+- ⏭️ `GET /api/next` - Upcoming tracks in queue  
+- ⚡ `GET /api/track-check` - **Optimized polling**: Current + next track info in single call
+- 📜 `GET /api/history` - Recently played tracks
+- 🖼️ `GET /api/cover?file=<path>` - Album artwork
+- 🎵 `POST /api/enqueue` - Enqueue TTS files via Flask API (replaces direct telnet)
+- 🎙️ `POST /api/dj-next` - Generate DJ intro for next track
+- ⏩ `POST /api/skip` - Skip current track
+- 🔊 `POST /api/tts_queue` - Add TTS to queue
 
-## Configuration
+## Telnet Storm Prevention 🛡️
 
-### Environment Variables
+This system implements an optimized polling architecture to prevent telnet connection flooding:
+
+**Smart Polling Strategy:**
+- Frontend polls `/api/track-check` every 15 seconds
+- Single telnet call retrieves both current and next track metadata  
+- Only full refresh when `track_id` changes
+- Metadata daemon uses Flask API instead of direct telnet
+
+**Architecture Flow:**
+```
+Frontend → /api/track-check (15s intervals) → Single telnet call → Liquidsoap
+Metadata Daemon → Flask API → (no telnet)
+TTS Scripts → Flask API → (no telnet)
+```
+
+**Benefits:**
+- Zero telnet storms while maintaining real-time updates
+- Minimal resource usage with smart change detection
+- Fresh metadata without cache staleness issues
+
+## Configuration ⚙️
+
+### Environment Variables 🌍
 - `ELEVENLABS_API_KEY`: API key for ElevenLabs TTS
 - `ELEVENLABS_VOICE_ID`: Voice ID for ElevenLabs
 - `XTTS_SPEAKER`: Speaker name for XTTS
 - `USE_XTTS`: Enable/disable XTTS (default: 1)
 - `DJ_INTRO_MODE`: DJ commentary mode flag
 
-### Music Library
+### Music Library 🎵
 Edit `library_clean.m3u` to point to your music files. Supports standard audio formats (MP3, FLAC, M4A, WAV).
 
-### TTS Configuration
+### TTS Configuration 🎤
 - XTTS models stored in `xtts-venv/`
 - Voice samples in `voices/` directory
 - DJ settings in `dj_settings.json`
 
-## Installation & Setup
+## Installation & Setup 🚀
 
 1. Ensure Liquidsoap 2.3.x is installed
 2. Install Python dependencies for Flask application

@@ -80,7 +80,10 @@ else
     ffmpeg -nostdin -y -i "$WAV" -codec:a libmp3lame -q:a 3 "$OUT" >/dev/null 2>&1 || mv "$WAV" "$OUT"
 fi
 
-# 5) Queue it in Liquidsoap
-printf 'tts.push file://%s\n' "$OUT" | nc 127.0.0.1 1234
+# 5) Queue it in Liquidsoap (via Flask API)
+curl -s -X POST "http://127.0.0.1:5055/api/enqueue" \
+    -H "Content-Type: application/json" \
+    -d "{\"file\":\"${OUT}\",\"title\":\"DJ Intro\",\"artist\":\"AI DJ\",\"comment\":\"${LINE}\"}" \
+    >/dev/null 2>&1
 
 echo "Queued DJ intro for: $TITLE – $ARTIST -> $OUT"

@@ -96,15 +96,16 @@ if "${PY}" "${APP}" --text "${TEXT}" --lang "${LANG}" --speaker "${SPEAKER}" --o
         echo "$TEXT" > "$TXT_FILE"
         echo "DEBUG: Saved transcript to ${TXT_FILE}" >&2
         
-        # Auto-queue in Liquidsoap if this is an intro
+        # Auto-queue in Liquidsoap if this is an intro (via Flask API)
         if [[ "$MODE" == "intro" ]]; then
-            echo "DEBUG: Auto-queuing intro in Liquidsoap..." >&2
+            echo "DEBUG: Enqueuing intro via Flask API..." >&2
             safe_text=$(echo "$TEXT" | sed 's/"/\\"/g' | sed "s/'/\\'/g")
-            metadata="title=\"DJ Intro\",artist=\"AI DJ\",comment=\"${safe_text}\""
-            push_cmd="tts.push annotate:${metadata}:${OUT}"
             
-            echo "$push_cmd" | nc 127.0.0.1 1234 >/dev/null 2>&1 || {
-                echo "DEBUG: Failed to queue in Liquidsoap, but file created successfully" >&2
+            curl -s -X POST "http://127.0.0.1:5055/api/enqueue" \
+                -H "Content-Type: application/json" \
+                -d "{\"file\":\"${OUT}\",\"title\":\"DJ Intro\",\"artist\":\"AI DJ\",\"comment\":\"${safe_text}\"}" \
+                >/dev/null 2>&1 || {
+                echo "DEBUG: Failed to queue via API, but file created successfully" >&2
             }
         fi
         
