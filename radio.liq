@@ -12,6 +12,7 @@ settings.server.telnet := true
 settings.server.telnet.bind_addr := "127.0.0.1"
 settings.server.telnet.port := 1234
 
+
 # ---------- Sources ----------
 # Queue for DJ/TTS lines - this will play intros with timeout
 tts_q = request.queue(id="tts", timeout=30.0)
@@ -31,6 +32,7 @@ end
 
 # Global variable to track last processed track (to avoid duplicates)
 last_processed_track = ref("")
+
 
 # Auto-generate DJ intro for upcoming track
 def auto_generate_dj_intro(m)
@@ -143,3 +145,4 @@ output.icecast(
   description="24/7 auto-DJ with AI commentary",
   radio
 )
+

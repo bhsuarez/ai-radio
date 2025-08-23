@@ -529,31 +529,106 @@ def _ls_cmd(cmd: str, timeout: float = 2.5):
 _kv_re = re.compile(r'([a-zA-Z0-9_]+)="([^"]*)"')
 
 
+def _liquidsoap_telnet_command(cmd: str, timeout: float = 2.0) -> list[str]:
+    """
+    Send a single command to Liquidsoap's telnet interface.
+    Used sparingly by Flask API only to avoid storms.
+    """
+    try:
+        result = subprocess.run(
+            ["nc", "127.0.0.1", "1234"],
+            input=f"{cmd}\nquit\n".encode(),
+            capture_output=True,
+            timeout=timeout
+        )
+        if result.returncode == 0:
+            output = result.stdout.decode().strip()
+            return [line.strip() for line in output.split('\n') if line.strip()]
+        else:
+            print(f"DEBUG: Telnet command failed: {result.stderr.decode()}")
+            return []
+    except Exception as e:
+        print(f"DEBUG: Telnet error: {e}")
+        return []
+
 def _get_now_playing() -> dict | None:
     """
-    Get current track metadata from daemon cache ONLY - no direct telnet to avoid storms.
+    Get current track metadata - cache first, then single controlled telnet if needed.
     """
     import time as time_mod
     
-    # ONLY read from daemon cache - no telnet fallback
+    # Try daemon cache first (preferred)
     cache_file = "/opt/ai-radio/cache/now_metadata.json"
     try:
         if os.path.exists(cache_file):
             with open(cache_file, 'r') as f:
                 cached_data = json.load(f)
             
-            # Accept cache up to 30 seconds old (daemon updates every 5s)
+            # Accept cache up to 10 seconds old
             cache_age = time_mod.time() - cached_data.get("cached_at", 0)
-            if cache_age < 30:
+            if cache_age < 10:
                 print(f"DEBUG: Using cached metadata (age: {cache_age:.1f}s)")
-                return cached_data
-            else:
-                print(f"DEBUG: Cache is stale (age: {cache_age:.1f}s) - daemon may be down")
+                # If cache has proper metadata, use it
+                if cached_data.get("title", "Unknown").strip() not in ["Unknown", ""]:
+                    return cached_data
     except Exception as e:
         print(f"DEBUG: Error reading cache file: {e}")
     
-    # NO TELNET FALLBACK - return placeholder to avoid connection storms
-    print("DEBUG: Returning placeholder data - daemon cache unavailable")
+    # Fallback: Single controlled telnet call for live metadata from icecast
+    print("DEBUG: Trying live metadata via icecast metadata")
+    try:
+        lines = _liquidsoap_telnet_command("output.icecast.metadata")
+        if lines:
+            # Parse the current metadata - look for the most recent music track (not DJ intro)
+            current_section = {}
+            sections = []
+            
+            for line in lines:
+                if line.startswith("--- ") and line.endswith(" ---"):
+                    if current_section:
+                        sections.append(current_section)
+                    current_section = {}
+                elif "=" in line:
+                    key, val = line.split("=", 1)
+                    key = key.strip()
+                    val = val.strip().strip('"')
+                    current_section[key] = val
+            
+            if current_section:
+                sections.append(current_section)
+            
+            # Find the CURRENT playing music track (first non-DJ track, which is most recent)
+            current_track = None
+            for section in sections:
+                if section.get("artist", "") != "AI DJ":
+                    current_track = section
+                    break  # Take the first non-DJ track (most recent)
+            
+            if current_track:
+                data = {
+                    "title": current_track.get("title", "Unknown"),
+                    "artist": current_track.get("artist", "Unknown"), 
+                    "album": current_track.get("album", ""),
+                    "filename": current_track.get("filename", ""),
+                    "genre": current_track.get("genre", ""),
+                    "date": current_track.get("date", ""),
+                }
+                print(f"DEBUG: Live icecast metadata: {data}")
+                return data
+    except Exception as e:
+        print(f"DEBUG: Live metadata failed: {e}")
+    
+    # Final fallback - return stale cache or placeholder
+    if os.path.exists(cache_file):
+        try:
+            with open(cache_file, 'r') as f:
+                cached_data = json.load(f)
+            print("DEBUG: Using stale cache as final fallback")
+            return cached_data
+        except:
+            pass
+            
+    print("DEBUG: Returning placeholder data - all methods failed")
     return {
         "title": "Stream Loading...",
         "artist": "AI Radio",
@@ -1040,6 +1115,47 @@ def api_now():
         return jsonify({"error": "No track info"}), 404
     return jsonify(now)
 
+@app.get("/api/track-check")
+def api_track_check():
+    """Lightweight endpoint to check if track has changed since last check"""
+    try:
+        # Get minimal track info via single telnet call
+        lines = _liquidsoap_telnet_command("output.icecast.metadata")
+        if lines:
+            # Parse metadata sections
+            current_section = {}
+            sections = []
+            
+            for line in lines:
+                if line.startswith("--- ") and line.endswith(" ---"):
+                    if current_section:
+                        sections.append(current_section)
+                    current_section = {}
+                elif "=" in line and not line.startswith("itunsmpb"):
+                    key, val = line.split("=", 1)
+                    key = key.strip()
+                    val = val.strip().strip('"')
+                    current_section[key] = val
+            
+            if current_section:
+                sections.append(current_section)
+            
+            # Get first non-DJ track (current music track)
+            for section in sections:
+                if section.get("artist", "") != "AI DJ":
+                    title = section.get("title", "Unknown")
+                    artist = section.get("artist", "Unknown")
+                    return jsonify({
+                        "track_id": f"{artist}|{title}",
+                        "title": title,
+                        "artist": artist,
+                        "timestamp": int(time.time())
+                    })
+    except Exception as e:
+        print(f"DEBUG: Track check failed: {e}")
+    
+    return jsonify({"track_id": "error", "timestamp": int(time.time())})
+
 @app.get("/api/next")
 def api_next():
     # Try to read from daemon cache first
@@ -1059,8 +1175,52 @@ def api_next():
     except Exception as e:
         print(f"DEBUG: Error reading next tracks cache: {e}")
     
-    # NO TELNET FALLBACK - return empty array to avoid connection storms
-    print("DEBUG: Next tracks cache unavailable - daemon may be down")
+    # Fallback: Get next tracks via controlled telnet
+    print("DEBUG: Getting next tracks via telnet")
+    try:
+        # Get all request IDs
+        request_lines = _liquidsoap_telnet_command("request.all")
+        if request_lines and len(request_lines) > 1:
+            # Parse request IDs (skip current, get next ones)
+            request_ids = []
+            for line in request_lines:
+                if line.strip() and line.strip() != "END":
+                    ids = line.strip().split()
+                    request_ids.extend(ids)
+            
+            next_tracks = []
+            # Get metadata for next 2-3 requests (skip first which is current)
+            for rid in request_ids[1:3]:  # Skip current, get next 2
+                try:
+                    meta_lines = _liquidsoap_telnet_command(f"request.metadata {rid}")
+                    track_data = {}
+                    
+                    for line in meta_lines:
+                        if "=" in line and not line.startswith("itunsmpb") and not line.startswith("cover"):
+                            key, val = line.split("=", 1)
+                            key = key.strip()
+                            val = val.strip().strip('"')
+                            track_data[key] = val
+                    
+                    if track_data.get("title") and track_data.get("artist") != "AI DJ":
+                        next_track = {
+                            "title": track_data.get("title", "Unknown"),
+                            "artist": track_data.get("artist", "Unknown"),
+                            "album": track_data.get("album", ""),
+                            "filename": track_data.get("filename", ""),
+                            "artwork_url": f"/api/cover?file={urllib.parse.quote(track_data.get('filename', ''))}" if track_data.get("filename") else None
+                        }
+                        next_tracks.append(next_track)
+                except Exception as e:
+                    print(f"DEBUG: Error getting metadata for request {rid}: {e}")
+                    
+            if next_tracks:
+                print(f"DEBUG: Live next tracks: {next_tracks}")
+                return jsonify(next_tracks)
+    except Exception as e:
+        print(f"DEBUG: Live next tracks failed: {e}")
+    
+    print("DEBUG: Returning empty next tracks")
     return jsonify([])
 
 @app.get("/api/just-played")
