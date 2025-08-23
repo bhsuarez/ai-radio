@@ -11,6 +11,7 @@ An intelligent radio streaming platform that automatically generates DJ commenta
 - **Cover Art**: Automatic album cover extraction and display
 - **Track History**: Persistent logging and display of played tracks
 - **API Integration**: RESTful API for external integrations and control
+- **Telnet Storm Prevention**: Optimized polling system prevents connection flooding while maintaining real-time updates
 
 ## Architecture
 
@@ -66,12 +67,36 @@ An intelligent radio streaming platform that automatically generates DJ commenta
 ## API Endpoints
 
 - `GET /api/now` - Current playing track
-- `GET /api/next` - Upcoming tracks in queue
+- `GET /api/next` - Upcoming tracks in queue  
+- `GET /api/track-check` - **Optimized polling**: Current + next track info in single call
 - `GET /api/history` - Recently played tracks
 - `GET /api/cover?file=<path>` - Album artwork
+- `POST /api/enqueue` - Enqueue TTS files via Flask API (replaces direct telnet)
 - `POST /api/dj-next` - Generate DJ intro for next track
 - `POST /api/skip` - Skip current track
 - `POST /api/tts_queue` - Add TTS to queue
+
+## Telnet Storm Prevention
+
+This system implements an optimized polling architecture to prevent telnet connection flooding:
+
+**Smart Polling Strategy:**
+- Frontend polls `/api/track-check` every 15 seconds
+- Single telnet call retrieves both current and next track metadata  
+- Only full refresh when `track_id` changes
+- Metadata daemon uses Flask API instead of direct telnet
+
+**Architecture Flow:**
+```
+Frontend → /api/track-check (15s intervals) → Single telnet call → Liquidsoap
+Metadata Daemon → Flask API → (no telnet)
+TTS Scripts → Flask API → (no telnet)
+```
+
+**Benefits:**
+- Zero telnet storms while maintaining real-time updates
+- Minimal resource usage with smart change detection
+- Fresh metadata without cache staleness issues
 
 ## Configuration
 
