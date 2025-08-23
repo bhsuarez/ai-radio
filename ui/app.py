@@ -529,19 +529,35 @@ _kv_re = re.compile(r'([a-zA-Z0-9_]+)="([^"]*)"')
 
 def _get_now_playing() -> dict | None:
     """
-    Determine current track with caching to avoid slow Liquidsoap calls:
-      1) request.all -> list of RIDs (lower RID == currently playing)
-      2) request.metadata <rid> -> kv metadata
-      Fallback: parse block --- 1 --- from output.icecast.metadata
+    Get current track metadata from daemon cache to avoid telnet storms.
+    Falls back to direct Liquidsoap query if cache is unavailable.
     """
     import time as time_mod
-    current_time = time_mod.time()
     
-    # Check cache first
+    # Try to read from daemon cache first
+    cache_file = "/opt/ai-radio/cache/now_metadata.json"
+    try:
+        if os.path.exists(cache_file):
+            with open(cache_file, 'r') as f:
+                cached_data = json.load(f)
+            
+            # Check if cache is fresh (less than 10 seconds old)
+            cache_age = time_mod.time() - cached_data.get("cached_at", 0)
+            if cache_age < 10:
+                print(f"DEBUG: Using cached metadata (age: {cache_age:.1f}s)")
+                return cached_data
+            else:
+                print(f"DEBUG: Cache is stale (age: {cache_age:.1f}s), falling back to direct query")
+    except Exception as e:
+        print(f"DEBUG: Error reading cache file: {e}")
+    
+    # Fallback to direct Liquidsoap query (with heavy caching)
+    current_time = time_mod.time()
     if _now_playing_cache["data"] and (current_time - _now_playing_cache["timestamp"]) < _CACHE_DURATION:
         return _now_playing_cache["data"]
     
     try:
+        print("DEBUG: Making direct Liquidsoap query (cache miss)")
         # Use just the metadata fallback method to avoid multiple queries
         lines2 = _ls_lines("output.icecast.metadata")
         raw2 = '\n'.join(lines2)
@@ -558,7 +574,7 @@ def _get_now_playing() -> dict | None:
                 block.append(ln)
         d = _parse_kv_block("\n".join(block))
         if d:
-            # Try to get timing information from Liquidsoap
+            # Try to get timing information from Liquidsoap (MINIMAL CALLS)
             duration_ms = None
             elapsed_ms = None
             
@@ -569,37 +585,27 @@ def _get_now_playing() -> dict | None:
                     remaining_str = remaining_lines[0].strip()
                     if remaining_str.replace('.', '').replace('-', '').isdigit():
                         remaining_seconds = float(remaining_str)
-                        # Try to get filename for duration calculation
                         filename = d.get("filename") or ""
                         
-                        # If no filename in metadata, get it from request metadata
-                        if not filename:
-                            try:
-                                # Find the current RID and get its metadata with filename
-                                rid_lines = _ls_cmd("request.all", timeout=1.0)
-                                if rid_lines:
-                                    rids = []
-                                    for ln in rid_lines:
-                                        rids.extend(x for x in ln.strip().split() if x.isdigit())
-                                    if rids:
-                                        current_rid = rids[0]  # First RID is currently playing
-                                        metadata = _metadata_for_rid(current_rid)
-                                        filename = metadata.get("filename") or ""
-                                        # Update d with the filename for the result
-                                        d["filename"] = filename
-                            except Exception:
-                                pass
-                        
-                        if filename and filename.endswith('.mp3') and os.path.isfile(filename):
-                            try:
-                                import mutagen
-                                audio = mutagen.File(filename)
-                                if audio and hasattr(audio, 'info') and hasattr(audio.info, 'length'):
-                                    total_seconds = audio.info.length
-                                    duration_ms = int(total_seconds * 1000)
-                                    elapsed_ms = int((total_seconds - remaining_seconds) * 1000)
-                            except Exception:
-                                pass
+                        # Support more audio formats and handle file:// URIs
+                        if filename:
+                            # Clean filename if it's a file:// URI
+                            if filename.startswith("file://"):
+                                filename = filename[7:]
+                                
+                            if os.path.isfile(filename) and filename.lower().endswith(('.mp3', '.m4a', '.flac', '.wav', '.ogg')):
+                                try:
+                                    import mutagen
+                                    audio = mutagen.File(filename)
+                                    if audio and hasattr(audio, 'info') and hasattr(audio.info, 'length'):
+                                        total_seconds = audio.info.length
+                                        duration_ms = int(total_seconds * 1000)
+                                        elapsed_ms = int((total_seconds - remaining_seconds) * 1000)
+                                        # Ensure elapsed_ms is not negative
+                                        elapsed_ms = max(0, elapsed_ms)
+                                except Exception as e:
+                                    print(f"DEBUG: Error getting duration from {filename}: {e}")
+                                    pass
             except Exception:
                 pass
             
@@ -1112,7 +1118,26 @@ def api_now():
 
 @app.get("/api/next")
 def api_next():
+    # Try to read from daemon cache first
+    cache_file = "/opt/ai-radio/cache/next_metadata.json"
     try:
+        if os.path.exists(cache_file):
+            with open(cache_file, 'r') as f:
+                cached_data = json.load(f)
+            
+            # Check if cache is reasonably fresh (less than 30 seconds old)
+            cache_age = time.time() - os.path.getmtime(cache_file)
+            if cache_age < 30:
+                print(f"DEBUG: Using cached next tracks (age: {cache_age:.1f}s)")
+                return jsonify(cached_data)
+            else:
+                print(f"DEBUG: Next tracks cache is stale (age: {cache_age:.1f}s)")
+    except Exception as e:
+        print(f"DEBUG: Error reading next tracks cache: {e}")
+    
+    # Fallback to direct Liquidsoap query
+    try:
+        print("DEBUG: Making direct Liquidsoap query for next tracks")
         rid_lines = _ls_cmd("request.all")  # e.g. ["78 79"] or ["78", "79"]
         rids = []
         for ln in rid_lines:
@@ -1168,37 +1193,47 @@ def api_tts_queue():
     if not os.path.isdir(root):
         return jsonify([])
 
+    # Only include files that have BOTH audio and transcript
     files = [f for f in os.listdir(root)
              if f.lower().endswith((".mp3", ".m4a", ".wav", ".ogg"))]
 
     events = []
     for f in files:
-        p = os.path.join(root, f)
+        audio_path = os.path.join(root, f)
         try:
-            st = os.stat(p)
+            st = os.stat(audio_path)
         except FileNotFoundError:
             continue
 
-        meta = _parse_tts_name(p)
+        # Check if transcript exists
+        txt_file = audio_path.replace('.mp3', '.txt').replace('.m4a', '.txt').replace('.wav', '.txt').replace('.ogg', '.txt')
+        if not os.path.isfile(txt_file):
+            print(f"DEBUG: Skipping {f} - no transcript file")
+            continue
+        
+        # Verify audio file is complete (not currently being written)
+        if f.endswith('_temp.wav') or st.st_size < 1000:  # Skip temp files or very small files
+            continue
+
+        meta = _parse_tts_name(audio_path)
         title  = meta["title"]
         artist = meta["artist"]
         when   = meta["ts"] or int(st.st_mtime * 1000)
 
-        # Try to read actual transcript from .txt file
-        txt_file = p.replace('.mp3', '.txt').replace('.m4a', '.txt').replace('.wav', '.txt').replace('.ogg', '.txt')
+        # Read transcript
         actual_transcript = None
-        if os.path.isfile(txt_file):
-            try:
-                with open(txt_file, 'r', encoding='utf-8') as tf:
-                    actual_transcript = tf.read().strip()
-            except Exception as e:
-                print(f"DEBUG: Could not read transcript file {txt_file}: {e}")
+        try:
+            with open(txt_file, 'r', encoding='utf-8') as tf:
+                actual_transcript = tf.read().strip()
+        except Exception as e:
+            print(f"DEBUG: Could not read transcript file {txt_file}: {e}")
+            continue  # Skip this entry if we can't read the transcript
 
-        # Use actual transcript if available, otherwise fallback
-        if actual_transcript:
+        # Only include if we have a valid transcript
+        if actual_transcript and not actual_transcript.startswith("/opt/ai-radio/"):
             text = actual_transcript
         else:
-            # Better fallback for missing transcripts
+            # Fallback text
             if title and artist:
                 text = f"Coming up next: {title} by {artist}"
             elif title:
@@ -1206,11 +1241,17 @@ def api_tts_queue():
             else:
                 text = "AI DJ intro"
 
+        # Verify audio URL will work
+        audio_url = f"/tts_queue/{f}"
+        
         events.append({
-            "type": "dj",              # <--- important
+            "type": "dj",
             "time": when,
             "text": text,
-            "audio_url": f"/tts_queue/{f}",
+            "audio_url": audio_url,
+            "status": "ready",  # New field to track completion
+            "transcript_file": txt_file,
+            "audio_file": audio_path,
         })
 
     events.sort(key=lambda e: e["time"], reverse=True)
@@ -1281,6 +1322,86 @@ def cleanup_history():
         return jsonify({"ok": True, "removed": original_count - len(cleaned), "remaining": len(cleaned)})
     except Exception as e:
         app.logger.exception("cleanup failed")
+        return jsonify({"error": str(e)}), 500
+
+@app.post("/api/cleanup-tts")
+def cleanup_tts():
+    """Clean up orphaned TTS files and report status."""
+    try:
+        root = _tts_root()
+        if not os.path.isdir(root):
+            return jsonify({"error": "TTS directory not found"}), 404
+            
+        orphaned_txt = []
+        orphaned_audio = []
+        temp_files = []
+        old_files = []
+        current_time = time.time()
+        
+        # Find all files
+        all_files = os.listdir(root)
+        txt_files = {f for f in all_files if f.endswith('.txt')}
+        audio_files = {f for f in all_files if f.lower().endswith(('.mp3', '.m4a', '.wav', '.ogg'))}
+        
+        # Check for orphaned txt files (no corresponding audio)
+        for txt in txt_files:
+            base_name = os.path.splitext(txt)[0]
+            has_audio = any(os.path.splitext(audio)[0] == base_name for audio in audio_files)
+            if not has_audio:
+                orphaned_txt.append(txt)
+                
+        # Check for orphaned audio files (no corresponding txt)
+        for audio in audio_files:
+            base_name = os.path.splitext(audio)[0]
+            txt_name = base_name + '.txt'
+            if txt_name not in txt_files and not audio.endswith('_temp.wav'):
+                orphaned_audio.append(audio)
+                
+        # Find temp files and old files (>7 days)
+        for f in all_files:
+            if f.endswith('_temp.wav'):
+                temp_files.append(f)
+            else:
+                file_path = os.path.join(root, f)
+                try:
+                    file_age = current_time - os.path.getmtime(file_path)
+                    if file_age > (7 * 24 * 3600):  # 7 days
+                        old_files.append(f)
+                except OSError:
+                    pass
+        
+        # Optionally clean up based on query parameter
+        if request.args.get('clean') == 'true':
+            removed_count = 0
+            for f in orphaned_txt + temp_files:
+                try:
+                    os.remove(os.path.join(root, f))
+                    removed_count += 1
+                except OSError:
+                    pass
+                    
+            return jsonify({
+                "ok": True,
+                "cleaned": removed_count,
+                "orphaned_txt": len(orphaned_txt),
+                "temp_files": len(temp_files)
+            })
+        else:
+            return jsonify({
+                "ok": True,
+                "orphaned_txt_files": len(orphaned_txt),
+                "orphaned_audio_files": len(orphaned_audio), 
+                "temp_files": len(temp_files),
+                "old_files": len(old_files),
+                "details": {
+                    "orphaned_txt": orphaned_txt[:10],  # Show first 10
+                    "orphaned_audio": orphaned_audio[:10],
+                    "temp_files": temp_files[:10],
+                    "old_files": old_files[:5]
+                }
+            })
+            
+    except Exception as e:
         return jsonify({"error": str(e)}), 500
 
 def _should_generate_dj_intro(artist, title):
