@@ -4,6 +4,7 @@ import urllib.parse
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory, send_file, abort, Response
+from flask_socketio import SocketIO, emit
 from urllib.parse import quote
 from urllib.parse import unquote, unquote_plus
 from contextlib import closing
@@ -68,6 +69,8 @@ except Exception:
     Image = None  # cover fallback will be used
 
 app = Flask(__name__)
+app.config['SECRET_KEY'] = 'ai-radio-socketio-secret'
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 # ── In-memory state ─────────────────────────────────────────────
 HISTORY: list = []   # keep this line
@@ -528,11 +531,15 @@ def _ls_cmd(cmd: str, timeout: float = 2.5):
 
 _kv_re = re.compile(r'([a-zA-Z0-9_]+)="([^"]*)"')
 
+# Global cache for metadata consistency across endpoints
+_cached_metadata = {"current": None, "next": [], "timestamp": 0}
+
 
 def _liquidsoap_telnet_command(cmd: str, timeout: float = 2.0) -> list[str]:
     """
     Send a single command to Liquidsoap's telnet interface.
     Used sparingly by Flask API only to avoid storms.
+    Gracefully handles telnet failures.
     """
     try:
         result = subprocess.run(
@@ -545,90 +552,74 @@ def _liquidsoap_telnet_command(cmd: str, timeout: float = 2.0) -> list[str]:
             output = result.stdout.decode().strip()
             return [line.strip() for line in output.split('\n') if line.strip()]
         else:
-            print(f"DEBUG: Telnet command failed: {result.stderr.decode()}")
+            print(f"DEBUG: Telnet command failed (returncode {result.returncode}) - stream continues, using fallback")
             return []
-    except Exception as e:
-        print(f"DEBUG: Telnet error: {e}")
+    except subprocess.TimeoutExpired:
+        print(f"DEBUG: Telnet timeout - server may be unresponsive, using fallback")
         return []
+    except Exception as e:
+        print(f"DEBUG: Telnet error: {e} - using fallback data")
+        return []
+
+def _get_current_track_from_icecast() -> dict | None:
+    """
+    Get current track from Icecast server - most reliable real-time source.
+    Returns dict with title/artist or None if failed.
+    """
+    try:
+        response = requests.get("http://localhost:8000/status-json.xsl", timeout=3)
+        if response.status_code == 200:
+            data = response.json()
+            source = data.get("icestats", {}).get("source", {})
+            
+            # Parse Icecast title format: "Artist - Title" or just "Title"
+            title_raw = source.get("title", "").strip()
+            if " - " in title_raw and not title_raw.startswith("DJ "):
+                artist, title = title_raw.split(" - ", 1)
+                return {
+                    "title": title.strip(),
+                    "artist": artist.strip(),
+                    "source": "icecast"
+                }
+            elif title_raw and not title_raw.startswith("DJ "):
+                return {
+                    "title": title_raw,
+                    "artist": source.get("artist", "Unknown").strip(),
+                    "source": "icecast"
+                }
+    except Exception as e:
+        print(f"DEBUG: Icecast fetch failed: {e}")
+    
+    return None
 
 def _get_now_playing() -> dict | None:
     """
-    Get current track metadata - cache first, then single controlled telnet if needed.
+    Get current track metadata from daemon cache only (no telnet calls).
     """
     import time as time_mod
     
-    # Try daemon cache first (preferred)
+    # ONLY read from daemon cache - never make telnet calls
     cache_file = "/opt/ai-radio/cache/now_metadata.json"
     try:
         if os.path.exists(cache_file):
             with open(cache_file, 'r') as f:
                 cached_data = json.load(f)
             
-            # Accept cache up to 10 seconds old
+            # Accept cache up to 30 seconds old (daemon updates every 3s)
             cache_age = time_mod.time() - cached_data.get("cached_at", 0)
-            if cache_age < 10:
-                print(f"DEBUG: Using cached metadata (age: {cache_age:.1f}s)")
-                # If cache has proper metadata, use it
-                if cached_data.get("title", "Unknown").strip() not in ["Unknown", ""]:
-                    return cached_data
+            if cache_age < 30:
+                print(f"DEBUG: Using daemon cached metadata (age: {cache_age:.1f}s)")
+                return cached_data
+            else:
+                print(f"DEBUG: Cache is too old ({cache_age:.1f}s), daemon may be down")
+                return cached_data  # Still return stale data rather than making telnet calls
+        else:
+            print("DEBUG: No cache file found, daemon may not be running")
     except Exception as e:
         print(f"DEBUG: Error reading cache file: {e}")
     
-    # Fallback: Single controlled telnet call for live metadata from icecast
-    print("DEBUG: Trying live metadata via icecast metadata")
-    try:
-        lines = _liquidsoap_telnet_command("output.icecast.metadata")
-        if lines:
-            # Parse the current metadata - look for the most recent music track (not DJ intro)
-            current_section = {}
-            sections = []
-            
-            for line in lines:
-                if line.startswith("--- ") and line.endswith(" ---"):
-                    if current_section:
-                        sections.append(current_section)
-                    current_section = {}
-                elif "=" in line:
-                    key, val = line.split("=", 1)
-                    key = key.strip()
-                    val = val.strip().strip('"')
-                    current_section[key] = val
-            
-            if current_section:
-                sections.append(current_section)
-            
-            # Find the CURRENT playing music track (first non-DJ track, which is most recent)
-            current_track = None
-            for section in sections:
-                if section.get("artist", "") != "AI DJ":
-                    current_track = section
-                    break  # Take the first non-DJ track (most recent)
-            
-            if current_track:
-                data = {
-                    "title": current_track.get("title", "Unknown"),
-                    "artist": current_track.get("artist", "Unknown"), 
-                    "album": current_track.get("album", ""),
-                    "filename": current_track.get("filename", ""),
-                    "genre": current_track.get("genre", ""),
-                    "date": current_track.get("date", ""),
-                }
-                print(f"DEBUG: Live icecast metadata: {data}")
-                return data
-    except Exception as e:
-        print(f"DEBUG: Live metadata failed: {e}")
-    
-    # Final fallback - return stale cache or placeholder
-    if os.path.exists(cache_file):
-        try:
-            with open(cache_file, 'r') as f:
-                cached_data = json.load(f)
-            print("DEBUG: Using stale cache as final fallback")
-            return cached_data
-        except:
-            pass
-            
-    print("DEBUG: Returning placeholder data - all methods failed")
+    # Fallback - return placeholder if daemon is completely down
+    print("DEBUG: Daemon cache unavailable, returning placeholder")
     return {
         "title": "Stream Loading...",
         "artist": "AI Radio",
@@ -637,6 +628,7 @@ def _get_now_playing() -> dict | None:
         "time": int(time_mod.time() * 1000),
         "duration_ms": None,
         "elapsed_ms": None,
+        "source": "fallback"
     }
 
 def _parse_kv_block(text: str) -> dict:
@@ -819,11 +811,26 @@ def _scrobble_loop():
 
 def _history_add_song(now_dict):
     """Append a 'song' event to HISTORY from a /api/now object."""
+    
+    # Filter out DJ intros and AI content - only track real music
+    artist = now_dict.get("artist") or ""
+    title = now_dict.get("title") or ""
+    
+    # Skip AI DJ content and DJ intros
+    if artist == "AI DJ" or title == "DJ Intro" or title.startswith("DJ "):
+        print(f"DEBUG: Skipping DJ content from history: {artist} - {title}")
+        return
+    
+    # Only add if it looks like a real music track
+    if not artist or not title or artist.lower() in ["unknown", ""] or title.lower() in ["unknown", ""]:
+        print(f"DEBUG: Skipping incomplete track from history: {artist} - {title}")
+        return
+    
     ev = {
         "type": "song",
         "time": int(time.time() * 1000),
-        "title": now_dict.get("title") or "",
-        "artist": now_dict.get("artist") or "",
+        "title": title,
+        "artist": artist,
         "album": now_dict.get("album") or "",
         "filename": now_dict.get("filename") or "",
     }
@@ -836,6 +843,21 @@ def _history_add_song(now_dict):
         if len(HISTORY) > 500:
             del HISTORY[:-500]
     save_history()
+    
+    # Broadcast track change via WebSocket
+    try:
+        broadcast_track_change({
+            'title': title,
+            'artist': artist,
+            'type': 'song',
+            'album': ev.get('album', ''),
+            'filename': ev.get('filename', ''),
+            'artwork_url': ev.get('artwork_url'),
+            'timestamp': time.time()
+        })
+        print(f"DEBUG: Broadcasted track change: {artist} - {title}")
+    except Exception as e:
+        print(f"DEBUG: Failed to broadcast track change: {e}")
 
 _SCROBBLER_STARTED = False
 
@@ -942,7 +964,12 @@ def _build_art_url(path: str) -> str:
 
 @app.route("/")
 def index():
-    return send_from_directory(BASE_DIR, "index.html")
+    # Add cache-busting headers for mobile browsers
+    response = send_from_directory(BASE_DIR, "index.html")
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
 
 def _get_cached_cover_url(artist, album, filename):
     """Get cover URL with caching and fallback to online lookup."""
@@ -1110,64 +1137,114 @@ def api_history():
 
 @app.get("/api/now")
 def api_now():
+    # Use cached data from track-check if recent (< 30 seconds)
+    global _cached_metadata
+    if _cached_metadata["current"] and (time.time() - _cached_metadata["timestamp"]) < 30:
+        return jsonify(_cached_metadata["current"])
+    
+    # Fallback to live data
     now = _get_now_playing()
     if not now:
         return jsonify({"error": "No track info"}), 404
     return jsonify(now)
 
+@app.get("/api/health")
+def api_health():
+    """Health check endpoint - verify telnet connectivity to Liquidsoap"""
+    try:
+        # Quick telnet test
+        result = subprocess.run(
+            ["nc", "127.0.0.1", "1234"],
+            input="help\nquit\n".encode(),
+            capture_output=True,
+            timeout=3
+        )
+        telnet_ok = result.returncode == 0 and "Available commands:" in result.stdout.decode()
+        
+        return jsonify({
+            "status": "healthy" if telnet_ok else "unhealthy",
+            "telnet_connection": "ok" if telnet_ok else "failed",
+            "timestamp": int(time.time())
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "unhealthy", 
+            "error": str(e),
+            "telnet_connection": "failed",
+            "timestamp": int(time.time())
+        }), 500
+
 @app.get("/api/track-check")
 def api_track_check():
-    """Lightweight endpoint to check if track has changed and provide current + next info"""
+    """Master metadata endpoint - single source of truth for current + next tracks"""
     try:
-        # Single telnet call gets both current and next track data
-        lines = _liquidsoap_telnet_command("output.icecast.metadata")
-        if lines:
-            # Parse metadata sections
-            current_section = {}
-            sections = []
+        # Primary source: Get current track from Icecast (most reliable)
+        current_track = _get_current_track_from_icecast()
+        
+        if current_track:
+            current_data = {
+                "title": current_track["title"],
+                "artist": current_track["artist"],
+                "album": "",  # Icecast doesn't provide full metadata
+                "genre": "",
+                "date": "",
+                "filename": "",
+                "source": "icecast",
+                "cached_at": time.time()
+            }
             
-            for line in lines:
-                if line.startswith("--- ") and line.endswith(" ---"):
+            # Try to get next track from telnet as fallback
+            next_track = None
+            try:
+                lines = _liquidsoap_telnet_command("output.icecast.metadata")
+                if lines:
+                    # Parse telnet metadata for next track info
+                    sections = []
+                    current_section = {}
+                    
+                    for line in lines:
+                        if line.startswith("--- ") and line.endswith(" ---"):
+                            if current_section:
+                                sections.append(current_section)
+                            current_section = {}
+                        elif "=" in line and not line.startswith("itunsmpb") and not line.startswith("cover"):
+                            key, val = line.split("=", 1)
+                            key = key.strip()
+                            val = val.strip().strip('"')
+                            current_section[key] = val
+                    
                     if current_section:
                         sections.append(current_section)
-                    current_section = {}
-                elif "=" in line and not line.startswith("itunsmpb"):
-                    key, val = line.split("=", 1)
-                    key = key.strip()
-                    val = val.strip().strip('"')
-                    current_section[key] = val
+                    
+                    # Get music tracks only (skip DJ intros)
+                    music_tracks = [s for s in sections if s.get("artist", "") != "AI DJ"]
+                    
+                    if len(music_tracks) > 1:
+                        next = music_tracks[1]
+                        next_track = {
+                            "title": next.get("title", "Unknown"),
+                            "artist": next.get("artist", "Unknown"),
+                            "album": next.get("album", ""),
+                            "filename": next.get("filename", ""),
+                            "artwork_url": f"/api/cover?file={urllib.parse.quote(next.get('filename', ''))}" if next.get("filename") else None
+                        }
+            except Exception as e:
+                print(f"DEBUG: Telnet next track lookup failed: {e}")
             
-            if current_section:
-                sections.append(current_section)
+            # Store for other endpoints
+            global _cached_metadata
+            _cached_metadata = {
+                "current": current_data,
+                "next": [next_track] if next_track else [],
+                "timestamp": time.time()
+            }
             
-            # Get current and next music tracks (skip DJ intros)
-            music_tracks = [s for s in sections if s.get("artist", "") != "AI DJ"]
-            
-            if music_tracks:
-                current = music_tracks[0]
-                current_title = current.get("title", "Unknown")
-                current_artist = current.get("artist", "Unknown")
-                
-                # Also include next track if available
-                next_track = None
-                if len(music_tracks) > 1:
-                    next = music_tracks[1]
-                    next_track = {
-                        "title": next.get("title", "Unknown"),
-                        "artist": next.get("artist", "Unknown"),
-                        "album": next.get("album", "")
-                    }
-                
-                return jsonify({
-                    "track_id": f"{current_artist}|{current_title}",
-                    "current": {
-                        "title": current_title,
-                        "artist": current_artist,
-                        "album": current.get("album", "")
-                    },
-                    "next": next_track,
-                    "timestamp": int(time.time())
-                })
+            return jsonify({
+                "track_id": f"{current_track['artist']}|{current_track['title']}",
+                "current": current_data,
+                "next": next_track,
+                "timestamp": int(time.time())
+            })
     except Exception as e:
         print(f"DEBUG: Track check failed: {e}")
     
@@ -1175,69 +1252,20 @@ def api_track_check():
 
 @app.get("/api/next")
 def api_next():
-    # Try to read from daemon cache first
+    # ONLY read from daemon cache - no telnet calls
     cache_file = "/opt/ai-radio/cache/next_metadata.json"
     try:
         if os.path.exists(cache_file):
             with open(cache_file, 'r') as f:
-                cached_data = json.load(f)
+                next_tracks = json.load(f)
             
-            # Check if cache is reasonably fresh (less than 30 seconds old)
-            cache_age = time.time() - os.path.getmtime(cache_file)
-            if cache_age < 30:
-                print(f"DEBUG: Using cached next tracks (age: {cache_age:.1f}s)")
-                return jsonify(cached_data)
-            else:
-                print(f"DEBUG: Next tracks cache is stale (age: {cache_age:.1f}s)")
+            print(f"DEBUG: Using daemon next tracks cache: {len(next_tracks) if isinstance(next_tracks, list) else 0} tracks")
+            return jsonify(next_tracks if isinstance(next_tracks, list) else [])
+        else:
+            print("DEBUG: No next tracks cache file found")
     except Exception as e:
         print(f"DEBUG: Error reading next tracks cache: {e}")
     
-    # Fallback: Get next tracks via controlled telnet
-    print("DEBUG: Getting next tracks via telnet")
-    try:
-        # Get all request IDs
-        request_lines = _liquidsoap_telnet_command("request.all")
-        if request_lines and len(request_lines) > 1:
-            # Parse request IDs (skip current, get next ones)
-            request_ids = []
-            for line in request_lines:
-                if line.strip() and line.strip() != "END":
-                    ids = line.strip().split()
-                    request_ids.extend(ids)
-            
-            next_tracks = []
-            # Get metadata for next 2-3 requests (skip first which is current)
-            for rid in request_ids[1:3]:  # Skip current, get next 2
-                try:
-                    meta_lines = _liquidsoap_telnet_command(f"request.metadata {rid}")
-                    track_data = {}
-                    
-                    for line in meta_lines:
-                        if "=" in line and not line.startswith("itunsmpb") and not line.startswith("cover"):
-                            key, val = line.split("=", 1)
-                            key = key.strip()
-                            val = val.strip().strip('"')
-                            track_data[key] = val
-                    
-                    if track_data.get("title") and track_data.get("artist") != "AI DJ":
-                        next_track = {
-                            "title": track_data.get("title", "Unknown"),
-                            "artist": track_data.get("artist", "Unknown"),
-                            "album": track_data.get("album", ""),
-                            "filename": track_data.get("filename", ""),
-                            "artwork_url": f"/api/cover?file={urllib.parse.quote(track_data.get('filename', ''))}" if track_data.get("filename") else None
-                        }
-                        next_tracks.append(next_track)
-                except Exception as e:
-                    print(f"DEBUG: Error getting metadata for request {rid}: {e}")
-                    
-            if next_tracks:
-                print(f"DEBUG: Live next tracks: {next_tracks}")
-                return jsonify(next_tracks)
-    except Exception as e:
-        print(f"DEBUG: Live next tracks failed: {e}")
-    
-    print("DEBUG: Returning empty next tracks")
     return jsonify([])
 
 @app.get("/api/just-played")
@@ -1395,8 +1423,23 @@ def tts_queue_post():
 
 @app.post("/api/skip")
 def api_skip():
-    # DISABLED to prevent telnet storms
-    return {"ok": False, "error": "Skip disabled to prevent connection storms"}, 503
+    """Skip to next track in the playlist shuffle without restarting stream"""
+    try:
+        # Use single controlled telnet call to skip current track
+        result = subprocess.run(
+            ["nc", "-w3", "localhost", "1234"],
+            input="library_clean_m3u.skip\nquit\n".encode(),
+            capture_output=True,
+            timeout=5
+        )
+        
+        if result.returncode == 0 and "OK" in result.stdout.decode():
+            return {"ok": True, "message": "Skipped to next track"}
+        else:
+            return {"ok": False, "error": "Skip command failed"}, 500
+            
+    except Exception as e:
+        return {"ok": False, "error": f"Skip failed: {str(e)}"}, 500
 
 @app.post("/api/enqueue")
 def api_enqueue_tts():
@@ -1996,9 +2039,52 @@ if os.environ.get("WERKZEUG_RUN_MAIN") != "true":  # avoid double-start in debug
     t = threading.Thread(target=_scrobble_loop, name="scrobble", daemon=True)
     t.start()
 
+# ── SocketIO Handlers ──────────────────────────────────────────
+@socketio.on('connect')
+def handle_connect():
+    print(f"Client connected: {request.sid}")
+    # Send current track info immediately on connect
+    try:
+        current_track = _get_current_track_from_icecast()
+        if current_track:
+            emit('track_update', {
+                'title': current_track['title'],
+                'artist': current_track['artist'],
+                'type': 'song',
+                'source': 'icecast',
+                'timestamp': time.time()
+            })
+    except Exception as e:
+        print(f"Error sending initial track: {e}")
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    print(f"Client disconnected: {request.sid}")
+
+@socketio.on('request_current_track')
+def handle_track_request():
+    """Handle explicit request for current track"""
+    try:
+        current_track = _get_current_track_from_icecast()
+        if current_track:
+            emit('track_update', {
+                'title': current_track['title'],
+                'artist': current_track['artist'],
+                'type': 'song',
+                'source': 'icecast',
+                'timestamp': time.time()
+            })
+    except Exception as e:
+        emit('error', {'message': f'Failed to get current track: {e}'})
+
+# WebSocket broadcast function for track changes
+def broadcast_track_change(track_info):
+    """Broadcast track change to all connected clients"""
+    socketio.emit('track_update', track_info)
+
 # ── Main ────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    app.run(host=HOST, port=PORT)
+    socketio.run(app, host=HOST, port=PORT, debug=False)
 def _safe_read_history():
     try:
         with open(HISTORY_PATH, "r") as f:
