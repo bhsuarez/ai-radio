@@ -81,15 +81,17 @@ function App() {
       
       setCurrentTrack(newTrack);
       
-      // Always update track start time if provided by backend (for accurate progress on refresh)
+      // Always use backend timestamp when available (prevents refresh timer resets)
       if (newTrack.track_started_at) {
         const startTime = newTrack.track_started_at * 1000;
         setTrackStartTime(startTime);
         if (isNewTrack) {
           console.log('🎵 New track detected via API:', newTrack.title, 'Started at:', new Date(startTime));
+        } else {
+          console.log('🔄 Using backend start time on refresh:', newTrack.title, 'Started at:', new Date(startTime));
         }
       } else if (isNewTrack && newTrack.title) {
-        // Fall back to current time for new tracks without backend timestamp
+        // Fall back to current time only for new tracks without backend timestamp
         setTrackStartTime(Date.now());
         console.log('🎵 New track detected via API (no backend timestamp):', newTrack.title);
       }
@@ -167,15 +169,17 @@ function App() {
       
       setCurrentTrack(trackInfo);
       
-      // Always update track start time if provided by backend (for accurate progress)
+      // Always use backend timestamp when available (prevents refresh timer resets)
       if (trackInfo.track_started_at) {
         const startTime = trackInfo.track_started_at * 1000;
         setTrackStartTime(startTime);
         if (isNewTrack) {
           console.log('🎵 New track detected via socket:', trackInfo.title, 'Started at:', new Date(startTime));
+        } else {
+          console.log('🔄 Using backend start time via socket:', trackInfo.title, 'Started at:', new Date(startTime));
         }
       } else if (isNewTrack) {
-        // Fall back to current time for new tracks without backend timestamp
+        // Fall back to current time only for new tracks without backend timestamp
         setTrackStartTime(Date.now());
         console.log('🎵 New track detected via socket (no backend timestamp):', trackInfo.title);
       }
