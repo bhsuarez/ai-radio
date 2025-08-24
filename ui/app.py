@@ -1,9 +1,13 @@
 #!/usr/bin/env python3
-import os, json, socket, time, html, hashlib, io, re, requests, subprocess, threading
+import os, json, socket, time, html, hashlib, io, re, requests, subprocess, threading, fcntl
 import urllib.parse
+import sys
+sys.path.append('/opt/ai-radio')  # Add parent directory to path
+from database import db_manager, get_history, add_history_entry, create_tts_entry, get_tts_entry_by_filename
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory, send_file, abort, Response
+from flask_socketio import SocketIO, emit
 from urllib.parse import quote
 from urllib.parse import unquote, unquote_plus
 from contextlib import closing
@@ -68,6 +72,8 @@ except Exception:
     Image = None  # cover fallback will be used
 
 app = Flask(__name__)
+app.config['SECRET_KEY'] = 'ai-radio-socketio-secret'
+socketio = SocketIO(app, cors_allowed_origins="*")
 
 # ── In-memory state ─────────────────────────────────────────────
 HISTORY: list = []   # keep this line
@@ -162,7 +168,7 @@ def _load_history_from_disk():
                 HISTORY.clear()
 
 def _append_history(ev: dict):
-    """Append a single play event to history.jsonl (safe for multi-workers)."""
+    """Append a single play event to history JSON array (safe for multi-workers)."""
     ev = {
         "type": "song",
         "time": int(ev.get("time") or time.time()*1000),
@@ -172,10 +178,62 @@ def _append_history(ev: dict):
         "filename": ev.get("filename") or "",
         "artwork_url": ev.get("artwork_url") or "",
     }
-    with open(HISTORY_PATH, "a") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        f.write(json.dumps(ev, ensure_ascii=False) + "\n")
-        fcntl.flock(f, fcntl.LOCK_UN)
+    
+    # Update JSON array file atomically
+    try:
+        with open(HISTORY_PATH, "r") as f:
+            fcntl.flock(f, fcntl.LOCK_SH)
+            try:
+                history_data = json.load(f)
+                if not isinstance(history_data, list):
+                    history_data = []
+            except (json.JSONDecodeError, FileNotFoundError):
+                history_data = []
+            fcntl.flock(f, fcntl.LOCK_UN)
+        
+        # Add new event and keep only recent entries
+        history_data.append(ev)
+        history_data = history_data[-500:]  # Keep last 500 entries
+        
+        # Write back atomically
+        temp_path = HISTORY_PATH + ".tmp"
+        with open(temp_path, "w") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            json.dump(history_data, f, ensure_ascii=False, indent=None, separators=(',', ':'))
+            fcntl.flock(f, fcntl.LOCK_UN)
+        os.replace(temp_path, HISTORY_PATH)
+        
+    except Exception as e:
+        print(f"DEBUG: _append_history error: {e}")
+    
+    # Also add to in-memory history for API access
+    with HISTORY_LOCK:
+        HISTORY.append(ev)
+        # Keep bounded
+        if len(HISTORY) > 500:
+            HISTORY.popleft() if hasattr(HISTORY, 'popleft') else HISTORY.pop(0)
+    
+    # Broadcast history update via WebSocket
+    try:
+        # Ensure artwork_url is populated
+        artwork_url = ev.get('artwork_url') or ''
+        if not artwork_url and ev.get('filename'):
+            artwork_url = f"/api/cover?file={urllib.parse.quote(ev['filename'])}"
+        elif not artwork_url and ev.get('artist') and ev.get('album'):
+            artwork_url = f"/api/cover/online?artist={urllib.parse.quote(ev['artist'])}&album={urllib.parse.quote(ev['album'])}"
+        
+        socketio.emit('history_update', {
+            'title': ev['title'],
+            'artist': ev['artist'],
+            'album': ev['album'],
+            'time': ev['time'],
+            'type': 'song',
+            'artwork_url': artwork_url,
+            'filename': ev.get('filename', '')
+        })
+        print(f"DEBUG: Broadcasted history update: {ev['artist']} - {ev['title']}")
+    except Exception as e:
+        print(f"DEBUG: Failed to broadcast history update: {e}")
 
 def save_history():
     """Persist the in‑memory history to disk."""
@@ -279,7 +337,7 @@ def _write_history(rows):
     os.replace(tmp, HISTORY_PATH)
 
 def push_event(ev: dict):
-    """Insert newest-first with light de-duplication and persist to disk."""
+    """Insert event to database with de-duplication."""
     now_ms = int(time.time() * 1000)
 
     # normalize timestamp to ms
@@ -301,24 +359,114 @@ def push_event(ev: dict):
         ev["artist"] = artist or "Unknown Artist"
         ev["title"]  = title  or "Unknown"
 
-    # De-dupe against recent entries within window
-    for recent in list(HISTORY)[:10]:  # Check last 10 entries
-        if ev.get("type") == "song" and recent.get("type") == "song":
-            same = (
-                (ev.get("title") or "") == (recent.get("title") or "") and
-                (ev.get("artist") or "") == (recent.get("artist") or "") and
-                (ev.get("filename") or "") == (recent.get("filename") or "")
-            )
-            if same and (now_ms - int(recent.get("time", now_ms))) < DEDUP_WINDOW_MS:
-                return
-        if ev.get("type") == "dj" and recent.get("type") == "dj":
-            if (ev.get("text") or "") == (recent.get("text") or "") and \
-               (now_ms - int(recent.get("time", now_ms))) < 5000:
-                return
+    try:
+        # For DJ entries, create TTS entry first if it has audio
+        tts_entry_id = None
+        if ev.get("type") == "dj" and ev.get("audio_url"):
+            # Extract filename from audio URL
+            audio_url = ev.get("audio_url", "")
+            if "/tts/" in audio_url:
+                audio_filename = audio_url.split("/tts/")[-1]
+                text_filename = audio_filename.replace('.mp3', '.txt')
+                
+                # Try to get timestamp from filename
+                import re
+                match = re.search(r'(\d{10,})', audio_filename)
+                file_timestamp = int(match.group(1)) if match else now_ms // 1000
+                
+                # Create TTS entry
+                tts_entry_id = create_tts_entry(
+                    timestamp=file_timestamp,
+                    text=ev.get("text", ""),
+                    audio_filename=audio_filename,
+                    text_filename=text_filename,
+                    track_title=ev.get("track_title"),
+                    track_artist=ev.get("track_artist"),
+                    mode='custom'
+                )
 
-    HISTORY.insert(0, ev)
-    del HISTORY[MAX_HISTORY:]
+        # Add to database
+        history_id = add_history_entry(
+            entry_type=ev.get("type", "song"),
+            timestamp=ev.get("time", now_ms),
+            title=ev.get("title", ""),
+            artist=ev.get("artist", ""),
+            album=ev.get("album", ""),
+            filename=ev.get("filename", ""),
+            artwork_url=ev.get("artwork_url", ""),
+            tts_entry_id=tts_entry_id,
+            metadata=ev.get("metadata", {})
+        )
+        
+        # Also maintain in-memory history for compatibility
+        HISTORY.insert(0, ev)
+        del HISTORY[MAX_HISTORY:]
+        
+    except Exception as e:
+        print(f"Error in push_event: {e}")
+        # Fallback to old behavior
+        HISTORY.insert(0, ev)
+        del HISTORY[MAX_HISTORY:]
     save_history()
+
+def create_tts_with_db(text: str, track_title: str = None, track_artist: str = None, mode: str = 'custom') -> tuple:
+    """Create TTS file and database entry atomically. Returns (audio_filename, tts_entry_id)"""
+    timestamp = int(time.time())
+    audio_filename = f"{mode}_{timestamp}.mp3"
+    text_filename = f"{mode}_{timestamp}.txt"
+    audio_path = os.path.join(TTS_DIR, audio_filename)
+    text_path = os.path.join(TTS_DIR, text_filename)
+    
+    try:
+        # Write text file first
+        with open(text_path, 'w', encoding='utf-8') as f:
+            f.write(text + '\n')
+        
+        # Create TTS entry in database before audio generation
+        tts_entry_id = create_tts_entry(
+            timestamp=timestamp,
+            text=text,
+            audio_filename=audio_filename,
+            text_filename=text_filename,
+            track_title=track_title,
+            track_artist=track_artist,
+            mode=mode
+        )
+        
+        # Generate audio using existing TTS script
+        result = subprocess.run([
+            "/opt/ai-radio/dj_enqueue_xtts.sh", 
+            track_artist or "Artist", 
+            track_title or "Track", 
+            "en", 
+            os.getenv("XTTS_SPEAKER", "Damien Black"),
+            mode
+        ], capture_output=True, text=True, cwd="/opt/ai-radio")
+        
+        if result.returncode == 0 and os.path.exists(audio_path):
+            # Update database with file size
+            file_size = os.path.getsize(audio_path)
+            with db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("UPDATE tts_entries SET file_size = ? WHERE id = ?", (file_size, tts_entry_id))
+                conn.commit()
+            
+            return audio_filename, tts_entry_id
+        else:
+            # Mark as failed in database
+            with db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("UPDATE tts_entries SET status = 'failed' WHERE id = ?", (tts_entry_id,))
+                conn.commit()
+            raise Exception(f"TTS generation failed: {result.stderr}")
+            
+    except Exception as e:
+        print(f"Error in create_tts_with_db: {e}")
+        # Clean up files on failure
+        for path in [audio_path, text_path]:
+            if os.path.exists(path):
+                os.remove(path)
+        raise
 
 def _first_tag(v):
     try:
@@ -528,11 +676,15 @@ def _ls_cmd(cmd: str, timeout: float = 2.5):
 
 _kv_re = re.compile(r'([a-zA-Z0-9_]+)="([^"]*)"')
 
+# Global cache for metadata consistency across endpoints
+_cached_metadata = {"current": None, "next": [], "timestamp": 0}
+
 
 def _liquidsoap_telnet_command(cmd: str, timeout: float = 2.0) -> list[str]:
     """
     Send a single command to Liquidsoap's telnet interface.
     Used sparingly by Flask API only to avoid storms.
+    Gracefully handles telnet failures.
     """
     try:
         result = subprocess.run(
@@ -545,90 +697,96 @@ def _liquidsoap_telnet_command(cmd: str, timeout: float = 2.0) -> list[str]:
             output = result.stdout.decode().strip()
             return [line.strip() for line in output.split('\n') if line.strip()]
         else:
-            print(f"DEBUG: Telnet command failed: {result.stderr.decode()}")
+            print(f"DEBUG: Telnet command failed (returncode {result.returncode}) - stream continues, using fallback")
             return []
-    except Exception as e:
-        print(f"DEBUG: Telnet error: {e}")
+    except subprocess.TimeoutExpired:
+        print(f"DEBUG: Telnet timeout - server may be unresponsive, using fallback")
         return []
+    except Exception as e:
+        print(f"DEBUG: Telnet error: {e} - using fallback data")
+        return []
+
+def _get_current_track_from_icecast() -> dict | None:
+    """
+    Get current track from cached metadata (via metadata daemon) - most reliable source.
+    Falls back to Icecast if cache unavailable.
+    Returns dict with title/artist or None if failed.
+    """
+    # Try cached metadata first (most reliable)
+    cache_path = "/opt/ai-radio/cache/now_metadata.json"
+    try:
+        if os.path.exists(cache_path):
+            with open(cache_path, 'r') as f:
+                cached_data = json.load(f)
+                
+            # Skip DJ content
+            title = cached_data.get("title", "").strip()
+            artist = cached_data.get("artist", "").strip()
+            
+            if title and artist and not title.startswith("DJ ") and not artist.startswith("AI DJ"):
+                return {
+                    "title": title,
+                    "artist": artist,
+                    "source": "metadata_cache"
+                }
+    except Exception as e:
+        print(f"DEBUG: Cache read failed: {e}")
+    
+    # Fallback to Icecast
+    try:
+        response = requests.get("http://localhost:8000/status-json.xsl", timeout=3)
+        if response.status_code == 200:
+            data = response.json()
+            source = data.get("icestats", {}).get("source", {})
+            
+            # Parse Icecast title format: "Artist - Title" or just "Title"
+            title_raw = source.get("title", "").strip()
+            if " - " in title_raw and not title_raw.startswith("DJ "):
+                artist, title = title_raw.split(" - ", 1)
+                return {
+                    "title": title.strip(),
+                    "artist": artist.strip(),
+                    "source": "icecast"
+                }
+            elif title_raw and not title_raw.startswith("DJ "):
+                return {
+                    "title": title_raw,
+                    "artist": source.get("artist", "Unknown").strip(),
+                    "source": "icecast"
+                }
+    except Exception as e:
+        print(f"DEBUG: Icecast fetch failed: {e}")
+    
+    return None
 
 def _get_now_playing() -> dict | None:
     """
-    Get current track metadata - cache first, then single controlled telnet if needed.
+    Get current track metadata from daemon cache only (no telnet calls).
     """
     import time as time_mod
     
-    # Try daemon cache first (preferred)
+    # ONLY read from daemon cache - never make telnet calls
     cache_file = "/opt/ai-radio/cache/now_metadata.json"
     try:
         if os.path.exists(cache_file):
             with open(cache_file, 'r') as f:
                 cached_data = json.load(f)
             
-            # Accept cache up to 10 seconds old
+            # Accept cache up to 30 seconds old (daemon updates every 3s)
             cache_age = time_mod.time() - cached_data.get("cached_at", 0)
-            if cache_age < 10:
-                print(f"DEBUG: Using cached metadata (age: {cache_age:.1f}s)")
-                # If cache has proper metadata, use it
-                if cached_data.get("title", "Unknown").strip() not in ["Unknown", ""]:
-                    return cached_data
+            if cache_age < 30:
+                print(f"DEBUG: Using daemon cached metadata (age: {cache_age:.1f}s)")
+                return cached_data
+            else:
+                print(f"DEBUG: Cache is too old ({cache_age:.1f}s), daemon may be down")
+                return cached_data  # Still return stale data rather than making telnet calls
+        else:
+            print("DEBUG: No cache file found, daemon may not be running")
     except Exception as e:
         print(f"DEBUG: Error reading cache file: {e}")
     
-    # Fallback: Single controlled telnet call for live metadata from icecast
-    print("DEBUG: Trying live metadata via icecast metadata")
-    try:
-        lines = _liquidsoap_telnet_command("output.icecast.metadata")
-        if lines:
-            # Parse the current metadata - look for the most recent music track (not DJ intro)
-            current_section = {}
-            sections = []
-            
-            for line in lines:
-                if line.startswith("--- ") and line.endswith(" ---"):
-                    if current_section:
-                        sections.append(current_section)
-                    current_section = {}
-                elif "=" in line:
-                    key, val = line.split("=", 1)
-                    key = key.strip()
-                    val = val.strip().strip('"')
-                    current_section[key] = val
-            
-            if current_section:
-                sections.append(current_section)
-            
-            # Find the CURRENT playing music track (first non-DJ track, which is most recent)
-            current_track = None
-            for section in sections:
-                if section.get("artist", "") != "AI DJ":
-                    current_track = section
-                    break  # Take the first non-DJ track (most recent)
-            
-            if current_track:
-                data = {
-                    "title": current_track.get("title", "Unknown"),
-                    "artist": current_track.get("artist", "Unknown"), 
-                    "album": current_track.get("album", ""),
-                    "filename": current_track.get("filename", ""),
-                    "genre": current_track.get("genre", ""),
-                    "date": current_track.get("date", ""),
-                }
-                print(f"DEBUG: Live icecast metadata: {data}")
-                return data
-    except Exception as e:
-        print(f"DEBUG: Live metadata failed: {e}")
-    
-    # Final fallback - return stale cache or placeholder
-    if os.path.exists(cache_file):
-        try:
-            with open(cache_file, 'r') as f:
-                cached_data = json.load(f)
-            print("DEBUG: Using stale cache as final fallback")
-            return cached_data
-        except:
-            pass
-            
-    print("DEBUG: Returning placeholder data - all methods failed")
+    # Fallback - return placeholder if daemon is completely down
+    print("DEBUG: Daemon cache unavailable, returning placeholder")
     return {
         "title": "Stream Loading...",
         "artist": "AI Radio",
@@ -637,6 +795,7 @@ def _get_now_playing() -> dict | None:
         "time": int(time_mod.time() * 1000),
         "duration_ms": None,
         "elapsed_ms": None,
+        "source": "fallback"
     }
 
 def _parse_kv_block(text: str) -> dict:
@@ -805,25 +964,85 @@ def _scrobble_loop():
         try:
             now = _get_now_playing()  # must return dict with title/artist/filename/time/album
             if now and (now.get("title") or now.get("filename")):
-                fp = _fingerprint(now)
-                if fp and fp != tuple(_last_fingerprint.values()):
-                    # new track → write to history
-                    _append_history(now)
-                    _last_fingerprint = {
-                        "filename": fp[0], "title": fp[1], "artist": fp[2]
-                    }
+                # Filter out DJ intros and AI content - only track real music
+                artist = now.get("artist", "").strip()
+                title = now.get("title", "").strip()
+                
+                # Check if this is DJ content
+                if artist == "AI DJ" or title == "DJ Intro" or title.startswith("DJ "):
+                    # For DJ content, check if there's a matching TTS entry
+                    track_start_time = now.get("track_started_at")
+                    if track_start_time:
+                        # Look for TTS entries created around the track start time (within 30 seconds)
+                        try:
+                            import sqlite3
+                            conn = sqlite3.connect('/opt/ai-radio/ai_radio.db')
+                            cursor = conn.cursor()
+                            # Find TTS entries within 30 seconds of track start
+                            cursor.execute("""
+                                SELECT text, audio_filename FROM tts_entries 
+                                WHERE timestamp BETWEEN ? AND ? AND status = 'active'
+                                ORDER BY timestamp DESC LIMIT 1
+                            """, (int(track_start_time) - 30, int(track_start_time) + 30))
+                            tts_match = cursor.fetchone()
+                            conn.close()
+                            
+                            if tts_match:
+                                print(f"DEBUG: Found TTS for DJ intro: {tts_match[0][:50]}...")
+                                # Create a DJ event with the matched TTS
+                                dj_event = {
+                                    "type": "dj",
+                                    "time": int(time.time() * 1000),
+                                    "text": tts_match[0],
+                                    "audio_url": f"/tts/{tts_match[1]}" if tts_match[1] else None,
+                                    "title": title,
+                                    "artist": artist
+                                }
+                                push_event(dj_event)
+                            else:
+                                print(f"DEBUG: No TTS found for DJ intro, skipping: {artist} - {title}")
+                        except Exception as e:
+                            print(f"DEBUG: Error checking TTS for DJ intro: {e}")
+                            print(f"DEBUG: Skipping DJ content from scrobbler: {artist} - {title}")
+                    else:
+                        print(f"DEBUG: Skipping DJ content from scrobbler (no start time): {artist} - {title}")
+                else:
+                    # Process actual music tracks
+                    fp = _fingerprint(now)
+                    if fp and fp != tuple(_last_fingerprint.values()):
+                        # new track → write to history
+                        print(f"DEBUG: Scrobbler detected new track: {artist} - {title}")
+                        _append_history(now)
+                        _last_fingerprint = {
+                            "filename": fp[0], "title": fp[1], "artist": fp[2]
+                        }
         except Exception as e:
-            # keep it quiet but don’t crash the thread
+            print(f"DEBUG: Scrobbler error: {e}")
             pass
         time.sleep(2)  # small poll; cheap because it calls your existing logic
 
 def _history_add_song(now_dict):
     """Append a 'song' event to HISTORY from a /api/now object."""
+    
+    # Filter out DJ intros and AI content - only track real music
+    artist = now_dict.get("artist") or ""
+    title = now_dict.get("title") or ""
+    
+    # Skip AI DJ content and DJ intros
+    if artist == "AI DJ" or title == "DJ Intro" or title.startswith("DJ "):
+        print(f"DEBUG: Skipping DJ content from history: {artist} - {title}")
+        return
+    
+    # Only add if it looks like a real music track
+    if not artist or not title or artist.lower() in ["unknown", ""] or title.lower() in ["unknown", ""]:
+        print(f"DEBUG: Skipping incomplete track from history: {artist} - {title}")
+        return
+    
     ev = {
         "type": "song",
         "time": int(time.time() * 1000),
-        "title": now_dict.get("title") or "",
-        "artist": now_dict.get("artist") or "",
+        "title": title,
+        "artist": artist,
         "album": now_dict.get("album") or "",
         "filename": now_dict.get("filename") or "",
     }
@@ -836,48 +1055,64 @@ def _history_add_song(now_dict):
         if len(HISTORY) > 500:
             del HISTORY[:-500]
     save_history()
+    
+    # Broadcast track change via WebSocket
+    try:
+        broadcast_track_change({
+            'title': title,
+            'artist': artist,
+            'type': 'song',
+            'album': ev.get('album', ''),
+            'filename': ev.get('filename', ''),
+            'artwork_url': ev.get('artwork_url'),
+            'timestamp': time.time()
+        })
+        print(f"DEBUG: Broadcasted track change: {artist} - {title}")
+    except Exception as e:
+        print(f"DEBUG: Failed to broadcast track change: {e}")
 
 _SCROBBLER_STARTED = False
 
-def _scrobble_loop():
-    """
-    Polls current track and records transitions into HISTORY.
-    A 'transition' happens when (title, artist) or filename changes.
-    """
-    last_key = None
-    stable_key = None
-    stable_since = 0.0
+# DUPLICATE SCROBBLER - DISABLED (using the first one above)
+# def _scrobble_loop():
+#     """
+#     Polls current track and records transitions into HISTORY.
+#     A 'transition' happens when (title, artist) or filename changes.
+#     """
+#     last_key = None
+#     stable_key = None
+#     stable_since = 0.0
 
-    while True:
-        try:
-            # You already have this function in your app:
-            now = _get_now_playing()  # must return dict with title/artist/filename/album/…
-        except Exception:
-            now = None
+#     while True:
+#         try:
+#             # You already have this function in your app:
+#             now = _get_now_playing()  # must return dict with title/artist/filename/album/…
+#         except Exception:
+#             now = None
 
-        if now:
-            # build a key that tolerates minor metadata issues
-            t = (now.get("title") or "").strip().lower()
-            a = (now.get("artist") or "").strip().lower()
-            f = (now.get("filename") or "").strip().lower()
-            key = f or f"{t}|{a}"
+#         if now:
+#             # build a key that tolerates minor metadata issues
+#             t = (now.get("title") or "").strip().lower()
+#             a = (now.get("artist") or "").strip().lower()
+#             f = (now.get("filename") or "").strip().lower()
+#             key = f or f"{t}|{a}"
 
-            # consider a track "stable" after 3 seconds with same key
-            now_ts = time.time()
-            if key == stable_key:
-                # already stable; do nothing
-                pass
-            else:
-                # key changed; start (or reset) stability timer
-                stable_key = key
-                stable_since = now_ts
+#             # consider a track "stable" after 3 seconds with same key
+#             now_ts = time.time()
+#             if key == stable_key:
+#                 # already stable; do nothing
+#                 pass
+#             else:
+#                 # key changed; start (or reset) stability timer
+#                 stable_key = key
+#                 stable_since = now_ts
 
-            became_stable = (stable_key == key) and (now_ts - stable_since >= 3.0)
-            if became_stable and key and key != last_key:
-                # new stable track -> record it
-                _history_add_song(now)
-                last_key = key
-        time.sleep(1.0)
+#             became_stable = (stable_key == key) and (now_ts - stable_since >= 3.0)
+#             if became_stable and key and key != last_key:
+#                 # new stable track -> record it
+#                 _history_add_song(now)
+#                 last_key = key
+#         time.sleep(1.0)
 
 def _start_scrobbler_once():
     global _SCROBBLER_STARTED
@@ -914,23 +1149,25 @@ def api_event():
             "text": request.args.get("text", "")[:2000],
             "audio_url": request.args.get("audio_url"),
         }
+    elif ev_type == "metadata_refresh":
+        # Handle metadata refresh events from Liquidsoap track changes
+        # This helps ensure the UI shows correct metadata after DJ intros
+        print(f"DEBUG: Metadata refresh - {request.args.get('artist', 'Unknown')} - {request.args.get('title', 'Unknown')}")
+        
+        # Emit real-time update to connected clients
+        socketio.emit('metadata_update', {
+            'artist': request.args.get("artist", ""),
+            'title': request.args.get("title", ""),
+            'album': request.args.get("album", ""),
+            'time': now_ms
+        })
+        
+        return jsonify({"ok": True, "type": "metadata_refresh"})
     else:
         return jsonify({"ok": False, "error": "unknown type"}), 400
 
-    hist = _read_history()
-    
-    # Simple deduplication: don't add if identical entry exists within last 30 seconds
-    if ev_type == "song":
-        track_key = f"{row['artist']}|{row['title']}"
-        for recent in reversed(hist[-10:]):  # Check last 10 entries
-            if (recent.get("type") == "song" and
-                recent.get("time", 0) > now_ms - 30000 and  # within 30 seconds
-                f"{recent.get('artist', '')}|{recent.get('title', '')}" == track_key):
-                print(f"DEBUG: Skipping duplicate song entry: {track_key}")
-                return jsonify({"ok": True, "skipped": "duplicate"})
-    
-    hist.append(row)
-    _write_history(hist)
+    # Use the new database system via push_event
+    push_event(row)
     return jsonify({"ok": True})
 
 def _build_art_url(path: str) -> str:
@@ -942,7 +1179,12 @@ def _build_art_url(path: str) -> str:
 
 @app.route("/")
 def index():
-    return send_from_directory(BASE_DIR, "index.html")
+    # Add cache-busting headers for mobile browsers
+    response = send_from_directory(BASE_DIR, "index.html")
+    response.headers['Cache-Control'] = 'no-store, no-cache, must-revalidate, max-age=0'
+    response.headers['Pragma'] = 'no-cache'
+    response.headers['Expires'] = '0'
+    return response
 
 def _get_cached_cover_url(artist, album, filename):
     """Get cover URL with caching and fallback to online lookup."""
@@ -1076,32 +1318,52 @@ def _fix_dj_transcription(entry):
 
 @app.get("/api/history")
 def api_history():
-    """Optimized history endpoint with optional pagination."""
+    """Optimized history endpoint using database with optional pagination."""
     # Check if frontend expects paginated response
     wants_pagination = 'limit' in request.args or 'offset' in request.args
     
-    if wants_pagination:
-        # New paginated format
-        limit = min(int(request.args.get('limit', 50)), 200)  # Cap at 200
-        offset = int(request.args.get('offset', 0))
-        
-        with HISTORY_LOCK:
-            # Sort once, slice efficiently  
-            sorted_history = sorted(HISTORY, key=lambda e: e.get("time", 0), reverse=True)
-            page_items = sorted_history[offset:offset + limit]
+    try:
+        if wants_pagination:
+            # New paginated format
+            limit = min(int(request.args.get('limit', 50)), 200)  # Cap at 200
+            offset = int(request.args.get('offset', 0))
             
-            # Only process the items we're returning
-            fixed_history = [_fix_dj_transcription(entry) for entry in page_items]
+            # Get history from database
+            history_items = get_history(limit=limit, offset=offset)
+            
+            # Convert timestamp field name for frontend compatibility
+            for item in history_items:
+                if 'timestamp' in item:
+                    item['time'] = item['timestamp']
+                    del item['timestamp']
+            
+            # Get total count for pagination info
+            stats = db_manager.get_stats()
+            total_count = stats['song_history_count'] + stats['dj_history_count']
             
             return jsonify({
-                "items": fixed_history,
-                "total": len(HISTORY),
+                "items": history_items,
+                "total": total_count,
                 "offset": offset,
                 "limit": limit,
-                "has_more": offset + limit < len(HISTORY)
+                "has_more": offset + limit < total_count
             })
-    else:
-        # Legacy format - return first 60 items as array for backward compatibility
+        else:
+            # Legacy format - return all items as array
+            limit = 300  # Reasonable limit for legacy requests
+            history_items = get_history(limit=limit, offset=0)
+            
+            # Convert timestamp field name for frontend compatibility
+            for item in history_items:
+                if 'timestamp' in item:
+                    item['time'] = item['timestamp']
+                    del item['timestamp']
+            
+            return jsonify(history_items)
+    
+    except Exception as e:
+        print(f"Error in api_history: {e}")
+        # Fallback to old system if database fails
         with HISTORY_LOCK:
             sorted_history = sorted(HISTORY, key=lambda e: e.get("time", 0), reverse=True)
             limited_items = sorted_history[:60]  # Reasonable limit for legacy
@@ -1110,64 +1372,114 @@ def api_history():
 
 @app.get("/api/now")
 def api_now():
+    # Use cached data from track-check if recent (< 30 seconds)
+    global _cached_metadata
+    if _cached_metadata["current"] and (time.time() - _cached_metadata["timestamp"]) < 30:
+        return jsonify(_cached_metadata["current"])
+    
+    # Fallback to live data
     now = _get_now_playing()
     if not now:
         return jsonify({"error": "No track info"}), 404
     return jsonify(now)
 
+@app.get("/api/health")
+def api_health():
+    """Health check endpoint - verify telnet connectivity to Liquidsoap"""
+    try:
+        # Quick telnet test
+        result = subprocess.run(
+            ["nc", "127.0.0.1", "1234"],
+            input="help\nquit\n".encode(),
+            capture_output=True,
+            timeout=3
+        )
+        telnet_ok = result.returncode == 0 and "Available commands:" in result.stdout.decode()
+        
+        return jsonify({
+            "status": "healthy" if telnet_ok else "unhealthy",
+            "telnet_connection": "ok" if telnet_ok else "failed",
+            "timestamp": int(time.time())
+        })
+    except Exception as e:
+        return jsonify({
+            "status": "unhealthy", 
+            "error": str(e),
+            "telnet_connection": "failed",
+            "timestamp": int(time.time())
+        }), 500
+
 @app.get("/api/track-check")
 def api_track_check():
-    """Lightweight endpoint to check if track has changed and provide current + next info"""
+    """Master metadata endpoint - single source of truth for current + next tracks"""
     try:
-        # Single telnet call gets both current and next track data
-        lines = _liquidsoap_telnet_command("output.icecast.metadata")
-        if lines:
-            # Parse metadata sections
-            current_section = {}
-            sections = []
+        # Primary source: Get current track from Icecast (most reliable)
+        current_track = _get_current_track_from_icecast()
+        
+        if current_track:
+            current_data = {
+                "title": current_track["title"],
+                "artist": current_track["artist"],
+                "album": "",  # Icecast doesn't provide full metadata
+                "genre": "",
+                "date": "",
+                "filename": "",
+                "source": "icecast",
+                "cached_at": time.time()
+            }
             
-            for line in lines:
-                if line.startswith("--- ") and line.endswith(" ---"):
+            # Try to get next track from telnet as fallback
+            next_track = None
+            try:
+                lines = _liquidsoap_telnet_command("output.icecast.metadata")
+                if lines:
+                    # Parse telnet metadata for next track info
+                    sections = []
+                    current_section = {}
+                    
+                    for line in lines:
+                        if line.startswith("--- ") and line.endswith(" ---"):
+                            if current_section:
+                                sections.append(current_section)
+                            current_section = {}
+                        elif "=" in line and not line.startswith("itunsmpb") and not line.startswith("cover"):
+                            key, val = line.split("=", 1)
+                            key = key.strip()
+                            val = val.strip().strip('"')
+                            current_section[key] = val
+                    
                     if current_section:
                         sections.append(current_section)
-                    current_section = {}
-                elif "=" in line and not line.startswith("itunsmpb"):
-                    key, val = line.split("=", 1)
-                    key = key.strip()
-                    val = val.strip().strip('"')
-                    current_section[key] = val
+                    
+                    # Get music tracks only (skip DJ intros)
+                    music_tracks = [s for s in sections if s.get("artist", "") != "AI DJ"]
+                    
+                    if len(music_tracks) > 1:
+                        next = music_tracks[1]
+                        next_track = {
+                            "title": next.get("title", "Unknown"),
+                            "artist": next.get("artist", "Unknown"),
+                            "album": next.get("album", ""),
+                            "filename": next.get("filename", ""),
+                            "artwork_url": f"/api/cover?file={urllib.parse.quote(next.get('filename', ''))}" if next.get("filename") else None
+                        }
+            except Exception as e:
+                print(f"DEBUG: Telnet next track lookup failed: {e}")
             
-            if current_section:
-                sections.append(current_section)
+            # Store for other endpoints
+            global _cached_metadata
+            _cached_metadata = {
+                "current": current_data,
+                "next": [next_track] if next_track else [],
+                "timestamp": time.time()
+            }
             
-            # Get current and next music tracks (skip DJ intros)
-            music_tracks = [s for s in sections if s.get("artist", "") != "AI DJ"]
-            
-            if music_tracks:
-                current = music_tracks[0]
-                current_title = current.get("title", "Unknown")
-                current_artist = current.get("artist", "Unknown")
-                
-                # Also include next track if available
-                next_track = None
-                if len(music_tracks) > 1:
-                    next = music_tracks[1]
-                    next_track = {
-                        "title": next.get("title", "Unknown"),
-                        "artist": next.get("artist", "Unknown"),
-                        "album": next.get("album", "")
-                    }
-                
-                return jsonify({
-                    "track_id": f"{current_artist}|{current_title}",
-                    "current": {
-                        "title": current_title,
-                        "artist": current_artist,
-                        "album": current.get("album", "")
-                    },
-                    "next": next_track,
-                    "timestamp": int(time.time())
-                })
+            return jsonify({
+                "track_id": f"{current_track['artist']}|{current_track['title']}",
+                "current": current_data,
+                "next": next_track,
+                "timestamp": int(time.time())
+            })
     except Exception as e:
         print(f"DEBUG: Track check failed: {e}")
     
@@ -1175,69 +1487,20 @@ def api_track_check():
 
 @app.get("/api/next")
 def api_next():
-    # Try to read from daemon cache first
+    # ONLY read from daemon cache - no telnet calls
     cache_file = "/opt/ai-radio/cache/next_metadata.json"
     try:
         if os.path.exists(cache_file):
             with open(cache_file, 'r') as f:
-                cached_data = json.load(f)
+                next_tracks = json.load(f)
             
-            # Check if cache is reasonably fresh (less than 30 seconds old)
-            cache_age = time.time() - os.path.getmtime(cache_file)
-            if cache_age < 30:
-                print(f"DEBUG: Using cached next tracks (age: {cache_age:.1f}s)")
-                return jsonify(cached_data)
-            else:
-                print(f"DEBUG: Next tracks cache is stale (age: {cache_age:.1f}s)")
+            print(f"DEBUG: Using daemon next tracks cache: {len(next_tracks) if isinstance(next_tracks, list) else 0} tracks")
+            return jsonify(next_tracks if isinstance(next_tracks, list) else [])
+        else:
+            print("DEBUG: No next tracks cache file found")
     except Exception as e:
         print(f"DEBUG: Error reading next tracks cache: {e}")
     
-    # Fallback: Get next tracks via controlled telnet
-    print("DEBUG: Getting next tracks via telnet")
-    try:
-        # Get all request IDs
-        request_lines = _liquidsoap_telnet_command("request.all")
-        if request_lines and len(request_lines) > 1:
-            # Parse request IDs (skip current, get next ones)
-            request_ids = []
-            for line in request_lines:
-                if line.strip() and line.strip() != "END":
-                    ids = line.strip().split()
-                    request_ids.extend(ids)
-            
-            next_tracks = []
-            # Get metadata for next 2-3 requests (skip first which is current)
-            for rid in request_ids[1:3]:  # Skip current, get next 2
-                try:
-                    meta_lines = _liquidsoap_telnet_command(f"request.metadata {rid}")
-                    track_data = {}
-                    
-                    for line in meta_lines:
-                        if "=" in line and not line.startswith("itunsmpb") and not line.startswith("cover"):
-                            key, val = line.split("=", 1)
-                            key = key.strip()
-                            val = val.strip().strip('"')
-                            track_data[key] = val
-                    
-                    if track_data.get("title") and track_data.get("artist") != "AI DJ":
-                        next_track = {
-                            "title": track_data.get("title", "Unknown"),
-                            "artist": track_data.get("artist", "Unknown"),
-                            "album": track_data.get("album", ""),
-                            "filename": track_data.get("filename", ""),
-                            "artwork_url": f"/api/cover?file={urllib.parse.quote(track_data.get('filename', ''))}" if track_data.get("filename") else None
-                        }
-                        next_tracks.append(next_track)
-                except Exception as e:
-                    print(f"DEBUG: Error getting metadata for request {rid}: {e}")
-                    
-            if next_tracks:
-                print(f"DEBUG: Live next tracks: {next_tracks}")
-                return jsonify(next_tracks)
-    except Exception as e:
-        print(f"DEBUG: Live next tracks failed: {e}")
-    
-    print("DEBUG: Returning empty next tracks")
     return jsonify([])
 
 @app.get("/api/just-played")
@@ -1376,8 +1639,55 @@ def tts_queue_post():
     try:
         data = request.get_json(force=True, silent=True) or {}
         text = (data.get("text") or "").strip()
+        audio_file = data.get("audio_file", "").strip()
+        metadata = data.get("metadata", {})
+        
+        # If audio_file is provided, queue it directly with metadata
+        if audio_file and os.path.isfile(audio_file):
+            # Extract metadata with defaults
+            artist = metadata.get("artist", "AI DJ")
+            title = metadata.get("title", "DJ Intro")
+            album = metadata.get("album", "AI Radio")
+            
+            # Create annotated request for Liquidsoap
+            annotated_path = f'annotate:artist="{artist}",title="{title}",album="{album}":{audio_file}'
+            
+            # Send to Liquidsoap TTS queue via telnet
+            try:
+                with socket.create_connection((TELNET_HOST, TELNET_PORT), timeout=5) as s:
+                    s.settimeout(5)
+                    # Consume banner
+                    try:
+                        s.recv(1024)
+                    except:
+                        pass
+                    
+                    # Push annotated file to TTS queue
+                    command = f'tts.push {annotated_path}\nquit\n'
+                    s.send(command.encode())
+                    
+                    # Read response
+                    response = s.recv(1024).decode().strip()
+                    print(f"Flask API: TTS queue response: {response}")
+                    
+                    push_event({
+                        "type": "dj",
+                        "text": f"{title}",
+                        "audio_url": f"/audio/{os.path.basename(audio_file)}",
+                        "time": int(time.time() * 1000),
+                        "metadata": metadata
+                    })
+                    
+                    return jsonify({"ok": True, "queued": os.path.basename(audio_file), "metadata": metadata})
+                    
+            except Exception as e:
+                print(f"Flask API: Failed to queue audio file via telnet: {e}")
+                return jsonify({"ok": False, "error": f"Failed to queue audio: {str(e)}"}), 500
+        
+        # Legacy text-only queuing (for compatibility)
         if not text:
-            return jsonify({"ok": False, "error": "No text provided"}), 400
+            return jsonify({"ok": False, "error": "No text or audio file provided"}), 400
+            
         os.makedirs(TTS_DIR, exist_ok=True)
         stamp = int(time.time())
         txt_path = os.path.join(TTS_DIR, f"dj_{stamp}.txt")
@@ -1390,13 +1700,29 @@ def tts_queue_post():
             "time": int(time.time() * 1000),
         })
         return jsonify({"ok": True, "queued": os.path.basename(txt_path)})
+        
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 
 @app.post("/api/skip")
 def api_skip():
-    # DISABLED to prevent telnet storms
-    return {"ok": False, "error": "Skip disabled to prevent connection storms"}, 503
+    """Skip to next track in the playlist shuffle without restarting stream"""
+    try:
+        # Use single controlled telnet call to skip current track
+        result = subprocess.run(
+            ["nc", "-w3", "localhost", "1234"],
+            input="library_clean_m3u.skip\nquit\n".encode(),
+            capture_output=True,
+            timeout=5
+        )
+        
+        if result.returncode == 0 and "OK" in result.stdout.decode():
+            return {"ok": True, "message": "Skipped to next track"}
+        else:
+            return {"ok": False, "error": "Skip command failed"}, 500
+            
+    except Exception as e:
+        return {"ok": False, "error": f"Skip failed: {str(e)}"}, 500
 
 @app.post("/api/enqueue")
 def api_enqueue_tts():
@@ -1996,9 +2322,64 @@ if os.environ.get("WERKZEUG_RUN_MAIN") != "true":  # avoid double-start in debug
     t = threading.Thread(target=_scrobble_loop, name="scrobble", daemon=True)
     t.start()
 
+# ── SocketIO Handlers ──────────────────────────────────────────
+@socketio.on('connect')
+def handle_connect():
+    print(f"Client connected: {request.sid}")
+    # Send current track info immediately on connect
+    try:
+        # Get complete track data using the same function as /api/now
+        complete_track = _get_now_playing()
+        if complete_track:
+            emit('track_update', complete_track)
+        else:
+            # Fallback to basic track info
+            current_track = _get_current_track_from_icecast()
+            if current_track:
+                emit('track_update', {
+                    'title': current_track['title'],
+                    'artist': current_track['artist'],
+                    'type': 'song',
+                    'source': 'icecast',
+                    'timestamp': time.time()
+                })
+    except Exception as e:
+        print(f"Error sending initial track: {e}")
+
+@socketio.on('disconnect')
+def handle_disconnect():
+    print(f"Client disconnected: {request.sid}")
+
+@socketio.on('request_current_track')
+def handle_track_request():
+    """Handle explicit request for current track"""
+    try:
+        # Get complete track data using the same function as /api/now
+        complete_track = _get_now_playing()
+        if complete_track:
+            emit('track_update', complete_track)
+        else:
+            # Fallback to basic track info
+            current_track = _get_current_track_from_icecast()
+            if current_track:
+                emit('track_update', {
+                    'title': current_track['title'],
+                    'artist': current_track['artist'],
+                    'type': 'song',
+                    'source': 'icecast',
+                    'timestamp': time.time()
+                })
+    except Exception as e:
+        emit('error', {'message': f'Failed to get current track: {e}'})
+
+# WebSocket broadcast function for track changes
+def broadcast_track_change(track_info):
+    """Broadcast track change to all connected clients"""
+    socketio.emit('track_update', track_info)
+
 # ── Main ────────────────────────────────────────────────────────
 if __name__ == "__main__":
-    app.run(host=HOST, port=PORT)
+    socketio.run(app, host=HOST, port=PORT, debug=False)
 def _safe_read_history():
     try:
         with open(HISTORY_PATH, "r") as f:

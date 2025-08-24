@@ -22,97 +22,133 @@ An intelligent radio streaming platform that automatically generates DJ commenta
 
 - 🤖 **AI DJ Commentary**: Automatically generates contextual commentary about upcoming tracks using AI models
 - 🎤 **Multiple TTS Engines**: Supports XTTS, ElevenLabs, and Piper text-to-speech synthesis
-- 🌐 **Web Interface**: Real-time web UI for monitoring current track, history, and upcoming queue
+- 🌐 **React Frontend**: Modern web UI with real-time WebSocket updates and smooth animations
 - 📻 **Automated Streaming**: Liquidsoap-based radio automation with intelligent queuing
-- 🎨 **Cover Art**: Automatic album cover extraction and display
-- 📝 **Track History**: Persistent logging and display of played tracks
-- 🔌 **API Integration**: RESTful API for external integrations and control
-- ⚡ **Telnet Storm Prevention**: Optimized polling system prevents connection flooding while maintaining real-time updates
+- 🎨 **Cover Art**: Automatic album cover extraction and display with database enhancement
+- 📝 **SQLite Database**: Robust data storage for track history, TTS entries, and metadata
+- 🔄 **Real-time Next Tracks**: Live upcoming queue display with database-enhanced artwork
+- 🎯 **TTS-Audio Synchronization**: Perfect matching between displayed text and actual audio
+- 🔌 **Harbor Integration**: Modern streaming protocol with WebSocket real-time updates
+- ⚡ **Telnet Storm Prevention**: Optimized metadata caching prevents connection flooding
+- 🎵 **Track Progress**: Accurate timing with persistent progress across page refreshes
 
 ## Architecture 🏗️
 
-- 🐍 **Backend**: Python Flask application (`ui/app.py`) providing REST API and web interface
-- 🎧 **Streaming**: Liquidsoap (`radio.liq`) handles audio streaming and queue management
-- 🗣️ **TTS Generation**: Multiple shell scripts for different TTS providers
-- 🧠 **AI Generation**: Ollama integration for intelligent DJ commentary
-- 💾 **Storage**: JSON-based persistence for history and metadata
+- 🐍 **Backend**: Python Flask application (`ui/app.py`) with SQLite database and WebSocket support
+- ⚛️ **Frontend**: React TypeScript application with Framer Motion animations and real-time updates
+- 🎧 **Streaming**: Liquidsoap (`radio.liq`) with Harbor protocol and metadata caching daemon
+- 🗣️ **TTS Generation**: Database-integrated scripts with automatic text-audio linking
+- 🧠 **AI Generation**: Multi-tier fallback system with Ollama and OpenAI integration
+- 💾 **Storage**: SQLite database with ACID transactions and referential integrity
+- 🔄 **Metadata System**: Real-time caching daemon prevents telnet storms while ensuring fresh data
 
 ## Directory Structure
 
 ```
 /opt/ai-radio/
-├── ui/                     # Web interface
-│   ├── app.py             # Main Flask application
-│   └── index.html         # Frontend interface
-├── cache/covers/          # Album cover cache
+├── ui/                     # Flask web application
+│   ├── app.py             # Main Flask application with WebSocket support
+│   ├── index.html         # Compiled React frontend
+│   └── static/            # Built React assets (CSS, JS)
+├── radio-frontend/         # React TypeScript source
+│   ├── src/App.tsx        # Main React component with animations
+│   ├── src/App.css        # Modern CSS with transitions
+│   └── package.json       # React dependencies
+├── cache/                 # Metadata caching system
+│   ├── now_metadata.json  # Current track cache
+│   └── next_metadata.json # Upcoming tracks cache
 ├── tts/                   # Generated TTS audio files
-├── logs/                  # Application logs
-├── static/                # Static web assets
-├── voices/                # TTS voice models
-├── utils/                 # Utility scripts
-├── radio.liq              # Liquidsoap configuration
-├── auto_dj.conf           # DJ configuration
-├── dj_settings.json       # DJ settings
-├── library_clean.m3u      # Music library playlist
-├── play_history.json      # Track history
-├── now.json               # Current track metadata
-├── next.json              # Upcoming tracks
-└── *.sh                   # Various utility scripts
+├── logs/                  # Application logs  
+├── voices/                # TTS voice samples
+├── database.py            # SQLite database management
+├── metadata_daemon.py     # Real-time metadata caching daemon
+├── ai_radio.db           # SQLite database file
+├── radio.liq             # Liquidsoap configuration with Harbor support
+├── dj_settings.json      # AI DJ configuration and prompts
+├── library_clean.m3u     # Music library playlist
+└── *.sh                  # TTS generation scripts with database integration
 ```
 
 ## Key Components
 
 ### Flask Application (`ui/app.py`)
-- Serves web interface and API endpoints
-- Manages track history and metadata
-- Integrates with TTS engines
-- Provides real-time track information
+- SQLite database integration with ACID transactions
+- WebSocket support for real-time frontend updates
+- REST API with optimized metadata caching
+- TTS-audio synchronization system
+- Advanced scrobbling with DJ content detection
 
-### Liquidsoap (`radio.liq`)
-- Handles audio streaming and broadcasting
-- Manages music queue and transitions
-- Integrates TTS audio into stream
-- Provides telnet interface for control
+### React Frontend (`radio-frontend/`)
+- TypeScript-based single-page application
+- Framer Motion animations and smooth transitions
+- Real-time WebSocket integration for live updates
+- Persistent track progress across page refreshes
+- Responsive design with modern CSS
 
-### TTS Scripts
-- `gen_ai_dj_line.sh`: Generates AI commentary using Ollama
-- `dj_enqueue_xtts.sh`: XTTS text-to-speech synthesis
-- `dj_enqueue_elevenlabs.sh`: ElevenLabs TTS integration
-- `dj_enqueue_xtts_ai.sh`: AI-enhanced XTTS generation
+### Metadata Caching Daemon (`metadata_daemon.py`)
+- Real-time Liquidsoap metadata parsing
+- Intelligent track change detection with timestamps
+- Database-enhanced next track information
+- Telnet storm prevention with smart caching
+- Automatic current track exclusion from queue
+
+### Database System (`database.py`, `ai_radio.db`)
+- SQLite with referential integrity and foreign keys
+- TTS entries table with text-audio linking
+- Play history with automatic deduplication
+- Track lookup system for artwork enhancement
+- Thread-safe operations with connection pooling
+
+### TTS Integration Scripts
+- `dj_enqueue_xtts.sh`: Database-integrated XTTS generation
+- `gen_ai_dj_line_enhanced.sh`: Multi-tier AI fallback system
+- Automatic database entry creation for all TTS files
+- Perfect text-audio synchronization via timestamps
 
 ## API Endpoints 🚀
 
-- 📡 `GET /api/now` - Current playing track
-- ⏭️ `GET /api/next` - Upcoming tracks in queue  
-- ⚡ `GET /api/track-check` - **Optimized polling**: Current + next track info in single call
-- 📜 `GET /api/history` - Recently played tracks
-- 🖼️ `GET /api/cover?file=<path>` - Album artwork
-- 🎵 `POST /api/enqueue` - Enqueue TTS files via Flask API (replaces direct telnet)
-- 🎙️ `POST /api/dj-next` - Generate DJ intro for next track
+- 📡 `GET /api/now` - Current playing track with accurate start time
+- ⏭️ `GET /api/next` - Database-enhanced upcoming tracks with artwork
+- 📜 `GET /api/history` - Recently played tracks with TTS text matching
+- 🖼️ `GET /api/cover?file=<path>` - Album artwork with caching
+- 🎙️ `GET /api/event` - Event ingestion for DJ/song tracking
+- 🔊 `POST /api/tts_queue` - Add TTS to Liquidsoap queue
 - ⏩ `POST /api/skip` - Skip current track
-- 🔊 `POST /api/tts_queue` - Add TTS to queue
+- 💊 `GET /api/health` - Service health check with telnet status
 
-## Telnet Storm Prevention 🛡️
+## Advanced Systems 🛡️
 
-This system implements an optimized polling architecture to prevent telnet connection flooding:
-
-**Smart Polling Strategy:**
-- Frontend polls `/api/track-check` every 15 seconds
-- Single telnet call retrieves both current and next track metadata  
-- Only full refresh when `track_id` changes
-- Metadata daemon uses Flask API instead of direct telnet
+### Metadata Caching Architecture
+**Smart Caching Strategy:**
+- Dedicated metadata daemon queries Liquidsoap every 3 seconds
+- Frontend uses cached data via REST API (no direct telnet calls)
+- Intelligent track change detection with timestamps
+- Database-enhanced upcoming tracks with artwork lookup
 
 **Architecture Flow:**
 ```
-Frontend → /api/track-check (15s intervals) → Single telnet call → Liquidsoap
-Metadata Daemon → Flask API → (no telnet)
-TTS Scripts → Flask API → (no telnet)
+metadata_daemon.py → Liquidsoap telnet → Cache files → Flask API → React Frontend
+TTS Scripts → SQLite Database → Flask API → WebSocket updates
 ```
 
 **Benefits:**
-- Zero telnet storms while maintaining real-time updates
-- Minimal resource usage with smart change detection
-- Fresh metadata without cache staleness issues
+- Zero telnet storms with sub-second response times
+- Real-time WebSocket updates for instant UI changes
+- Persistent track timing across page refreshes
+- Database-enhanced metadata for richer experiences
+
+### Database Integration
+**SQLite Features:**
+- ACID transactions ensure data consistency
+- Foreign key relationships link TTS to history entries
+- Automatic deduplication prevents duplicate entries
+- Thread-safe operations for concurrent access
+
+**TTS Synchronization:**
+- Every TTS file automatically creates database entry
+- Perfect text-audio matching via timestamp correlation
+- Historical lookup enhances upcoming tracks with artwork
+- Referential integrity maintains data consistency
 
 ## Configuration ⚙️
 
@@ -153,12 +189,69 @@ Edit `library_clean.m3u` to point to your music files. Supports standard audio f
 
 ## Web Interface
 
+### Current Features
+
 Access the web interface at `http://localhost:5055` to view:
-- Current playing track with album art
-- Recently played history
-- AI DJ commentary timeline
-- Upcoming tracks queue
-- Playback controls
+- **Now Playing**: Current track with album art from online lookups
+- **Coming Up**: Next 5 tracks in queue with position numbers
+- **Recently Played**: History with both songs and DJ commentary
+- **Real-time Updates**: WebSocket integration for live track changes
+- **Responsive Design**: Mobile-friendly interface with error handling
+- **Album Art**: Automatic online lookup via iTunes/MusicBrainz APIs
+
+### React Frontend Benefits
+
+The modern React-based frontend provides:
+- **Real-time Interface**: Live updates without page refreshes
+- **Better Performance**: Client-side rendering reduces server load  
+- **Professional UI**: Modern design with animations and responsive layout
+- **Error Resilience**: Graceful handling of API failures with fallbacks
+
+### Future Possibilities 🚀
+
+The React foundation enables advanced features:
+
+#### **Interactive Controls**
+- **Real-time DJ Controls**: Live volume, EQ, and audio effects adjustment
+- **Request System**: User voting and track request functionality
+- **Skip Controls**: Listener-driven track skipping with voting
+- **Playlist Management**: Drag-and-drop queue reordering
+
+#### **Social Features**
+- **Live Chat**: Real-time listener interaction and community
+- **Track Ratings**: User feedback on played tracks
+- **Social Sharing**: Share favorite tracks to social media
+- **User Profiles**: Personalized listening history and preferences
+
+#### **Advanced Analytics**
+- **Live Dashboard**: Real-time listener stats and engagement metrics
+- **Music Analytics**: Track popularity, skip rates, and listening patterns  
+- **DJ Performance**: Commentary effectiveness and listener retention
+- **Geographic Stats**: Listener locations and regional preferences
+
+#### **Mobile & Extended Platform**
+- **Mobile App**: React Native version for iOS and Android
+- **Desktop App**: Electron-based desktop application
+- **Smart Speaker Integration**: Alexa, Google Home compatibility
+- **Car Integration**: Android Auto and CarPlay support
+
+#### **Enhanced Audio Features**
+- **Audio Visualization**: Real-time spectrum analyzer and waveforms
+- **Lyrics Display**: Synchronized lyrics with currently playing track
+- **Cross-fade Controls**: User-adjustable transition settings  
+- **Audio Effects**: Real-time reverb, echo, and filter controls
+
+#### **Content Management**
+- **Multi-station Support**: Different genres, moods, or themes
+- **Automated Scheduling**: Time-based programming and content blocks
+- **Content Curation**: AI-powered music discovery and playlist generation
+- **Podcast Integration**: Mixed content with music and spoken word
+
+#### **Integration Capabilities**
+- **Streaming Platforms**: Spotify, Apple Music, YouTube Music integration
+- **Last.fm Scrobbling**: Automatic track scrobbling for listeners
+- **Discord Bots**: Server integration for community radio
+- **Home Automation**: Smart home integration for ambient audio
 
 ## AI DJ Features
 

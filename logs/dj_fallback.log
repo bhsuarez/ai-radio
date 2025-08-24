@@ -37,3 +37,22 @@
 [2025-08-22 19:45:13] ERROR: OpenAI gpt-3.5-turbo API call failed
 [2025-08-22 19:45:14] Trying Ollama model: llama3.2:3b (tier: tier2_ollama)
 [2025-08-22 19:45:34] SUCCESS: Ollama llama3.2:3b generated valid text
+[2025-08-24 07:28:09] Starting DJ line generation for: 'Test Song' by 'Test Artist'
+[2025-08-24 07:28:09] Trying OpenAI model: gpt-4o-mini
+[2025-08-24 07:28:10] ERROR: OpenAI gpt-4o-mini API call failed
+[2025-08-24 07:28:11] Retry 1 for gpt-4o-mini after 4s delay
+[2025-08-24 07:28:16] ERROR: OpenAI gpt-4o-mini API call failed
+[2025-08-24 07:28:17] Retry 2 for gpt-4o-mini after 7s delay
+[2025-08-24 07:28:25] ERROR: OpenAI gpt-4o-mini API call failed
+[2025-08-24 07:28:26] Trying OpenAI model: gpt-3.5-turbo
+[2025-08-24 07:28:27] ERROR: OpenAI gpt-3.5-turbo API call failed
+[2025-08-24 07:28:28] Retry 1 for gpt-3.5-turbo after 4s delay
+[2025-08-24 07:28:33] ERROR: OpenAI gpt-3.5-turbo API call failed
+[2025-08-24 07:28:34] Retry 2 for gpt-3.5-turbo after 7s delay
+[2025-08-24 07:28:41] ERROR: OpenAI gpt-3.5-turbo API call failed
+[2025-08-24 07:28:42] Trying Ollama model: llama3.2:3b (tier: tier2_ollama)
+[2025-08-24 07:29:01] QUALITY: Ollama llama3.2:3b failed validation
+[2025-08-24 07:29:01] Retry 1 for llama3.2:3b after 2s delay
+[2025-08-24 07:29:12] QUALITY: Ollama llama3.2:3b failed validation
+[2025-08-24 07:29:12] Retry 2 for llama3.2:3b after 4s delay
+[2025-08-24 07:29:21] SUCCESS: Ollama llama3.2:3b generated valid text

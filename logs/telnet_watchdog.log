@@ -1,0 +1,86 @@
+2025-08-23 15:28:19 - STARTUP: AI Radio telnet watchdog started (PID: 59781)
+2025-08-23 15:29:54 - SHUTDOWN: Telnet watchdog stopping
+2025-08-23 15:29:54 - STARTUP: AI Radio telnet watchdog started (PID: 59923)
+2025-08-23 18:08:08 - SHUTDOWN: Telnet watchdog stopping
+2025-08-23 18:08:09 - STARTUP: AI Radio telnet watchdog started (PID: 68344)
+2025-08-23 18:08:09 - WARNING: Telnet connectivity failed (attempt 1/3)
+2025-08-23 18:09:09 - RECOVERY: Telnet connectivity restored after 1 failures
+2025-08-23 21:39:11 - SHUTDOWN: Telnet watchdog stopping
+2025-08-23 21:39:12 - STARTUP: AI Radio telnet watchdog started (PID: 80755)
+2025-08-23 21:39:12 - WARNING: Telnet connectivity failed (attempt 1/3)
+2025-08-23 21:40:12 - RECOVERY: Telnet connectivity restored after 1 failures
+2025-08-24 07:03:22 - SHUTDOWN: Telnet watchdog stopping
+2025-08-24 07:03:22 - STARTUP: AI Radio telnet watchdog started (PID: 103506)
+2025-08-24 07:03:22 - WARNING: Telnet connectivity failed (attempt 1/3)
+2025-08-24 07:04:22 - RECOVERY: Telnet connectivity restored after 1 failures
+2025-08-24 07:26:20 - SHUTDOWN: Telnet watchdog stopping
+2025-08-24 07:26:21 - STARTUP: AI Radio telnet watchdog started (PID: 106278)
+2025-08-24 07:26:21 - WARNING: Telnet connectivity failed (attempt 1/3)
+2025-08-24 07:26:24 - SHUTDOWN: Telnet watchdog stopping
+2025-08-24 07:26:24 - STARTUP: AI Radio telnet watchdog started (PID: 106405)
+2025-08-24 07:26:24 - WARNING: Telnet connectivity failed (attempt 1/3)
+2025-08-24 07:26:28 - SHUTDOWN: Telnet watchdog stopping
+2025-08-24 07:26:28 - STARTUP: AI Radio telnet watchdog started (PID: 106515)
+2025-08-24 07:26:28 - WARNING: Telnet connectivity failed (attempt 1/3)
+2025-08-24 07:26:31 - SHUTDOWN: Telnet watchdog stopping
+2025-08-24 07:26:31 - STARTUP: AI Radio telnet watchdog started (PID: 106634)
+2025-08-24 07:26:31 - WARNING: Telnet connectivity failed (attempt 1/3)
+2025-08-24 07:26:35 - SHUTDOWN: Telnet watchdog stopping
+2025-08-24 07:26:35 - STARTUP: AI Radio telnet watchdog started (PID: 106760)
+2025-08-24 07:26:35 - WARNING: Telnet connectivity failed (attempt 1/3)
+2025-08-24 07:26:38 - SHUTDOWN: Telnet watchdog stopping
+2025-08-24 07:26:38 - STARTUP: AI Radio telnet watchdog started (PID: 106878)
+2025-08-24 07:26:38 - WARNING: Telnet connectivity failed (attempt 1/3)
+2025-08-24 07:26:42 - SHUTDOWN: Telnet watchdog stopping
+2025-08-24 07:26:42 - STARTUP: AI Radio telnet watchdog started (PID: 106985)
+2025-08-24 07:26:42 - WARNING: Telnet connectivity failed (attempt 1/3)
+2025-08-24 07:26:45 - SHUTDOWN: Telnet watchdog stopping
+2025-08-24 07:26:45 - STARTUP: AI Radio telnet watchdog started (PID: 107092)
+2025-08-24 07:26:45 - WARNING: Telnet connectivity failed (attempt 1/3)
+2025-08-24 07:26:49 - SHUTDOWN: Telnet watchdog stopping
+2025-08-24 07:26:49 - STARTUP: AI Radio telnet watchdog started (PID: 107200)
+2025-08-24 07:26:49 - WARNING: Telnet connectivity failed (attempt 1/3)
+2025-08-24 07:26:53 - SHUTDOWN: Telnet watchdog stopping
+2025-08-24 07:26:53 - STARTUP: AI Radio telnet watchdog started (PID: 107308)
+2025-08-24 07:26:53 - WARNING: Telnet connectivity failed (attempt 1/3)
+2025-08-24 07:26:56 - SHUTDOWN: Telnet watchdog stopping
+2025-08-24 07:26:56 - STARTUP: AI Radio telnet watchdog started (PID: 107415)
+2025-08-24 07:26:56 - WARNING: Telnet connectivity failed (attempt 1/3)
+2025-08-24 07:26:57 - SHUTDOWN: Telnet watchdog stopping
+2025-08-24 07:27:07 - STARTUP: AI Radio telnet watchdog started (PID: 107595)
+2025-08-24 07:27:07 - WARNING: Telnet connectivity failed (attempt 1/3)
+2025-08-24 07:28:07 - RECOVERY: Telnet connectivity restored after 1 failures
+2025-08-24 08:06:02 - SHUTDOWN: Telnet watchdog stopping
+2025-08-24 08:06:03 - STARTUP: AI Radio telnet watchdog started (PID: 111551)
+2025-08-24 08:06:03 - WARNING: Telnet connectivity failed (attempt 1/3)
+2025-08-24 08:06:08 - SHUTDOWN: Telnet watchdog stopping
+2025-08-24 08:06:08 - STARTUP: AI Radio telnet watchdog started (PID: 111703)
+2025-08-24 08:06:08 - WARNING: Telnet connectivity failed (attempt 1/3)
+2025-08-24 08:06:13 - SHUTDOWN: Telnet watchdog stopping
+2025-08-24 08:06:13 - STARTUP: AI Radio telnet watchdog started (PID: 111816)
+2025-08-24 08:06:17 - SHUTDOWN: Telnet watchdog stopping
+2025-08-24 08:06:17 - STARTUP: AI Radio telnet watchdog started (PID: 111948)
+2025-08-24 08:06:22 - SHUTDOWN: Telnet watchdog stopping
+2025-08-24 08:06:22 - STARTUP: AI Radio telnet watchdog started (PID: 112055)
+2025-08-24 08:06:22 - WARNING: Telnet connectivity failed (attempt 1/3)
+2025-08-24 08:06:26 - SHUTDOWN: Telnet watchdog stopping
+2025-08-24 08:06:26 - STARTUP: AI Radio telnet watchdog started (PID: 112198)
+2025-08-24 08:06:26 - WARNING: Telnet connectivity failed (attempt 1/3)
+2025-08-24 08:06:31 - SHUTDOWN: Telnet watchdog stopping
+2025-08-24 08:06:31 - STARTUP: AI Radio telnet watchdog started (PID: 112309)
+2025-08-24 08:06:31 - WARNING: Telnet connectivity failed (attempt 1/3)
+2025-08-24 08:06:35 - SHUTDOWN: Telnet watchdog stopping
+2025-08-24 08:06:35 - STARTUP: AI Radio telnet watchdog started (PID: 112445)
+2025-08-24 08:06:40 - SHUTDOWN: Telnet watchdog stopping
+2025-08-24 08:06:40 - STARTUP: AI Radio telnet watchdog started (PID: 112573)
+2025-08-24 08:06:40 - WARNING: Telnet connectivity failed (attempt 1/3)
+2025-08-24 08:06:45 - SHUTDOWN: Telnet watchdog stopping
+2025-08-24 08:06:45 - STARTUP: AI Radio telnet watchdog started (PID: 112681)
+2025-08-24 08:06:49 - SHUTDOWN: Telnet watchdog stopping
+2025-08-24 08:06:49 - STARTUP: AI Radio telnet watchdog started (PID: 112785)
+2025-08-24 08:06:59 - WARNING: Telnet connectivity failed (attempt 1/3)
+2025-08-24 08:08:00 - RECOVERY: Telnet connectivity restored after 1 failures
+2025-08-24 08:08:06 - SHUTDOWN: Telnet watchdog stopping
+2025-08-24 08:08:06 - STARTUP: AI Radio telnet watchdog started (PID: 113138)
+2025-08-24 08:08:06 - WARNING: Telnet connectivity failed (attempt 1/3)
+2025-08-24 08:09:06 - RECOVERY: Telnet connectivity restored after 1 failures
