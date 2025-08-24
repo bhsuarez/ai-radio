@@ -158,6 +158,63 @@ body {
   color: #6b7280;
 }
 
+/* Progress Bar Styles */
+.progress-container {
+  margin-top: 1rem;
+  width: 100%;
+}
+
+.progress-bar {
+  width: 100%;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.1);
+  border-radius: 3px;
+  overflow: hidden;
+  margin-bottom: 0.5rem;
+  box-shadow: inset 0 1px 3px rgba(0, 0, 0, 0.3);
+}
+
+.progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, #4da3ff 0%, #3d8cff 50%, #4da3ff 100%);
+  border-radius: 3px;
+  transition: width 0.3s ease;
+  position: relative;
+}
+
+.progress-fill::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  right: 0;
+  width: 20px;
+  height: 100%;
+  background: linear-gradient(90deg, transparent 0%, rgba(255, 255, 255, 0.3) 100%);
+  animation: progressShimmer 2s ease-in-out infinite;
+}
+
+@keyframes progressShimmer {
+  0% { transform: translateX(-100%); }
+  100% { transform: translateX(100%); }
+}
+
+.progress-times {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  font-size: 0.85rem;
+}
+
+.progress-times .elapsed {
+  color: #4da3ff;
+  font-weight: 600;
+}
+
+.progress-times .remaining {
+  color: #9aa4b2;
+  font-style: italic;
+}
+
 .controls {
   display: flex;
   flex-direction: column;
@@ -432,6 +489,65 @@ body {
   color: #9aa4b2;
   font-size: 1rem;
   padding: 2rem 0;
+}
+
+/* History Item Transitions */
+.history-item-transition-enter {
+  opacity: 0;
+  transform: translateX(-50px) scale(0.95);
+}
+
+.history-item-transition-enter-active {
+  opacity: 1;
+  transform: translateX(0) scale(1);
+  transition: all 500ms ease-out;
+}
+
+.history-item-transition-exit {
+  opacity: 1;
+  transform: translateX(0) scale(1);
+}
+
+.history-item-transition-exit-active {
+  opacity: 0;
+  transform: translateX(50px) scale(0.95);
+  transition: all 500ms ease-in;
+}
+
+/* Enhanced hover effects with smooth transitions */
+.history-item {
+  transform: translateZ(0);
+  will-change: transform, box-shadow;
+}
+
+.history-item:hover {
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 8px 32px rgba(77, 163, 255, 0.15);
+}
+
+.dj-item:hover {
+  transform: translateY(-2px) scale(1.02);
+  box-shadow: 0 8px 32px rgba(255, 176, 32, 0.15);
+}
+
+/* Smooth image loading transitions */
+.history-cover, .upcoming-cover {
+  transition: all 0.3s ease;
+}
+
+.history-cover:hover, .upcoming-cover:hover {
+  transform: scale(1.1) rotate(2deg);
+  box-shadow: 0 4px 16px rgba(77, 163, 255, 0.2);
+}
+
+/* DJ Icon animations */
+.dj-icon {
+  transition: all 0.3s ease;
+}
+
+.dj-item:hover .dj-icon {
+  transform: scale(1.2) rotate(10deg);
+  filter: drop-shadow(0 0 8px rgba(255, 176, 32, 0.5));
 }
 
 /* Mobile Responsive */

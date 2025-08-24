@@ -1,6 +1,8 @@
 import React, { useState, useEffect } from 'react';
 import axios from 'axios';
 import io from 'socket.io-client';
+import { motion, AnimatePresence } from 'framer-motion';
+import { TransitionGroup, CSSTransition } from 'react-transition-group';
 import './App.css';
 
 interface Track {
@@ -11,6 +13,8 @@ interface Track {
   timestamp?: number;
   artwork_url?: string;
   filename?: string;
+  duration?: number;
+  track_started_at?: number;
 }
 
 interface HistoryItem {
@@ -31,6 +35,8 @@ function App() {
   const [nextTracks, setNextTracks] = useState<Track[]>([]);
   const [isConnected, setIsConnected] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [trackStartTime, setTrackStartTime] = useState<number>(0);
+  const [currentTime, setCurrentTime] = useState<number>(Date.now());
 
   const API_BASE = `${window.location.protocol}//${window.location.hostname}:5055`;
   
@@ -66,7 +72,27 @@ function App() {
       console.log('Fetching current track from:', `${API_BASE}/api/now`);
       const response = await axios.get(`${API_BASE}/api/now`);
       console.log('Current track response:', response.data);
-      setCurrentTrack(response.data);
+      const newTrack = response.data;
+      
+      // Check if this is a different track than what we currently have
+      const isNewTrack = !currentTrack || 
+        currentTrack.title !== newTrack.title || 
+        currentTrack.artist !== newTrack.artist;
+      
+      setCurrentTrack(newTrack);
+      
+      // Always update track start time if provided by backend (for accurate progress on refresh)
+      if (newTrack.track_started_at) {
+        const startTime = newTrack.track_started_at * 1000;
+        setTrackStartTime(startTime);
+        if (isNewTrack) {
+          console.log('🎵 New track detected via API:', newTrack.title, 'Started at:', new Date(startTime));
+        }
+      } else if (isNewTrack && newTrack.title) {
+        // Fall back to current time for new tracks without backend timestamp
+        setTrackStartTime(Date.now());
+        console.log('🎵 New track detected via API (no backend timestamp):', newTrack.title);
+      }
     } catch (error) {
       console.error('Failed to fetch current track:', error);
     }
@@ -133,7 +159,27 @@ function App() {
 
     socket.on('track_update', (trackInfo: Track) => {
       console.log('🎵 Track update received:', trackInfo);
+      
+      // Check if this is actually a new track
+      const isNewTrack = !currentTrack || 
+        currentTrack.title !== trackInfo.title || 
+        currentTrack.artist !== trackInfo.artist;
+      
       setCurrentTrack(trackInfo);
+      
+      // Always update track start time if provided by backend (for accurate progress)
+      if (trackInfo.track_started_at) {
+        const startTime = trackInfo.track_started_at * 1000;
+        setTrackStartTime(startTime);
+        if (isNewTrack) {
+          console.log('🎵 New track detected via socket:', trackInfo.title, 'Started at:', new Date(startTime));
+        }
+      } else if (isNewTrack) {
+        // Fall back to current time for new tracks without backend timestamp
+        setTrackStartTime(Date.now());
+        console.log('🎵 New track detected via socket (no backend timestamp):', trackInfo.title);
+      }
+      
       fetchHistory(); // Refresh history when track changes
       fetchNextTracks(); // Refresh upcoming tracks
     });
@@ -179,11 +225,69 @@ function App() {
     }
   }, [isConnected]);
 
+  // Timer for progress tracking
+  useEffect(() => {
+    const timer = setInterval(() => {
+      setCurrentTime(Date.now());
+    }, 1000); // Update every second
+
+    return () => clearInterval(timer);
+  }, []);
+
+  // Calculate track progress
+  const getTrackProgress = (): { elapsed: number; remaining: number; progress: number } => {
+    if (!currentTrack || !trackStartTime) {
+      return { elapsed: 0, remaining: 0, progress: 0 };
+    }
+
+    const elapsed = Math.floor((currentTime - trackStartTime) / 1000);
+    
+    // Estimate duration based on track type and title length
+    let estimatedDuration = 180; // Default 3 minutes
+    
+    if (currentTrack.title && currentTrack.artist) {
+      // Longer titles often indicate longer songs
+      const titleLength = currentTrack.title.length;
+      const artistLength = currentTrack.artist.length;
+      
+      if (titleLength > 50 || artistLength > 20) {
+        estimatedDuration = 300; // 5 minutes for long titles
+      } else if (titleLength > 30) {
+        estimatedDuration = 240; // 4 minutes for medium titles
+      } else if (titleLength < 15) {
+        estimatedDuration = 150; // 2.5 minutes for short titles
+      }
+      
+      // Adjust for likely genres based on artist
+      const artistLower = currentTrack.artist.toLowerCase();
+      if (artistLower.includes('dj') || artistLower.includes('electronic') || artistLower.includes('mix')) {
+        estimatedDuration = Math.max(estimatedDuration, 300); // Electronic tracks often longer
+      }
+    }
+    
+    // For DJ intros, use shorter duration
+    if (currentTrack.artist === 'AI DJ' || currentTrack.title === 'DJ Intro') {
+      estimatedDuration = 15; // DJ intros are typically short
+    }
+
+    const duration = currentTrack.duration || estimatedDuration;
+    const remaining = Math.max(0, duration - elapsed);
+    const progress = Math.min(100, (elapsed / duration) * 100);
+
+    return { elapsed, remaining, progress };
+  };
+
   const formatTime = (timestamp: number) => {
     return new Date(timestamp).toLocaleTimeString([], {
       hour: '2-digit',
       minute: '2-digit'
     });
+  };
+
+  const formatDuration = (seconds: number) => {
+    const mins = Math.floor(seconds / 60);
+    const secs = seconds % 60;
+    return `${mins}:${secs.toString().padStart(2, '0')}`;
   };
 
   // Debug logging
@@ -218,45 +322,106 @@ function App() {
         {/* Now Playing Section */}
         <section className="now-playing">
           <h2>📻 Now Playing</h2>
-          {currentTrack ? (
-            <div className="track-info">
-              <div className="album-art">
-                <img 
-                  src={getAlbumArtUrl(currentTrack)}
-                  alt={`${currentTrack.album || 'Album'} by ${currentTrack.artist}`}
-                  className="cover-image"
-                  onError={(e) => {
-                    // Fallback to default cover on error
-                    (e.target as HTMLImageElement).src = `${API_BASE}/static/station-cover.jpg`;
-                  }}
-                />
-              </div>
-              <div className="track-details">
-                <h3 className="title">{currentTrack.title}</h3>
-                <p className="artist">{currentTrack.artist}</p>
-                {currentTrack.album && <p className="album">{currentTrack.album}</p>}
-              </div>
-              <div className="controls">
-                <button 
-                  className="skip-button"
-                  onClick={skipTrack}
-                  disabled={!isConnected}
+          <AnimatePresence mode="wait">
+            {currentTrack ? (
+              <motion.div 
+                key={`${currentTrack.title}-${currentTrack.artist}-${currentTrack.timestamp}`}
+                className="track-info"
+                initial={{ opacity: 0, scale: 0.95, y: 20 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.95, y: -20 }}
+                transition={{ 
+                  duration: 0.5,
+                  ease: [0.25, 0.1, 0.25, 1.0]
+                }}
+              >
+                <motion.div 
+                  className="album-art"
+                  initial={{ opacity: 0, scale: 0.8 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  transition={{ delay: 0.1, duration: 0.6 }}
                 >
-                  ⏭️ Skip Track
-                </button>
-                <a 
-                  href={`http://${window.location.hostname}:8000/stream.mp3`}
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="listen-button"
+                  <img 
+                    src={getAlbumArtUrl(currentTrack)}
+                    alt={`${currentTrack.album || 'Album'} by ${currentTrack.artist}`}
+                    className="cover-image"
+                    onError={(e) => {
+                      // Fallback to default cover on error
+                      (e.target as HTMLImageElement).src = `${API_BASE}/static/station-cover.jpg`;
+                    }}
+                  />
+                </motion.div>
+                <motion.div 
+                  className="track-details"
+                  initial={{ opacity: 0, x: 30 }}
+                  animate={{ opacity: 1, x: 0 }}
+                  transition={{ delay: 0.2, duration: 0.5 }}
                 >
-                  🎧 Listen Live
-                </a>
-              </div>
-            </div>
-          ) : (
-            <p className="no-track">No track information available</p>
-          )}
+                  <h3 className="title">{currentTrack.title}</h3>
+                  <p className="artist">{currentTrack.artist}</p>
+                  {currentTrack.album && <p className="album">{currentTrack.album}</p>}
+                  
+                  {/* Progress Bar */}
+                  <motion.div 
+                    className="progress-container"
+                    initial={{ opacity: 0, scale: 0.8 }}
+                    animate={{ opacity: 1, scale: 1 }}
+                    transition={{ delay: 0.4, duration: 0.3 }}
+                  >
+                    <div className="progress-bar">
+                      <motion.div 
+                        className="progress-fill"
+                        initial={{ width: 0 }}
+                        animate={{ width: `${getTrackProgress().progress}%` }}
+                        transition={{ duration: 1, ease: "easeOut" }}
+                      />
+                    </div>
+                    <div className="progress-times">
+                      <span className="elapsed">{formatDuration(getTrackProgress().elapsed)}</span>
+                      <span className="remaining">
+                        {getTrackProgress().remaining > 0 
+                          ? `${formatDuration(getTrackProgress().remaining)} remaining`
+                          : 'Next track coming up...'
+                        }
+                      </span>
+                    </div>
+                  </motion.div>
+                </motion.div>
+                <motion.div 
+                  className="controls"
+                  initial={{ opacity: 0, y: 20 }}
+                  animate={{ opacity: 1, y: 0 }}
+                  transition={{ delay: 0.3, duration: 0.4 }}
+                >
+                  <button 
+                    className="skip-button"
+                    onClick={skipTrack}
+                    disabled={!isConnected}
+                  >
+                    ⏭️ Skip Track
+                  </button>
+                  <a 
+                    href={`http://${window.location.hostname}:8000/stream.mp3`}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="listen-button"
+                  >
+                    🎧 Listen Live
+                  </a>
+                </motion.div>
+              </motion.div>
+            ) : (
+              <motion.p 
+                key="no-track"
+                className="no-track"
+                initial={{ opacity: 0 }}
+                animate={{ opacity: 1 }}
+                exit={{ opacity: 0 }}
+              >
+                No track information available
+              </motion.p>
+            )}
+          </AnimatePresence>
         </section>
 
         {/* Upcoming Section */}
@@ -293,48 +458,83 @@ function App() {
           <h2>📜 Recently Played</h2>
           {history.length > 0 ? (
             <div className="history-list">
-              {history.map((item, index) => {
-                if (item.type === 'dj') {
-                  return (
-                    <div key={`${item.time}-${index}`} className="history-item dj-item">
-                      <div className="dj-icon">🎙️</div>
-                      <div className="track-info">
-                        <span className="dj-text">{item.text || 'DJ Commentary'}</span>
-                        <span className="dj-label">AI DJ</span>
-                        {item.audio_url && (
-                          <audio 
-                            controls 
-                            preload="none"
-                            className="dj-audio-player"
-                            src={item.audio_url.startsWith('http') ? item.audio_url : `${API_BASE}${item.audio_url}`}
-                          >
-                            Your browser does not support the audio element.
-                          </audio>
-                        )}
-                      </div>
-                      <span className="time">{formatTime(item.time)}</span>
-                    </div>
-                  );
-                }
-                return (
-                  <div key={`${item.time}-${index}`} className="history-item">
-                    <img 
-                      src={getAlbumArtUrl(item as Track)}
-                      alt={`${item.title} by ${item.artist}`}
-                      className="history-cover"
-                      onError={(e) => {
-                        (e.target as HTMLImageElement).src = `${API_BASE}/static/station-cover.jpg`;
-                      }}
-                    />
-                    <div className="track-info">
-                      <span className="title">{item.title}</span>
-                      <span className="artist">{item.artist}</span>
-                      {item.album && <span className="album">{item.album}</span>}
-                    </div>
-                    <span className="time">{formatTime(item.time)}</span>
-                  </div>
-                );
-              })}
+              <TransitionGroup>
+                {history.map((item, index) => (
+                  <CSSTransition
+                    key={`${item.time}-${index}`}
+                    timeout={500}
+                    classNames="history-item-transition"
+                  >
+                    {item.type === 'dj' ? (
+                      <motion.div 
+                        className="history-item dj-item"
+                        initial={{ opacity: 0, x: -50, scale: 0.95 }}
+                        animate={{ opacity: 1, x: 0, scale: 1 }}
+                        exit={{ opacity: 0, x: 50, scale: 0.95 }}
+                        transition={{ 
+                          duration: 0.4,
+                          ease: "easeOut"
+                        }}
+                        layout
+                      >
+                        <motion.div 
+                          className="dj-icon"
+                          initial={{ rotate: -90, scale: 0 }}
+                          animate={{ rotate: 0, scale: 1 }}
+                          transition={{ delay: 0.2, duration: 0.3 }}
+                        >
+                          🎙️
+                        </motion.div>
+                        <div className="track-info">
+                          <span className="dj-text">{item.text || 'DJ Commentary'}</span>
+                          <span className="dj-label">AI DJ</span>
+                          {item.audio_url && (
+                            <audio 
+                              controls 
+                              preload="none"
+                              className="dj-audio-player"
+                              src={item.audio_url.startsWith('http') ? item.audio_url : `${API_BASE}${item.audio_url}`}
+                            >
+                              Your browser does not support the audio element.
+                            </audio>
+                          )}
+                        </div>
+                        <span className="time">{formatTime(item.time)}</span>
+                      </motion.div>
+                    ) : (
+                      <motion.div 
+                        className="history-item"
+                        initial={{ opacity: 0, x: -50, scale: 0.95 }}
+                        animate={{ opacity: 1, x: 0, scale: 1 }}
+                        exit={{ opacity: 0, x: 50, scale: 0.95 }}
+                        transition={{ 
+                          duration: 0.4,
+                          ease: "easeOut"
+                        }}
+                        layout
+                      >
+                        <motion.img 
+                          src={getAlbumArtUrl(item as Track)}
+                          alt={`${item.title} by ${item.artist}`}
+                          className="history-cover"
+                          initial={{ scale: 0, rotate: -180 }}
+                          animate={{ scale: 1, rotate: 0 }}
+                          transition={{ delay: 0.1, duration: 0.4 }}
+                          onError={(e) => {
+                            (e.target as HTMLImageElement).src = `${API_BASE}/static/station-cover.jpg`;
+                          }}
+                        />
+                        <div className="track-info">
+                          <span className="title">{item.title}</span>
+                          <span className="artist">{item.artist}</span>
+                          {item.album && <span className="album">{item.album}</span>}
+                        </div>
+                        <span className="time">{formatTime(item.time)}</span>
+                      </motion.div>
+                    )}
+                  </CSSTransition>
+                ))}
+              </TransitionGroup>
             </div>
           ) : (
             <p className="no-history">No history available</p>

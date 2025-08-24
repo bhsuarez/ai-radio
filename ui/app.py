@@ -1,6 +1,9 @@
 #!/usr/bin/env python3
 import os, json, socket, time, html, hashlib, io, re, requests, subprocess, threading, fcntl
 import urllib.parse
+import sys
+sys.path.append('/opt/ai-radio')  # Add parent directory to path
+from database import db_manager, get_history, add_history_entry, create_tts_entry, get_tts_entry_by_filename
 from datetime import datetime
 from pathlib import Path
 from flask import Flask, jsonify, request, send_from_directory, send_file, abort, Response
@@ -334,7 +337,7 @@ def _write_history(rows):
     os.replace(tmp, HISTORY_PATH)
 
 def push_event(ev: dict):
-    """Insert newest-first with light de-duplication and persist to disk."""
+    """Insert event to database with de-duplication."""
     now_ms = int(time.time() * 1000)
 
     # normalize timestamp to ms
@@ -356,24 +359,114 @@ def push_event(ev: dict):
         ev["artist"] = artist or "Unknown Artist"
         ev["title"]  = title  or "Unknown"
 
-    # De-dupe against recent entries within window
-    for recent in list(HISTORY)[:10]:  # Check last 10 entries
-        if ev.get("type") == "song" and recent.get("type") == "song":
-            same = (
-                (ev.get("title") or "") == (recent.get("title") or "") and
-                (ev.get("artist") or "") == (recent.get("artist") or "") and
-                (ev.get("filename") or "") == (recent.get("filename") or "")
-            )
-            if same and (now_ms - int(recent.get("time", now_ms))) < DEDUP_WINDOW_MS:
-                return
-        if ev.get("type") == "dj" and recent.get("type") == "dj":
-            if (ev.get("text") or "") == (recent.get("text") or "") and \
-               (now_ms - int(recent.get("time", now_ms))) < 5000:
-                return
+    try:
+        # For DJ entries, create TTS entry first if it has audio
+        tts_entry_id = None
+        if ev.get("type") == "dj" and ev.get("audio_url"):
+            # Extract filename from audio URL
+            audio_url = ev.get("audio_url", "")
+            if "/tts/" in audio_url:
+                audio_filename = audio_url.split("/tts/")[-1]
+                text_filename = audio_filename.replace('.mp3', '.txt')
+                
+                # Try to get timestamp from filename
+                import re
+                match = re.search(r'(\d{10,})', audio_filename)
+                file_timestamp = int(match.group(1)) if match else now_ms // 1000
+                
+                # Create TTS entry
+                tts_entry_id = create_tts_entry(
+                    timestamp=file_timestamp,
+                    text=ev.get("text", ""),
+                    audio_filename=audio_filename,
+                    text_filename=text_filename,
+                    track_title=ev.get("track_title"),
+                    track_artist=ev.get("track_artist"),
+                    mode='custom'
+                )
 
-    HISTORY.insert(0, ev)
-    del HISTORY[MAX_HISTORY:]
+        # Add to database
+        history_id = add_history_entry(
+            entry_type=ev.get("type", "song"),
+            timestamp=ev.get("time", now_ms),
+            title=ev.get("title", ""),
+            artist=ev.get("artist", ""),
+            album=ev.get("album", ""),
+            filename=ev.get("filename", ""),
+            artwork_url=ev.get("artwork_url", ""),
+            tts_entry_id=tts_entry_id,
+            metadata=ev.get("metadata", {})
+        )
+        
+        # Also maintain in-memory history for compatibility
+        HISTORY.insert(0, ev)
+        del HISTORY[MAX_HISTORY:]
+        
+    except Exception as e:
+        print(f"Error in push_event: {e}")
+        # Fallback to old behavior
+        HISTORY.insert(0, ev)
+        del HISTORY[MAX_HISTORY:]
     save_history()
+
+def create_tts_with_db(text: str, track_title: str = None, track_artist: str = None, mode: str = 'custom') -> tuple:
+    """Create TTS file and database entry atomically. Returns (audio_filename, tts_entry_id)"""
+    timestamp = int(time.time())
+    audio_filename = f"{mode}_{timestamp}.mp3"
+    text_filename = f"{mode}_{timestamp}.txt"
+    audio_path = os.path.join(TTS_DIR, audio_filename)
+    text_path = os.path.join(TTS_DIR, text_filename)
+    
+    try:
+        # Write text file first
+        with open(text_path, 'w', encoding='utf-8') as f:
+            f.write(text + '\n')
+        
+        # Create TTS entry in database before audio generation
+        tts_entry_id = create_tts_entry(
+            timestamp=timestamp,
+            text=text,
+            audio_filename=audio_filename,
+            text_filename=text_filename,
+            track_title=track_title,
+            track_artist=track_artist,
+            mode=mode
+        )
+        
+        # Generate audio using existing TTS script
+        result = subprocess.run([
+            "/opt/ai-radio/dj_enqueue_xtts.sh", 
+            track_artist or "Artist", 
+            track_title or "Track", 
+            "en", 
+            os.getenv("XTTS_SPEAKER", "Damien Black"),
+            mode
+        ], capture_output=True, text=True, cwd="/opt/ai-radio")
+        
+        if result.returncode == 0 and os.path.exists(audio_path):
+            # Update database with file size
+            file_size = os.path.getsize(audio_path)
+            with db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("UPDATE tts_entries SET file_size = ? WHERE id = ?", (file_size, tts_entry_id))
+                conn.commit()
+            
+            return audio_filename, tts_entry_id
+        else:
+            # Mark as failed in database
+            with db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("UPDATE tts_entries SET status = 'failed' WHERE id = ?", (tts_entry_id,))
+                conn.commit()
+            raise Exception(f"TTS generation failed: {result.stderr}")
+            
+    except Exception as e:
+        print(f"Error in create_tts_with_db: {e}")
+        # Clean up files on failure
+        for path in [audio_path, text_path]:
+            if os.path.exists(path):
+                os.remove(path)
+        raise
 
 def _first_tag(v):
     try:
@@ -875,9 +968,44 @@ def _scrobble_loop():
                 artist = now.get("artist", "").strip()
                 title = now.get("title", "").strip()
                 
-                # Skip AI DJ content and DJ intros
+                # Check if this is DJ content
                 if artist == "AI DJ" or title == "DJ Intro" or title.startswith("DJ "):
-                    print(f"DEBUG: Skipping DJ content from scrobbler: {artist} - {title}")
+                    # For DJ content, check if there's a matching TTS entry
+                    track_start_time = now.get("track_started_at")
+                    if track_start_time:
+                        # Look for TTS entries created around the track start time (within 30 seconds)
+                        try:
+                            import sqlite3
+                            conn = sqlite3.connect('/opt/ai-radio/ai_radio.db')
+                            cursor = conn.cursor()
+                            # Find TTS entries within 30 seconds of track start
+                            cursor.execute("""
+                                SELECT text, audio_filename FROM tts_entries 
+                                WHERE timestamp BETWEEN ? AND ? AND status = 'active'
+                                ORDER BY timestamp DESC LIMIT 1
+                            """, (int(track_start_time) - 30, int(track_start_time) + 30))
+                            tts_match = cursor.fetchone()
+                            conn.close()
+                            
+                            if tts_match:
+                                print(f"DEBUG: Found TTS for DJ intro: {tts_match[0][:50]}...")
+                                # Create a DJ event with the matched TTS
+                                dj_event = {
+                                    "type": "dj",
+                                    "time": int(time.time() * 1000),
+                                    "text": tts_match[0],
+                                    "audio_url": f"/tts/{tts_match[1]}" if tts_match[1] else None,
+                                    "title": title,
+                                    "artist": artist
+                                }
+                                push_event(dj_event)
+                            else:
+                                print(f"DEBUG: No TTS found for DJ intro, skipping: {artist} - {title}")
+                        except Exception as e:
+                            print(f"DEBUG: Error checking TTS for DJ intro: {e}")
+                            print(f"DEBUG: Skipping DJ content from scrobbler: {artist} - {title}")
+                    else:
+                        print(f"DEBUG: Skipping DJ content from scrobbler (no start time): {artist} - {title}")
                 else:
                     # Process actual music tracks
                     fp = _fingerprint(now)
@@ -1021,23 +1149,25 @@ def api_event():
             "text": request.args.get("text", "")[:2000],
             "audio_url": request.args.get("audio_url"),
         }
+    elif ev_type == "metadata_refresh":
+        # Handle metadata refresh events from Liquidsoap track changes
+        # This helps ensure the UI shows correct metadata after DJ intros
+        print(f"DEBUG: Metadata refresh - {request.args.get('artist', 'Unknown')} - {request.args.get('title', 'Unknown')}")
+        
+        # Emit real-time update to connected clients
+        socketio.emit('metadata_update', {
+            'artist': request.args.get("artist", ""),
+            'title': request.args.get("title", ""),
+            'album': request.args.get("album", ""),
+            'time': now_ms
+        })
+        
+        return jsonify({"ok": True, "type": "metadata_refresh"})
     else:
         return jsonify({"ok": False, "error": "unknown type"}), 400
 
-    hist = _read_history()
-    
-    # Simple deduplication: don't add if identical entry exists within last 30 seconds
-    if ev_type == "song":
-        track_key = f"{row['artist']}|{row['title']}"
-        for recent in reversed(hist[-10:]):  # Check last 10 entries
-            if (recent.get("type") == "song" and
-                recent.get("time", 0) > now_ms - 30000 and  # within 30 seconds
-                f"{recent.get('artist', '')}|{recent.get('title', '')}" == track_key):
-                print(f"DEBUG: Skipping duplicate song entry: {track_key}")
-                return jsonify({"ok": True, "skipped": "duplicate"})
-    
-    hist.append(row)
-    _write_history(hist)
+    # Use the new database system via push_event
+    push_event(row)
     return jsonify({"ok": True})
 
 def _build_art_url(path: str) -> str:
@@ -1188,32 +1318,52 @@ def _fix_dj_transcription(entry):
 
 @app.get("/api/history")
 def api_history():
-    """Optimized history endpoint with optional pagination."""
+    """Optimized history endpoint using database with optional pagination."""
     # Check if frontend expects paginated response
     wants_pagination = 'limit' in request.args or 'offset' in request.args
     
-    if wants_pagination:
-        # New paginated format
-        limit = min(int(request.args.get('limit', 50)), 200)  # Cap at 200
-        offset = int(request.args.get('offset', 0))
-        
-        with HISTORY_LOCK:
-            # Sort once, slice efficiently  
-            sorted_history = sorted(HISTORY, key=lambda e: e.get("time", 0), reverse=True)
-            page_items = sorted_history[offset:offset + limit]
+    try:
+        if wants_pagination:
+            # New paginated format
+            limit = min(int(request.args.get('limit', 50)), 200)  # Cap at 200
+            offset = int(request.args.get('offset', 0))
             
-            # Only process the items we're returning
-            fixed_history = [_fix_dj_transcription(entry) for entry in page_items]
+            # Get history from database
+            history_items = get_history(limit=limit, offset=offset)
+            
+            # Convert timestamp field name for frontend compatibility
+            for item in history_items:
+                if 'timestamp' in item:
+                    item['time'] = item['timestamp']
+                    del item['timestamp']
+            
+            # Get total count for pagination info
+            stats = db_manager.get_stats()
+            total_count = stats['song_history_count'] + stats['dj_history_count']
             
             return jsonify({
-                "items": fixed_history,
-                "total": len(HISTORY),
+                "items": history_items,
+                "total": total_count,
                 "offset": offset,
                 "limit": limit,
-                "has_more": offset + limit < len(HISTORY)
+                "has_more": offset + limit < total_count
             })
-    else:
-        # Legacy format - return first 60 items as array for backward compatibility
+        else:
+            # Legacy format - return all items as array
+            limit = 300  # Reasonable limit for legacy requests
+            history_items = get_history(limit=limit, offset=0)
+            
+            # Convert timestamp field name for frontend compatibility
+            for item in history_items:
+                if 'timestamp' in item:
+                    item['time'] = item['timestamp']
+                    del item['timestamp']
+            
+            return jsonify(history_items)
+    
+    except Exception as e:
+        print(f"Error in api_history: {e}")
+        # Fallback to old system if database fails
         with HISTORY_LOCK:
             sorted_history = sorted(HISTORY, key=lambda e: e.get("time", 0), reverse=True)
             limited_items = sorted_history[:60]  # Reasonable limit for legacy
@@ -1489,8 +1639,55 @@ def tts_queue_post():
     try:
         data = request.get_json(force=True, silent=True) or {}
         text = (data.get("text") or "").strip()
+        audio_file = data.get("audio_file", "").strip()
+        metadata = data.get("metadata", {})
+        
+        # If audio_file is provided, queue it directly with metadata
+        if audio_file and os.path.isfile(audio_file):
+            # Extract metadata with defaults
+            artist = metadata.get("artist", "AI DJ")
+            title = metadata.get("title", "DJ Intro")
+            album = metadata.get("album", "AI Radio")
+            
+            # Create annotated request for Liquidsoap
+            annotated_path = f'annotate:artist="{artist}",title="{title}",album="{album}":{audio_file}'
+            
+            # Send to Liquidsoap TTS queue via telnet
+            try:
+                with socket.create_connection((TELNET_HOST, TELNET_PORT), timeout=5) as s:
+                    s.settimeout(5)
+                    # Consume banner
+                    try:
+                        s.recv(1024)
+                    except:
+                        pass
+                    
+                    # Push annotated file to TTS queue
+                    command = f'tts.push {annotated_path}\nquit\n'
+                    s.send(command.encode())
+                    
+                    # Read response
+                    response = s.recv(1024).decode().strip()
+                    print(f"Flask API: TTS queue response: {response}")
+                    
+                    push_event({
+                        "type": "dj",
+                        "text": f"{title}",
+                        "audio_url": f"/audio/{os.path.basename(audio_file)}",
+                        "time": int(time.time() * 1000),
+                        "metadata": metadata
+                    })
+                    
+                    return jsonify({"ok": True, "queued": os.path.basename(audio_file), "metadata": metadata})
+                    
+            except Exception as e:
+                print(f"Flask API: Failed to queue audio file via telnet: {e}")
+                return jsonify({"ok": False, "error": f"Failed to queue audio: {str(e)}"}), 500
+        
+        # Legacy text-only queuing (for compatibility)
         if not text:
-            return jsonify({"ok": False, "error": "No text provided"}), 400
+            return jsonify({"ok": False, "error": "No text or audio file provided"}), 400
+            
         os.makedirs(TTS_DIR, exist_ok=True)
         stamp = int(time.time())
         txt_path = os.path.join(TTS_DIR, f"dj_{stamp}.txt")
@@ -1503,6 +1700,7 @@ def tts_queue_post():
             "time": int(time.time() * 1000),
         })
         return jsonify({"ok": True, "queued": os.path.basename(txt_path)})
+        
     except Exception as e:
         return jsonify({"ok": False, "error": str(e)}), 500
 

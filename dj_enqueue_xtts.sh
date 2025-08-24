@@ -61,6 +61,28 @@ if "${PY}" "${APP}" --text "${TEXT}" --lang "${LANG}" --speaker "${SPEAKER}" --o
         echo "DEBUG: Successfully created ${OUT}" >&2
         echo "DEBUG: File size: $(stat -c%s "${OUT}") bytes" >&2
         echo "DEBUG: File permissions: $(ls -la "${OUT}")" >&2
+        
+        # Create database entry for TTS
+        echo "DEBUG: Creating database entry for TTS" >&2
+        AUDIO_FILENAME=$(basename "${OUT}")
+        TEXT_FILENAME="${AUDIO_FILENAME%.mp3}.txt"
+        
+        python3 -c "
+import sys
+sys.path.append('/opt/ai-radio')
+from database import create_tts_entry
+create_tts_entry(
+    timestamp=${TS},
+    text='${TEXT//\'/\\\'}',
+    audio_filename='${AUDIO_FILENAME}',
+    text_filename='${TEXT_FILENAME}',
+    track_title='${TITLE//\'/\\\'}',
+    track_artist='${ARTIST//\'/\\\'}',
+    mode='${MODE}'
+)
+print('Database entry created successfully')
+" || echo "WARNING: Failed to create database entry" >&2
+        
         # Output the file path for the calling script
         echo "${OUT}"
         exit 0
