@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-import os, json, socket, time, html, hashlib, io, re, requests, subprocess, threading
+import os, json, socket, time, html, hashlib, io, re, requests, subprocess, threading, fcntl
 import urllib.parse
 from datetime import datetime
 from pathlib import Path
@@ -165,7 +165,7 @@ def _load_history_from_disk():
                 HISTORY.clear()
 
 def _append_history(ev: dict):
-    """Append a single play event to history.jsonl (safe for multi-workers)."""
+    """Append a single play event to history JSON array (safe for multi-workers)."""
     ev = {
         "type": "song",
         "time": int(ev.get("time") or time.time()*1000),
@@ -175,10 +175,62 @@ def _append_history(ev: dict):
         "filename": ev.get("filename") or "",
         "artwork_url": ev.get("artwork_url") or "",
     }
-    with open(HISTORY_PATH, "a") as f:
-        fcntl.flock(f, fcntl.LOCK_EX)
-        f.write(json.dumps(ev, ensure_ascii=False) + "\n")
-        fcntl.flock(f, fcntl.LOCK_UN)
+    
+    # Update JSON array file atomically
+    try:
+        with open(HISTORY_PATH, "r") as f:
+            fcntl.flock(f, fcntl.LOCK_SH)
+            try:
+                history_data = json.load(f)
+                if not isinstance(history_data, list):
+                    history_data = []
+            except (json.JSONDecodeError, FileNotFoundError):
+                history_data = []
+            fcntl.flock(f, fcntl.LOCK_UN)
+        
+        # Add new event and keep only recent entries
+        history_data.append(ev)
+        history_data = history_data[-500:]  # Keep last 500 entries
+        
+        # Write back atomically
+        temp_path = HISTORY_PATH + ".tmp"
+        with open(temp_path, "w") as f:
+            fcntl.flock(f, fcntl.LOCK_EX)
+            json.dump(history_data, f, ensure_ascii=False, indent=None, separators=(',', ':'))
+            fcntl.flock(f, fcntl.LOCK_UN)
+        os.replace(temp_path, HISTORY_PATH)
+        
+    except Exception as e:
+        print(f"DEBUG: _append_history error: {e}")
+    
+    # Also add to in-memory history for API access
+    with HISTORY_LOCK:
+        HISTORY.append(ev)
+        # Keep bounded
+        if len(HISTORY) > 500:
+            HISTORY.popleft() if hasattr(HISTORY, 'popleft') else HISTORY.pop(0)
+    
+    # Broadcast history update via WebSocket
+    try:
+        # Ensure artwork_url is populated
+        artwork_url = ev.get('artwork_url') or ''
+        if not artwork_url and ev.get('filename'):
+            artwork_url = f"/api/cover?file={urllib.parse.quote(ev['filename'])}"
+        elif not artwork_url and ev.get('artist') and ev.get('album'):
+            artwork_url = f"/api/cover/online?artist={urllib.parse.quote(ev['artist'])}&album={urllib.parse.quote(ev['album'])}"
+        
+        socketio.emit('history_update', {
+            'title': ev['title'],
+            'artist': ev['artist'],
+            'album': ev['album'],
+            'time': ev['time'],
+            'type': 'song',
+            'artwork_url': artwork_url,
+            'filename': ev.get('filename', '')
+        })
+        print(f"DEBUG: Broadcasted history update: {ev['artist']} - {ev['title']}")
+    except Exception as e:
+        print(f"DEBUG: Failed to broadcast history update: {e}")
 
 def save_history():
     """Persist the in‑memory history to disk."""
@@ -563,9 +615,31 @@ def _liquidsoap_telnet_command(cmd: str, timeout: float = 2.0) -> list[str]:
 
 def _get_current_track_from_icecast() -> dict | None:
     """
-    Get current track from Icecast server - most reliable real-time source.
+    Get current track from cached metadata (via metadata daemon) - most reliable source.
+    Falls back to Icecast if cache unavailable.
     Returns dict with title/artist or None if failed.
     """
+    # Try cached metadata first (most reliable)
+    cache_path = "/opt/ai-radio/cache/now_metadata.json"
+    try:
+        if os.path.exists(cache_path):
+            with open(cache_path, 'r') as f:
+                cached_data = json.load(f)
+                
+            # Skip DJ content
+            title = cached_data.get("title", "").strip()
+            artist = cached_data.get("artist", "").strip()
+            
+            if title and artist and not title.startswith("DJ ") and not artist.startswith("AI DJ"):
+                return {
+                    "title": title,
+                    "artist": artist,
+                    "source": "metadata_cache"
+                }
+    except Exception as e:
+        print(f"DEBUG: Cache read failed: {e}")
+    
+    # Fallback to Icecast
     try:
         response = requests.get("http://localhost:8000/status-json.xsl", timeout=3)
         if response.status_code == 200:
@@ -797,15 +871,25 @@ def _scrobble_loop():
         try:
             now = _get_now_playing()  # must return dict with title/artist/filename/time/album
             if now and (now.get("title") or now.get("filename")):
-                fp = _fingerprint(now)
-                if fp and fp != tuple(_last_fingerprint.values()):
-                    # new track → write to history
-                    _append_history(now)
-                    _last_fingerprint = {
-                        "filename": fp[0], "title": fp[1], "artist": fp[2]
-                    }
+                # Filter out DJ intros and AI content - only track real music
+                artist = now.get("artist", "").strip()
+                title = now.get("title", "").strip()
+                
+                # Skip AI DJ content and DJ intros
+                if artist == "AI DJ" or title == "DJ Intro" or title.startswith("DJ "):
+                    print(f"DEBUG: Skipping DJ content from scrobbler: {artist} - {title}")
+                else:
+                    # Process actual music tracks
+                    fp = _fingerprint(now)
+                    if fp and fp != tuple(_last_fingerprint.values()):
+                        # new track → write to history
+                        print(f"DEBUG: Scrobbler detected new track: {artist} - {title}")
+                        _append_history(now)
+                        _last_fingerprint = {
+                            "filename": fp[0], "title": fp[1], "artist": fp[2]
+                        }
         except Exception as e:
-            # keep it quiet but don’t crash the thread
+            print(f"DEBUG: Scrobbler error: {e}")
             pass
         time.sleep(2)  # small poll; cheap because it calls your existing logic
 
@@ -861,45 +945,46 @@ def _history_add_song(now_dict):
 
 _SCROBBLER_STARTED = False
 
-def _scrobble_loop():
-    """
-    Polls current track and records transitions into HISTORY.
-    A 'transition' happens when (title, artist) or filename changes.
-    """
-    last_key = None
-    stable_key = None
-    stable_since = 0.0
+# DUPLICATE SCROBBLER - DISABLED (using the first one above)
+# def _scrobble_loop():
+#     """
+#     Polls current track and records transitions into HISTORY.
+#     A 'transition' happens when (title, artist) or filename changes.
+#     """
+#     last_key = None
+#     stable_key = None
+#     stable_since = 0.0
 
-    while True:
-        try:
-            # You already have this function in your app:
-            now = _get_now_playing()  # must return dict with title/artist/filename/album/…
-        except Exception:
-            now = None
+#     while True:
+#         try:
+#             # You already have this function in your app:
+#             now = _get_now_playing()  # must return dict with title/artist/filename/album/…
+#         except Exception:
+#             now = None
 
-        if now:
-            # build a key that tolerates minor metadata issues
-            t = (now.get("title") or "").strip().lower()
-            a = (now.get("artist") or "").strip().lower()
-            f = (now.get("filename") or "").strip().lower()
-            key = f or f"{t}|{a}"
+#         if now:
+#             # build a key that tolerates minor metadata issues
+#             t = (now.get("title") or "").strip().lower()
+#             a = (now.get("artist") or "").strip().lower()
+#             f = (now.get("filename") or "").strip().lower()
+#             key = f or f"{t}|{a}"
 
-            # consider a track "stable" after 3 seconds with same key
-            now_ts = time.time()
-            if key == stable_key:
-                # already stable; do nothing
-                pass
-            else:
-                # key changed; start (or reset) stability timer
-                stable_key = key
-                stable_since = now_ts
+#             # consider a track "stable" after 3 seconds with same key
+#             now_ts = time.time()
+#             if key == stable_key:
+#                 # already stable; do nothing
+#                 pass
+#             else:
+#                 # key changed; start (or reset) stability timer
+#                 stable_key = key
+#                 stable_since = now_ts
 
-            became_stable = (stable_key == key) and (now_ts - stable_since >= 3.0)
-            if became_stable and key and key != last_key:
-                # new stable track -> record it
-                _history_add_song(now)
-                last_key = key
-        time.sleep(1.0)
+#             became_stable = (stable_key == key) and (now_ts - stable_since >= 3.0)
+#             if became_stable and key and key != last_key:
+#                 # new stable track -> record it
+#                 _history_add_song(now)
+#                 last_key = key
+#         time.sleep(1.0)
 
 def _start_scrobbler_once():
     global _SCROBBLER_STARTED
@@ -2045,15 +2130,21 @@ def handle_connect():
     print(f"Client connected: {request.sid}")
     # Send current track info immediately on connect
     try:
-        current_track = _get_current_track_from_icecast()
-        if current_track:
-            emit('track_update', {
-                'title': current_track['title'],
-                'artist': current_track['artist'],
-                'type': 'song',
-                'source': 'icecast',
-                'timestamp': time.time()
-            })
+        # Get complete track data using the same function as /api/now
+        complete_track = _get_now_playing()
+        if complete_track:
+            emit('track_update', complete_track)
+        else:
+            # Fallback to basic track info
+            current_track = _get_current_track_from_icecast()
+            if current_track:
+                emit('track_update', {
+                    'title': current_track['title'],
+                    'artist': current_track['artist'],
+                    'type': 'song',
+                    'source': 'icecast',
+                    'timestamp': time.time()
+                })
     except Exception as e:
         print(f"Error sending initial track: {e}")
 
@@ -2065,15 +2156,21 @@ def handle_disconnect():
 def handle_track_request():
     """Handle explicit request for current track"""
     try:
-        current_track = _get_current_track_from_icecast()
-        if current_track:
-            emit('track_update', {
-                'title': current_track['title'],
-                'artist': current_track['artist'],
-                'type': 'song',
-                'source': 'icecast',
-                'timestamp': time.time()
-            })
+        # Get complete track data using the same function as /api/now
+        complete_track = _get_now_playing()
+        if complete_track:
+            emit('track_update', complete_track)
+        else:
+            # Fallback to basic track info
+            current_track = _get_current_track_from_icecast()
+            if current_track:
+                emit('track_update', {
+                    'title': current_track['title'],
+                    'artist': current_track['artist'],
+                    'type': 'song',
+                    'source': 'icecast',
+                    'timestamp': time.time()
+                })
     except Exception as e:
         emit('error', {'message': f'Failed to get current track: {e}'})
 

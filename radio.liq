@@ -17,13 +17,23 @@ settings.server.telnet.port := 1234
 # Queue for DJ/TTS lines - this will play intros with timeout
 tts_q = request.queue(id="tts", timeout=30.0)
 
-# Main music (m3u that points to your library files)
-all_music = playlist(
+# Harbor input for external control (replaces telnet complexity)
+harbor_input = input.harbor(
+  id="music_harbor",
+  port=8001,
+  "/music"
+)
+
+# Fallback playlist for when harbor has no input
+backup_music = playlist(
   mode="random",
   reload=300,
-  reload_mode="watch",
+  reload_mode="watch", 
   "/opt/ai-radio/library_clean.m3u"
 )
+
+# Main music source with harbor priority
+all_music = fallback(track_sensitive=true, [harbor_input, backup_music])
 
 # Helpers
 def meta_get(m, k, d)
@@ -43,7 +53,7 @@ def auto_generate_dj_intro(m)
   track_key = artist ^ "|" ^ title
   
   # Only generate if this is a different track than last time
-  if !last_processed_track != track_key then
+  if last_processed_track() != track_key then
     last_processed_track := track_key
     
     log("AUTO-DJ: Requesting intro for upcoming track: " ^ title ^ " by " ^ artist)
@@ -128,7 +138,9 @@ sine_src = sine()
 
 # Priority: DJ/TTS first, then music, then sine as emergency fallback
 # This ensures intros play before songs
-primary = fallback(track_sensitive=true,  [tts_q, music])
+primary = fallback(track_sensitive=true, [tts_q, music])
+# Force metadata refresh when track changes to prevent stuck DJ intro metadata
+primary = source.on_track(primary, fun (m) -> log("Track starting: " ^ meta_get(m, "artist", "Unknown") ^ " - " ^ meta_get(m, "title", "Unknown")))
 radio   = fallback(track_sensitive=false, [primary, sine_src])
 
 # ---------- Output ----------

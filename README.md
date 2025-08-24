@@ -153,12 +153,69 @@ Edit `library_clean.m3u` to point to your music files. Supports standard audio f
 
 ## Web Interface
 
+### Current Features
+
 Access the web interface at `http://localhost:5055` to view:
-- Current playing track with album art
-- Recently played history
-- AI DJ commentary timeline
-- Upcoming tracks queue
-- Playback controls
+- **Now Playing**: Current track with album art from online lookups
+- **Coming Up**: Next 5 tracks in queue with position numbers
+- **Recently Played**: History with both songs and DJ commentary
+- **Real-time Updates**: WebSocket integration for live track changes
+- **Responsive Design**: Mobile-friendly interface with error handling
+- **Album Art**: Automatic online lookup via iTunes/MusicBrainz APIs
+
+### React Frontend Benefits
+
+The modern React-based frontend provides:
+- **Real-time Interface**: Live updates without page refreshes
+- **Better Performance**: Client-side rendering reduces server load  
+- **Professional UI**: Modern design with animations and responsive layout
+- **Error Resilience**: Graceful handling of API failures with fallbacks
+
+### Future Possibilities 🚀
+
+The React foundation enables advanced features:
+
+#### **Interactive Controls**
+- **Real-time DJ Controls**: Live volume, EQ, and audio effects adjustment
+- **Request System**: User voting and track request functionality
+- **Skip Controls**: Listener-driven track skipping with voting
+- **Playlist Management**: Drag-and-drop queue reordering
+
+#### **Social Features**
+- **Live Chat**: Real-time listener interaction and community
+- **Track Ratings**: User feedback on played tracks
+- **Social Sharing**: Share favorite tracks to social media
+- **User Profiles**: Personalized listening history and preferences
+
+#### **Advanced Analytics**
+- **Live Dashboard**: Real-time listener stats and engagement metrics
+- **Music Analytics**: Track popularity, skip rates, and listening patterns  
+- **DJ Performance**: Commentary effectiveness and listener retention
+- **Geographic Stats**: Listener locations and regional preferences
+
+#### **Mobile & Extended Platform**
+- **Mobile App**: React Native version for iOS and Android
+- **Desktop App**: Electron-based desktop application
+- **Smart Speaker Integration**: Alexa, Google Home compatibility
+- **Car Integration**: Android Auto and CarPlay support
+
+#### **Enhanced Audio Features**
+- **Audio Visualization**: Real-time spectrum analyzer and waveforms
+- **Lyrics Display**: Synchronized lyrics with currently playing track
+- **Cross-fade Controls**: User-adjustable transition settings  
+- **Audio Effects**: Real-time reverb, echo, and filter controls
+
+#### **Content Management**
+- **Multi-station Support**: Different genres, moods, or themes
+- **Automated Scheduling**: Time-based programming and content blocks
+- **Content Curation**: AI-powered music discovery and playlist generation
+- **Podcast Integration**: Mixed content with music and spoken word
+
+#### **Integration Capabilities**
+- **Streaming Platforms**: Spotify, Apple Music, YouTube Music integration
+- **Last.fm Scrobbling**: Automatic track scrobbling for listeners
+- **Discord Bots**: Server integration for community radio
+- **Home Automation**: Smart home integration for ambient audio
 
 ## AI DJ Features
 
