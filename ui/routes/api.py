@@ -4,6 +4,8 @@ API routes for AI Radio
 import os
 import json
 import time
+import subprocess
+from pathlib import Path
 from flask import Blueprint, jsonify, request, send_file, abort
 from urllib.parse import quote, unquote
 
@@ -34,13 +36,28 @@ def api_event():
     now_ms = int(time.time() * 1000)
     
     if ev_type == "song":
+        filename = request.args.get("filename", "")
+        title = request.args.get("title", "")[:512]
+        artist = request.args.get("artist", "")[:512]
+        album = request.args.get("album", "")[:512]
+        
+        # Generate artwork URL for history display
+        artwork_url = ""
+        if filename:
+            artwork_url = f"/api/cover?file={quote(filename)}"
+        elif artist and album:
+            artwork_url = f"/api/cover/online?artist={quote(artist)}&album={quote(album)}"
+        elif artist:
+            artwork_url = f"/api/cover/online?artist={quote(artist)}&album={quote(artist)}"
+        
         row = {
             "type": "song",
             "time": now_ms,
-            "title": request.args.get("title", "")[:512],
-            "artist": request.args.get("artist", "")[:512],
-            "album": request.args.get("album", "")[:512],
-            "filename": request.args.get("filename", ""),
+            "title": title,
+            "artist": artist,
+            "album": album,
+            "filename": filename,
+            "artwork_url": artwork_url,
         }
     elif ev_type == "dj":
         row = {
@@ -128,11 +145,101 @@ def api_cover():
 @api_bp.route("/cover/online", methods=["GET"])  
 def api_cover_online():
     """
-    Fetch album art online for tracks missing embedded covers.
-    This is a placeholder for online cover art lookup.
+    Fetch album art for tracks by searching music library files.
+    Falls back to default cover if no embedded art found.
     """
-    # For now, just return the default cover
-    # TODO: Implement online cover art lookup (Last.fm, MusicBrainz, etc.)
+    artist = request.args.get("artist", "").strip()
+    album = request.args.get("album", "").strip()
+    
+    if not artist:
+        return send_file("/opt/ai-radio/ui/static/station-cover.jpg"), 200
+    
+    try:
+        # Use the same search mechanism as duration lookup to find audio files
+        from mutagen import File as MutaFile
+        import subprocess
+        import os
+        
+        # Search for files matching the artist and optionally album
+        music_dirs = ["/mnt/music/Music", "/mnt/music/media"]
+        
+        # Sanitize search terms
+        import re
+        clean_artist = re.sub(r'[^\w\s\-\.]', '', artist).strip()
+        clean_album = re.sub(r'[^\w\s\-\.]', '', album).strip() if album else ""
+        
+        # Generate search patterns
+        patterns = []
+        if clean_album:
+            patterns.extend([
+                f"*{clean_artist}*{clean_album}*",
+                f"*{clean_album}*{clean_artist}*",
+                f"*{clean_album}*"
+            ])
+        patterns.extend([
+            f"*{clean_artist}*",
+        ])
+        
+        # Search in music directories
+        for music_dir in music_dirs:
+            if not os.path.exists(music_dir):
+                continue
+                
+            for pattern in patterns:
+                try:
+                    cmd = ["find", music_dir, "-type", "f", 
+                          "(", "-iname", "*.mp3", "-o", "-iname", "*.m4a", "-o", 
+                          "-iname", "*.flac", "-o", "-iname", "*.wav", ")",
+                          "-ipath", f"*{pattern}*"]
+                    
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+                    if result.returncode == 0 and result.stdout.strip():
+                        files = result.stdout.strip().split('\n')
+                        
+                        # Try to extract album art from first matching file
+                        for file_path in files[:3]:
+                            file_path = file_path.strip()
+                            if file_path and os.path.exists(file_path):
+                                try:
+                                    audio_file = MutaFile(file_path)
+                                    if not audio_file:
+                                        continue
+                                    
+                                    # Look for album art in various formats
+                                    art_data = None
+                                    if hasattr(audio_file, 'pictures') and audio_file.pictures:
+                                        # FLAC
+                                        art_data = audio_file.pictures[0].data
+                                    elif 'APIC:' in audio_file:
+                                        # MP3 ID3v2
+                                        art_data = audio_file['APIC:'].data
+                                    elif 'covr' in audio_file:
+                                        # MP4/M4A
+                                        art_data = audio_file['covr'][0]
+                                    
+                                    if art_data:
+                                        # Determine content type
+                                        content_type = "image/jpeg"  # Default
+                                        if art_data.startswith(b'\x89PNG'):
+                                            content_type = "image/png"
+                                        elif art_data.startswith(b'GIF'):
+                                            content_type = "image/gif"
+                                        
+                                        print(f"Found album art for {artist} - {album} in: {file_path}")
+                                        from io import BytesIO
+                                        return send_file(BytesIO(art_data), mimetype=content_type)
+                                        
+                                except Exception as e:
+                                    print(f"Error reading album art from {file_path}: {e}")
+                                    continue
+                                    
+                except (subprocess.TimeoutExpired, subprocess.SubprocessError):
+                    continue
+    
+    except Exception as e:
+        print(f"Error in album art search: {e}")
+    
+    # Fallback to default cover
     return send_file("/opt/ai-radio/ui/static/station-cover.jpg"), 200
 
 @api_bp.route("/dj-prompts", methods=["GET"])
@@ -222,6 +329,111 @@ def api_history():
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
+@api_bp.route("/next", methods=["GET"])
+def api_next():
+    """Get upcoming tracks"""
+    try:
+        # Refresh next.json if the refresh parameter is provided
+        refresh = request.args.get('refresh', 'false').lower() == 'true'
+        if refresh:
+            try:
+                result = subprocess.run(['/opt/ai-radio/refresh_next_from_requests.sh'], 
+                                       capture_output=True, text=True, timeout=10)
+                print(f"Next track refresh result: {result.returncode}")
+            except Exception as e:
+                print(f"Failed to refresh next tracks: {e}")
+        
+        next_track_data = metadata_service.get_next_track()
+        next_tracks = []
+        
+        # Handle both single dict and array formats
+        if isinstance(next_track_data, dict):
+            next_tracks = [next_track_data]
+        elif isinstance(next_track_data, list):
+            next_tracks = next_track_data
+        
+        # Clean up and ensure artwork URLs are present
+        for track in next_tracks:
+            if not track.get("artwork_url"):
+                filename = track.get("filename", "")
+                artist = track.get("artist", "")
+                album = track.get("album", "")
+                
+                artwork_url = ""
+                if filename:
+                    artwork_url = f"/api/cover?file={quote(filename)}"
+                elif artist and album:
+                    artwork_url = f"/api/cover/online?artist={quote(artist)}&album={quote(album)}"
+                elif artist:
+                    artwork_url = f"/api/cover/online?artist={quote(artist)}&album={quote(artist)}"
+                
+                track["artwork_url"] = artwork_url
+        
+        return jsonify(next_tracks)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@api_bp.route("/skip", methods=["POST"])
+def api_skip():
+    """Skip current track"""
+    try:
+        # Send skip command to Liquidsoap via telnet
+        import telnetlib
+        try:
+            tn = telnetlib.Telnet('127.0.0.1', 1234, timeout=5)
+            tn.write(b'skip\n')
+            response = tn.read_until(b'END', timeout=5)
+            tn.close()
+            return jsonify({"ok": True, "message": "Track skipped"})
+        except Exception as telnet_error:
+            return jsonify({"ok": False, "error": f"Failed to connect to Liquidsoap: {str(telnet_error)}"}), 503
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@api_bp.route("/metadata", methods=["GET"])
+def api_metadata():
+    """Get current metadata (alias for /now for compatibility)"""
+    try:
+        current_track = metadata_service.get_current_track()
+        return jsonify(current_track)
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@api_bp.route("/dj-now", methods=["GET", "POST"])
+def api_dj_now():
+    """Handle DJ intro generation requests from Liquidsoap"""
+    try:
+        # Get track info from query parameters (sent by Liquidsoap)
+        artist = request.args.get('artist', 'Unknown Artist')
+        title = request.args.get('title', 'Unknown Title')
+        
+        # Log the DJ request
+        print(f"DJ intro request: {title} by {artist}")
+        
+        # This endpoint is called by Liquidsoap's auto_generate_dj_intro function
+        # The actual TTS generation is handled via the TTS service
+        if artist and title:
+            # Create event data for DJ generation
+            track_data = {
+                'title': title,
+                'artist': artist,
+                'time': int(time.time() * 1000)
+            }
+            
+            # Trigger DJ generation
+            success = tts_service.generate_dj_intro(track_data)
+            
+            return jsonify({
+                "ok": True, 
+                "message": f"DJ intro {'requested' if success else 'throttled'} for {title} by {artist}"
+            })
+        else:
+            return jsonify({"ok": False, "error": "Missing artist or title"}), 400
+            
+    except Exception as e:
+        print(f"Error in /api/dj-now: {e}")
+        return jsonify({"error": str(e)}), 500
+
 @api_bp.route("/tts/status", methods=["GET"])
 def api_tts_status():
     """Get TTS queue status"""
@@ -238,5 +450,125 @@ def api_tts_files():
         limit = request.args.get('limit', 10, type=int)
         files = tts_service.list_tts_files(limit=limit)
         return jsonify({"files": files})
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@api_bp.route("/tts/speakers", methods=["GET"])
+def api_get_speakers():
+    """Get available TTS speakers and current selection"""
+    try:
+        speakers_dir = Path("/opt/ai-radio/tts/speaker_samples")
+        available_speakers = []
+        
+        if speakers_dir.exists():
+            for audio_file in speakers_dir.glob("*.mp3"):
+                speaker_name = audio_file.stem
+                available_speakers.append({
+                    "name": speaker_name,
+                    "display_name": speaker_name.replace("_", " "),
+                    "sample_url": f"/api/tts/speakers/{speaker_name}/sample"
+                })
+        
+        # Sort speakers alphabetically
+        available_speakers.sort(key=lambda x: x["display_name"])
+        
+        # Get current speaker from settings
+        settings = safe_json_read(config.ROOT_DIR / "dj_settings.json", {})
+        current_speaker = settings.get("tts_voice", "Damien Black")
+        
+        return jsonify({
+            "speakers": available_speakers,
+            "current_speaker": current_speaker
+        })
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@api_bp.route("/tts/speakers/current", methods=["POST"])
+def api_set_current_speaker():
+    """Set the current TTS speaker"""
+    try:
+        data = request.get_json()
+        if not data or 'speaker' not in data:
+            return jsonify({"error": "Missing speaker name"}), 400
+        
+        speaker_name = data['speaker']
+        
+        # Validate speaker exists
+        speaker_file = Path(f"/opt/ai-radio/tts/speaker_samples/{speaker_name}.mp3")
+        if not speaker_file.exists():
+            return jsonify({"error": "Speaker not found"}), 404
+        
+        # Load current settings
+        settings_file = config.ROOT_DIR / "dj_settings.json"
+        settings = safe_json_read(settings_file, {})
+        
+        # Update TTS voice
+        settings['tts_voice'] = speaker_name
+        
+        # Save back to file
+        if safe_json_write(settings_file, settings):
+            return jsonify({"ok": True, "speaker": speaker_name})
+        else:
+            return jsonify({"error": "Failed to save settings"}), 500
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@api_bp.route("/tts/speakers/<speaker_name>/sample", methods=["GET"])
+def api_get_speaker_sample(speaker_name):
+    """Get speaker sample audio file"""
+    try:
+        # Security: validate speaker name (no path traversal)
+        if '.' in speaker_name or '/' in speaker_name or '\\' in speaker_name:
+            abort(400)
+        
+        sample_file = Path(f"/opt/ai-radio/tts/speaker_samples/{speaker_name}.mp3")
+        
+        if not sample_file.exists():
+            abort(404)
+        
+        return send_file(str(sample_file), mimetype="audio/mpeg")
+    except Exception as e:
+        abort(500)
+
+@api_bp.route("/tts/speakers/<speaker_name>/preview", methods=["POST"])
+def api_preview_speaker():
+    """Generate a preview TTS with the selected speaker"""
+    try:
+        data = request.get_json()
+        preview_text = data.get('text', 'Hello! This is a preview of my voice.')
+        
+        # Security: validate speaker name
+        speaker_name = request.view_args['speaker_name']
+        if '.' in speaker_name or '/' in speaker_name or '\\' in speaker_name:
+            return jsonify({"error": "Invalid speaker name"}), 400
+        
+        # Validate speaker exists
+        speaker_file = Path(f"/opt/ai-radio/tts/speaker_samples/{speaker_name}.mp3")
+        if not speaker_file.exists():
+            return jsonify({"error": "Speaker not found"}), 404
+        
+        # Generate preview using XTTS script
+        preview_script = "/opt/ai-radio/dj_enqueue_xtts.sh"
+        if not os.path.exists(preview_script):
+            return jsonify({"error": "TTS system not available"}), 503
+        
+        # Execute preview generation
+        try:
+            result = subprocess.run([
+                preview_script,
+                preview_text,
+                "en",  # language
+                speaker_name
+            ], capture_output=True, text=True, timeout=30)
+            
+            if result.returncode == 0:
+                return jsonify({"ok": True, "message": "Preview generated successfully"})
+            else:
+                return jsonify({"error": "Preview generation failed"}), 500
+                
+        except subprocess.TimeoutExpired:
+            return jsonify({"error": "Preview generation timed out"}), 500
+            
     except Exception as e:
         return jsonify({"error": str(e)}), 500

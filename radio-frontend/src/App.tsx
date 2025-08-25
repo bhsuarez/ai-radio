@@ -1,8 +1,8 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import io from 'socket.io-client';
 import { motion, AnimatePresence } from 'framer-motion';
-import { TransitionGroup, CSSTransition } from 'react-transition-group';
+import SpeakerModal from './SpeakerModal';
 import './App.css';
 
 interface Track {
@@ -15,6 +15,12 @@ interface Track {
   filename?: string;
   duration?: number;
   track_started_at?: number;
+  // Additional metadata fields from backend
+  date?: string;
+  genre?: string;
+  year?: string;
+  tracknumber?: string;
+  started_at?: string;
 }
 
 interface HistoryItem {
@@ -37,6 +43,7 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [trackStartTime, setTrackStartTime] = useState<number>(0);
   const [currentTime, setCurrentTime] = useState<number>(Date.now());
+  const [showSpeakerModal, setShowSpeakerModal] = useState(false);
 
   const API_BASE = `${window.location.protocol}//${window.location.hostname}:5055`;
   
@@ -67,7 +74,7 @@ function App() {
   };
   
   // Fetch current track
-  const fetchCurrentTrack = async () => {
+  const fetchCurrentTrack = useCallback(async () => {
     try {
       console.log('Fetching current track from:', `${API_BASE}/api/now`);
       const response = await axios.get(`${API_BASE}/api/now`);
@@ -85,45 +92,43 @@ function App() {
       if (newTrack.track_started_at) {
         const startTime = newTrack.track_started_at * 1000;
         setTrackStartTime(startTime);
-        if (isNewTrack) {
-          console.log('🎵 New track detected via API:', newTrack.title, 'Started at:', new Date(startTime));
-        } else {
-          console.log('🔄 Using backend start time on refresh:', newTrack.title, 'Started at:', new Date(startTime));
-        }
-      } else if (isNewTrack && newTrack.title) {
-        // Fall back to current time only for new tracks without backend timestamp
+        console.log(`🔄 Using backend start time: ${newTrack.title} - Started at: ${new Date(startTime)} (${isNewTrack ? 'NEW' : 'REFRESH'})`);
+      } else if (newTrack.title) {
+        // Only set current time if we don't have a backend timestamp
         setTrackStartTime(Date.now());
-        console.log('🎵 New track detected via API (no backend timestamp):', newTrack.title);
+        console.log(`🎵 No backend timestamp for: ${newTrack.title} - Using current time`);
       }
     } catch (error) {
       console.error('Failed to fetch current track:', error);
     }
-  };
+  }, [currentTrack, API_BASE]);
 
   // Fetch history
-  const fetchHistory = async () => {
+  const fetchHistory = useCallback(async () => {
     try {
       console.log('Fetching history from:', `${API_BASE}/api/history`);
       const response = await axios.get(`${API_BASE}/api/history`);
-      console.log('History response length:', response.data.length);
-      console.log('First few history items:', response.data.slice(0, 3));
-      setHistory(response.data.slice(0, 20)); // Show last 20 items
+      const historyData = response.data.history || response.data; // Support both new and old API format
+      console.log('History response length:', historyData.length);
+      console.log('First few history items:', historyData.slice(0, 3));
+      setHistory(historyData.slice(0, 20)); // Show last 20 items
     } catch (error) {
       console.error('Failed to fetch history:', error);
     }
-  };
+  }, [API_BASE]);
 
   // Fetch next tracks
-  const fetchNextTracks = async () => {
+  const fetchNextTracks = useCallback(async (refresh = false) => {
     try {
-      console.log('Fetching next tracks from:', `${API_BASE}/api/next`);
-      const response = await axios.get(`${API_BASE}/api/next`);
+      const url = refresh ? `${API_BASE}/api/next?refresh=true` : `${API_BASE}/api/next`;
+      console.log('Fetching next tracks from:', url);
+      const response = await axios.get(url);
       console.log('Next tracks response:', response.data);
       setNextTracks(response.data || []);
     } catch (error) {
       console.error('Failed to fetch next tracks:', error);
     }
-  };
+  }, [API_BASE]);
 
   // Skip track
   const skipTrack = async () => {
@@ -185,7 +190,7 @@ function App() {
       }
       
       fetchHistory(); // Refresh history when track changes
-      fetchNextTracks(); // Refresh upcoming tracks
+      fetchNextTracks(true); // Refresh upcoming tracks from Liquidsoap
     });
 
     socket.on('history_update', (historyItem: HistoryItem) => {
@@ -193,8 +198,8 @@ function App() {
       setHistory(prevHistory => {
         // Add new item to the beginning of history (most recent first)
         const newHistory = [historyItem, ...prevHistory];
-        // Keep only the last 50 items to prevent unlimited growth
-        return newHistory.slice(0, 50);
+        // Keep only the last 20 items to prevent memory bloat
+        return newHistory.slice(0, 20);
       });
     });
 
@@ -203,17 +208,17 @@ function App() {
       console.log('Closing WebSocket connection');
       socket.close();
     };
-  }, []);
+  }, [API_BASE, currentTrack, fetchHistory, fetchNextTracks]);
 
   // Initial data fetch
   useEffect(() => {
     const loadInitialData = async () => {
       setLoading(true);
-      await Promise.all([fetchCurrentTrack(), fetchHistory(), fetchNextTracks()]);
+      await Promise.all([fetchCurrentTrack(), fetchHistory(), fetchNextTracks(true)]); // Refresh next tracks on load
       setLoading(false);
     };
     loadInitialData();
-  }, []);
+  }, [fetchCurrentTrack, fetchHistory, fetchNextTracks]);
 
   // Fallback polling when WebSocket is disconnected
   useEffect(() => {
@@ -227,7 +232,7 @@ function App() {
 
       return () => clearInterval(fallbackInterval);
     }
-  }, [isConnected]);
+  }, [isConnected, fetchCurrentTrack, fetchHistory, fetchNextTracks]);
 
   // Timer for progress tracking
   useEffect(() => {
@@ -238,8 +243,8 @@ function App() {
     return () => clearInterval(timer);
   }, []);
 
-  // Calculate track progress
-  const getTrackProgress = (): { elapsed: number; remaining: number; progress: number } => {
+  // Calculate track progress - memoized to prevent re-calculations
+  const trackProgress = useMemo((): { elapsed: number; remaining: number; progress: number } => {
     if (!currentTrack || !trackStartTime) {
       return { elapsed: 0, remaining: 0, progress: 0 };
     }
@@ -279,7 +284,7 @@ function App() {
     const progress = Math.min(100, (elapsed / duration) * 100);
 
     return { elapsed, remaining, progress };
-  };
+  }, [currentTrack, trackStartTime, currentTime]);
 
   const formatTime = (timestamp: number) => {
     return new Date(timestamp).toLocaleTimeString([], {
@@ -376,15 +381,15 @@ function App() {
                       <motion.div 
                         className="progress-fill"
                         initial={{ width: 0 }}
-                        animate={{ width: `${getTrackProgress().progress}%` }}
+                        animate={{ width: `${trackProgress.progress}%` }}
                         transition={{ duration: 1, ease: "easeOut" }}
                       />
                     </div>
                     <div className="progress-times">
-                      <span className="elapsed">{formatDuration(getTrackProgress().elapsed)}</span>
+                      <span className="elapsed">{formatDuration(trackProgress.elapsed)}</span>
                       <span className="remaining">
-                        {getTrackProgress().remaining > 0 
-                          ? `${formatDuration(getTrackProgress().remaining)} remaining`
+                        {trackProgress.remaining > 0 
+                          ? `${formatDuration(trackProgress.remaining)} remaining`
                           : 'Next track coming up...'
                         }
                       </span>
@@ -403,6 +408,12 @@ function App() {
                     disabled={!isConnected}
                   >
                     ⏭️ Skip Track
+                  </button>
+                  <button 
+                    className="speaker-button"
+                    onClick={() => setShowSpeakerModal(true)}
+                  >
+                    🎙️ DJ Voice
                   </button>
                   <a 
                     href={`http://${window.location.hostname}:8000/stream.mp3`}
@@ -462,89 +473,68 @@ function App() {
           <h2>📜 Recently Played</h2>
           {history.length > 0 ? (
             <div className="history-list">
-              <TransitionGroup>
-                {history.map((item, index) => (
-                  <CSSTransition
+              {history.map((item, index) => (
+                item.type === 'dj' ? (
+                  <div 
                     key={`${item.time}-${index}`}
-                    timeout={500}
-                    classNames="history-item-transition"
+                    className="history-item dj-item"
                   >
-                    {item.type === 'dj' ? (
-                      <motion.div 
-                        className="history-item dj-item"
-                        initial={{ opacity: 0, x: -50, scale: 0.95 }}
-                        animate={{ opacity: 1, x: 0, scale: 1 }}
-                        exit={{ opacity: 0, x: 50, scale: 0.95 }}
-                        transition={{ 
-                          duration: 0.4,
-                          ease: "easeOut"
-                        }}
-                        layout
-                      >
-                        <motion.div 
-                          className="dj-icon"
-                          initial={{ rotate: -90, scale: 0 }}
-                          animate={{ rotate: 0, scale: 1 }}
-                          transition={{ delay: 0.2, duration: 0.3 }}
+                    <div className="dj-icon">🎙️</div>
+                    <div className="track-info">
+                      <span className="dj-text">{item.text || 'DJ Commentary'}</span>
+                      <span className="dj-label">AI DJ</span>
+                      {item.audio_url && (
+                        <audio 
+                          controls 
+                          preload="none"
+                          className="dj-audio-player"
+                          src={item.audio_url.startsWith('http') ? item.audio_url : `${API_BASE}${item.audio_url}`}
                         >
-                          🎙️
-                        </motion.div>
-                        <div className="track-info">
-                          <span className="dj-text">{item.text || 'DJ Commentary'}</span>
-                          <span className="dj-label">AI DJ</span>
-                          {item.audio_url && (
-                            <audio 
-                              controls 
-                              preload="none"
-                              className="dj-audio-player"
-                              src={item.audio_url.startsWith('http') ? item.audio_url : `${API_BASE}${item.audio_url}`}
-                            >
-                              Your browser does not support the audio element.
-                            </audio>
-                          )}
-                        </div>
-                        <span className="time">{formatTime(item.time)}</span>
-                      </motion.div>
-                    ) : (
-                      <motion.div 
-                        className="history-item"
-                        initial={{ opacity: 0, x: -50, scale: 0.95 }}
-                        animate={{ opacity: 1, x: 0, scale: 1 }}
-                        exit={{ opacity: 0, x: 50, scale: 0.95 }}
-                        transition={{ 
-                          duration: 0.4,
-                          ease: "easeOut"
-                        }}
-                        layout
-                      >
-                        <motion.img 
-                          src={getAlbumArtUrl(item as Track)}
-                          alt={`${item.title} by ${item.artist}`}
-                          className="history-cover"
-                          initial={{ scale: 0, rotate: -180 }}
-                          animate={{ scale: 1, rotate: 0 }}
-                          transition={{ delay: 0.1, duration: 0.4 }}
-                          onError={(e) => {
-                            (e.target as HTMLImageElement).src = `${API_BASE}/static/station-cover.jpg`;
-                          }}
-                        />
-                        <div className="track-info">
-                          <span className="title">{item.title}</span>
-                          <span className="artist">{item.artist}</span>
-                          {item.album && <span className="album">{item.album}</span>}
-                        </div>
-                        <span className="time">{formatTime(item.time)}</span>
-                      </motion.div>
-                    )}
-                  </CSSTransition>
-                ))}
-              </TransitionGroup>
+                          Your browser does not support the audio element.
+                        </audio>
+                      )}
+                    </div>
+                    <span className="time">{formatTime(item.time)}</span>
+                  </div>
+                ) : (
+                  <div 
+                    key={`${item.time}-${index}`}
+                    className="history-item"
+                  >
+                    <img 
+                      src={getAlbumArtUrl(item as Track)}
+                      alt={`${item.title} by ${item.artist}`}
+                      className="history-cover"
+                      onError={(e) => {
+                        (e.target as HTMLImageElement).src = `${API_BASE}/static/station-cover.jpg`;
+                      }}
+                    />
+                    <div className="track-info">
+                      <span className="title">{item.title}</span>
+                      <span className="artist">{item.artist}</span>
+                      {item.album && <span className="album">{item.album}</span>}
+                    </div>
+                    <span className="time">{formatTime(item.time)}</span>
+                  </div>
+                )
+              ))}
             </div>
           ) : (
             <p className="no-history">No history available</p>
           )}
         </section>
       </main>
+
+      {/* Speaker Selection Modal */}
+      <AnimatePresence>
+        {showSpeakerModal && (
+          <SpeakerModal 
+            isOpen={showSpeakerModal}
+            onClose={() => setShowSpeakerModal(false)}
+            apiBase={API_BASE}
+          />
+        )}
+      </AnimatePresence>
     </div>
   );
 }
