@@ -139,7 +139,7 @@ class TTSService:
     
     def _trigger_dj_generation(self, track_data: dict) -> bool:
         """
-        Trigger external DJ generation script.
+        Trigger external DJ generation script and TTS processing.
         
         Args:
             track_data: Track metadata for generation
@@ -151,14 +151,15 @@ class TTSService:
             title = track_data.get("title", "Unknown")
             artist = track_data.get("artist", "Unknown")
             
-            # Use the enhanced DJ generation script
-            script_path = "/opt/ai-radio/gen_ai_dj_line_enhanced.sh"
+            # Use the basic TTS generation script with AI text generation
+            script_path = "/opt/ai-radio/dj_enqueue_xtts.sh"
             
             if not os.path.exists(script_path):
                 return False
             
-            # Execute script in background
-            cmd = [script_path, title, artist]
+            # Execute script in background (this handles both AI generation and TTS)
+            # dj_enqueue_xtts.sh expects: artist, title, language, [speaker], [mode]
+            cmd = [script_path, artist, title, "en"]
             subprocess.Popen(
                 cmd,
                 stdout=subprocess.DEVNULL,

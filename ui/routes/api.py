@@ -20,6 +20,45 @@ tts_service = TTSService()
 
 api_bp = Blueprint('api', __name__)
 
+@api_bp.route("/health", methods=["GET"])
+def api_health():
+    """Health check endpoint for monitoring"""
+    try:
+        # Basic health checks
+        status = {
+            "status": "healthy",
+            "timestamp": int(time.time()),
+            "services": {
+                "metadata": "ok",
+                "history": "ok",
+                "tts": "ok"
+            }
+        }
+        
+        # Check if database is accessible
+        try:
+            history_count = len(history_service.get_history(limit=1))
+            status["database"] = "ok"
+        except Exception as e:
+            status["database"] = f"error: {str(e)}"
+            status["status"] = "degraded"
+        
+        # Check metadata cache
+        try:
+            metadata_service.get_current_track()
+            status["services"]["metadata"] = "ok"
+        except Exception as e:
+            status["services"]["metadata"] = f"error: {str(e)}"
+            status["status"] = "degraded"
+        
+        return jsonify(status)
+    except Exception as e:
+        return jsonify({
+            "status": "unhealthy",
+            "error": str(e),
+            "timestamp": int(time.time())
+        }), 500
+
 @api_bp.route("/event")
 def api_event():
     """
@@ -139,7 +178,35 @@ def api_cover():
     except Exception as e:
         print(f"Error extracting cover art: {e}")
     
-    # Fallback to default cover
+    # If no embedded art found, try to extract artist/album from file and do online lookup
+    if audio_file:
+        try:
+            file_artist = ""
+            file_album = ""
+            
+            # Extract metadata for online lookup
+            if 'TPE1' in audio_file:  # Artist
+                file_artist = str(audio_file['TPE1'][0])
+            elif 'ARTIST' in audio_file:
+                file_artist = str(audio_file['ARTIST'][0])
+                
+            if 'TALB' in audio_file:  # Album
+                file_album = str(audio_file['TALB'][0])
+            elif 'ALBUM' in audio_file:
+                file_album = str(audio_file['ALBUM'][0])
+            
+            # If we have artist info, redirect to online lookup
+            if file_artist:
+                from flask import redirect
+                if file_album:
+                    return redirect(f"/api/cover/online?artist={quote(file_artist)}&album={quote(file_album)}")
+                else:
+                    return redirect(f"/api/cover/online?artist={quote(file_artist)}&album={quote(file_artist)}")
+                    
+        except Exception as e:
+            print(f"Error extracting metadata for online lookup: {e}")
+    
+    # Final fallback to default cover
     return send_file("/opt/ai-radio/ui/static/station-cover.jpg"), 200
 
 @api_bp.route("/cover/online", methods=["GET"])  
@@ -256,15 +323,27 @@ def set_active_prompts():
     """Set active prompt styles"""
     try:
         data = request.get_json()
-        if not data or 'prompt_id' not in data:
-            return jsonify({"error": "Missing prompt_id"}), 400
+        if not data:
+            return jsonify({"error": "Missing data"}), 400
         
         # Load current settings
         settings_file = config.ROOT_DIR / "dj_settings.json"
         settings = safe_json_read(settings_file, {})
         
         # Update active prompts
-        settings['active_prompt'] = data['prompt_id']
+        if 'intro_prompt' in data:
+            if 'ai_prompts' not in settings:
+                settings['ai_prompts'] = {}
+            settings['ai_prompts']['active_intro_prompt'] = data['intro_prompt']
+        
+        if 'outro_prompt' in data:
+            if 'ai_prompts' not in settings:
+                settings['ai_prompts'] = {}
+            settings['ai_prompts']['active_outro_prompt'] = data['outro_prompt']
+        
+        # Backward compatibility
+        if 'prompt_id' in data:
+            settings['active_prompt'] = data['prompt_id']
         
         # Save back to file
         if safe_json_write(settings_file, settings):
@@ -280,32 +359,103 @@ def add_custom_prompt():
     """Add a custom prompt template"""
     try:
         data = request.get_json()
-        if not data or 'prompt' not in data:
-            return jsonify({"error": "Missing prompt"}), 400
+        if not data or 'prompt' not in data or 'type' not in data:
+            return jsonify({"error": "Missing prompt or type"}), 400
+        
+        prompt_type = data['type']
+        if prompt_type not in ['intro', 'outro']:
+            return jsonify({"error": "Type must be 'intro' or 'outro'"}), 400
         
         # Load current settings
         settings_file = config.ROOT_DIR / "dj_settings.json"
         settings = safe_json_read(settings_file, {})
         
-        # Initialize custom prompts if needed
-        if 'custom_prompts' not in settings:
-            settings['custom_prompts'] = []
+        # Ensure AI prompts structure exists
+        if 'ai_prompts' not in settings:
+            settings['ai_prompts'] = {
+                'intro_prompts': [],
+                'outro_prompts': [],
+                'active_intro_prompt': '',
+                'active_outro_prompt': ''
+            }
         
-        # Add new custom prompt
-        custom_prompt = {
-            "id": f"custom_{len(settings['custom_prompts']) + 1}",
-            "name": data.get('name', f"Custom Prompt {len(settings['custom_prompts']) + 1}"),
-            "prompt": data['prompt'],
-            "created_at": int(time.time())
+        # Create new prompt object
+        new_prompt = {
+            "name": data.get('name', f"Custom {prompt_type.title()} {len(settings['ai_prompts'][f'{prompt_type}_prompts']) + 1}"),
+            "prompt": data['prompt']
         }
         
-        settings['custom_prompts'].append(custom_prompt)
+        # Add to appropriate prompt list
+        settings['ai_prompts'][f'{prompt_type}_prompts'].append(new_prompt)
         
         # Save back to file
         if safe_json_write(settings_file, settings):
-            return jsonify({"ok": True, "prompt": custom_prompt})
+            return jsonify({"ok": True, "prompt": new_prompt})
         else:
             return jsonify({"error": "Failed to save settings"}), 500
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@api_bp.route("/dj-prompts/openai-key", methods=["POST"])
+def save_openai_key():
+    """Save OpenAI API key"""
+    try:
+        data = request.get_json()
+        if not data or 'api_key' not in data:
+            return jsonify({"error": "Missing API key"}), 400
+        
+        api_key = data['api_key'].strip()
+        if not api_key:
+            return jsonify({"error": "API key cannot be empty"}), 400
+        
+        # Load current settings
+        settings_file = config.ROOT_DIR / "dj_settings.json"
+        settings = safe_json_read(settings_file, {})
+        
+        # Ensure openai_config structure exists
+        if 'openai_config' not in settings:
+            settings['openai_config'] = {}
+        
+        # Save the API key (in production, this should be encrypted/secure storage)
+        settings['openai_config']['api_key'] = api_key
+        settings['openai_config']['enabled'] = True
+        settings['openai_config']['last_updated'] = int(time.time())
+        
+        # Save back to file
+        if safe_json_write(settings_file, settings):
+            return jsonify({"ok": True, "message": "OpenAI API key saved successfully"})
+        else:
+            return jsonify({"error": "Failed to save API key"}), 500
+            
+    except Exception as e:
+        return jsonify({"error": str(e)}), 500
+
+@api_bp.route("/dj-prompts/config", methods=["POST"])
+def update_dj_config():
+    """Update DJ configuration settings"""
+    try:
+        data = request.get_json()
+        if not data:
+            return jsonify({"error": "Missing configuration data"}), 400
+        
+        # Load current settings
+        settings_file = config.ROOT_DIR / "dj_settings.json"
+        settings = safe_json_read(settings_file, {})
+        
+        # Update configuration values
+        valid_keys = ['auto_dj_enabled', 'ai_dj_probability', 'min_interval_minutes', 'max_interval_minutes']
+        for key in valid_keys:
+            if key in data:
+                settings[key] = data[key]
+        
+        settings['last_config_update'] = int(time.time())
+        
+        # Save back to file
+        if safe_json_write(settings_file, settings):
+            return jsonify({"ok": True, "message": "Configuration updated successfully"})
+        else:
+            return jsonify({"error": "Failed to save configuration"}), 500
             
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -375,18 +525,45 @@ def api_next():
 
 @api_bp.route("/skip", methods=["POST"])
 def api_skip():
-    """Skip current track"""
+    """Skip current track using Harbor HTTP (replaces telnet)"""
     try:
-        # Send skip command to Liquidsoap via telnet
-        import telnetlib
+        import subprocess
+        import tempfile
+        import os
+        
+        # Create a very short silence track to force skip
+        with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as temp_file:
+            temp_path = temp_file.name
+        
         try:
-            tn = telnetlib.Telnet('127.0.0.1', 1234, timeout=5)
-            tn.write(b'skip\n')
-            response = tn.read_until(b'END', timeout=5)
-            tn.close()
-            return jsonify({"ok": True, "message": "Track skipped"})
-        except Exception as telnet_error:
-            return jsonify({"ok": False, "error": f"Failed to connect to Liquidsoap: {str(telnet_error)}"}), 503
+            # Generate 0.1 second of silence using ffmpeg
+            result = subprocess.run([
+                'ffmpeg', '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo', 
+                '-t', '0.1', '-acodec', 'mp3', '-y', temp_path
+            ], capture_output=True, text=True, timeout=5)
+            
+            if result.returncode == 0:
+                # Send silence to Harbor music input to force skip
+                skip_result = subprocess.run([
+                    'curl', '-f', '-X', 'PUT', 'http://127.0.0.1:8001/music',
+                    '-H', 'Content-Type: audio/mpeg',
+                    '--data-binary', f'@{temp_path}'
+                ], capture_output=True, text=True, timeout=10)
+                
+                if skip_result.returncode == 0:
+                    return jsonify({"ok": True, "message": "Track skipped via Harbor"})
+                else:
+                    return jsonify({"ok": False, "error": f"Harbor skip failed: {skip_result.stderr}"}), 503
+            else:
+                return jsonify({"ok": False, "error": "Failed to generate skip audio"}), 500
+                
+        finally:
+            # Clean up temp file
+            try:
+                os.unlink(temp_path)
+            except:
+                pass
+            
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 

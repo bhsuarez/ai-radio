@@ -24,6 +24,8 @@ harbor_input = input.harbor(
   "/music"
 )
 
+# Harbor HTTP handlers will be added after sources are defined
+
 # Fallback playlist for when harbor has no input
 backup_music = playlist(
   mode="random",
@@ -126,8 +128,7 @@ music = source.on_metadata(music, auto_generate_dj_intro)
 music = crossfade(music)
 
 # Announce every real track start (attach once, on the smoothed music)
-# Temporarily disabled to prevent connection flooding
-# music = source.on_metadata(music, announce_song)
+music = source.on_metadata(music, announce_song)
 
 # Optional: Generate outros when tracks end
 # Uncomment this line if you want outro generation too:
@@ -157,4 +158,6 @@ output.icecast(
   description="24/7 auto-DJ with AI commentary",
   radio
 )
+
+# Harbor HTTP endpoints - will implement after confirming syntax
 

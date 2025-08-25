@@ -1,6 +1,7 @@
 #!/bin/bash
-# Emergency sine wave fallback fixer
-# Run this script when you hear sine waves
+# DEPRECATED: Emergency sine wave fallback fixer - Replaced by Harbor HTTP
+# Use Harbor HTTP skip instead: curl -X PUT http://127.0.0.1:8001/music -H "Content-Type: audio/mpeg" --data-binary "@silence.mp3"
+# This script is kept for backward compatibility but should not be used
 
 set -euo pipefail
 
@@ -13,7 +14,8 @@ log() {
     echo "$(date '+%Y-%m-%d %H:%M:%S') - $1" | tee -a "$LOGFILE"
 }
 
-log "=== EMERGENCY SINE RECOVERY STARTED ==="
+log "=== DEPRECATED: EMERGENCY SINE RECOVERY - USE HARBOR HTTP INSTEAD ==="
+log "WARNING: This script is deprecated - Harbor HTTP has replaced telnet for reliability"
 
 # Try multiple recovery methods
 log "Step 1: Skipping current music track..."

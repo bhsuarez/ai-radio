@@ -3,6 +3,7 @@ import axios from 'axios';
 import io from 'socket.io-client';
 import { motion, AnimatePresence } from 'framer-motion';
 import SpeakerModal from './SpeakerModal';
+import DJSettingsModal from './DJSettingsModal';
 import './App.css';
 
 interface Track {
@@ -44,6 +45,7 @@ function App() {
   const [trackStartTime, setTrackStartTime] = useState<number>(0);
   const [currentTime, setCurrentTime] = useState<number>(Date.now());
   const [showSpeakerModal, setShowSpeakerModal] = useState(false);
+  const [showDJSettings, setShowDJSettings] = useState(false);
 
   const API_BASE = `${window.location.protocol}//${window.location.hostname}:5055`;
   
@@ -320,10 +322,19 @@ function App() {
     <div className="app">
       <header className="header">
         <h1>🎧 AI Radio</h1>
-        <div className="status">
-          <span className={`connection ${isConnected ? 'connected' : 'disconnected'}`}>
-            {isConnected ? '🟢 Live' : '🔴 Disconnected'}
-          </span>
+        <div className="header-controls">
+          <div className="status">
+            <span className={`connection ${isConnected ? 'connected' : 'disconnected'}`}>
+              {isConnected ? '🟢 Live' : '🔴 Disconnected'}
+            </span>
+          </div>
+          <button 
+            className="settings-button"
+            onClick={() => setShowDJSettings(true)}
+            title="DJ Settings"
+          >
+            ⚙️
+          </button>
         </div>
       </header>
 
@@ -535,6 +546,12 @@ function App() {
           />
         )}
       </AnimatePresence>
+
+      <DJSettingsModal
+        isOpen={showDJSettings}
+        onClose={() => setShowDJSettings(false)}
+        apiBase={API_BASE}
+      />
     </div>
   );
 }

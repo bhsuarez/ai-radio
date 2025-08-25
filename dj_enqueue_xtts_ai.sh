@@ -4,7 +4,26 @@ set -euo pipefail
 ARTIST=${1:-}
 TITLE=${2:-}
 LANG=${3:-en}
-SPEAKER="${4:-${XTTS_SPEAKER:-Damien Black}}"
+
+# Get speaker from dj_settings.json if not provided as parameter
+if [[ -n "${4:-}" ]]; then
+    SPEAKER="$4"
+elif [[ -n "${XTTS_SPEAKER:-}" ]]; then
+    SPEAKER="$XTTS_SPEAKER"
+else
+    # Read from dj_settings.json
+    SETTINGS_SPEAKER=$(python3 -c "
+import json
+try:
+    with open('/opt/ai-radio/dj_settings.json', 'r') as f:
+        settings = json.load(f)
+    print(settings.get('tts_voice', 'Damien Black'))
+except:
+    print('Damien Black')
+" 2>/dev/null)
+    SPEAKER="${SETTINGS_SPEAKER:-Damien Black}"
+fi
+
 MODE="${5:-intro}"  # intro, outro, or custom
 
 if [[ -z "${ARTIST}" || -z "${TITLE}" ]]; then

@@ -43,44 +43,12 @@ def setup_cache_dir():
 
 def liquidsoap_command(cmd, timeout=None):
     """
-    Execute a single command against Liquidsoap telnet interface.
-    Returns list of response lines (without 'END').
+    DEPRECATED: Telnet-based command execution replaced by Harbor HTTP.
+    This function now returns empty results to maintain compatibility.
+    Use Icecast status API for metadata instead.
     """
-    if timeout is None:
-        timeout = TELNET_TIMEOUT
-        
-    with liquidsoap_lock:
-        try:
-            sock = socket.create_connection((LIQUIDSOAP_HOST, LIQUIDSOAP_PORT), timeout=timeout)
-            sock.settimeout(timeout)
-            
-            # Send command
-            sock.sendall((cmd + "\nquit\n").encode("utf-8"))
-            sock.shutdown(socket.SHUT_WR)
-            
-            # Read response
-            data = b""
-            start_time = time.time()
-            while time.time() - start_time < timeout:
-                try:
-                    chunk = sock.recv(4096)
-                    if not chunk:
-                        break
-                    data += chunk
-                    if b"\nEND" in data or data.rstrip().endswith(b"END"):
-                        break
-                except socket.timeout:
-                    break
-                    
-            sock.close()
-            
-            # Parse response
-            lines = data.decode("utf-8", errors="ignore").splitlines()
-            return [line for line in lines if line.strip() and line.strip() != "END"]
-            
-        except (socket.error, ConnectionRefusedError, OSError) as e:
-            print(f"Liquidsoap connection error for '{cmd}': {e}")
-            return []
+    print(f"WARNING: liquidsoap_command({cmd}) called - telnet deprecated, returning empty result")
+    return []
 
 def parse_kv_lines(lines):
     """Parse Liquidsoap key="value" lines into dict"""
@@ -144,40 +112,37 @@ def get_current_metadata():
         except Exception as e:
             print(f"Could not get Icecast metadata: {e}")
         
-        # Now get Liquidsoap metadata
-        # Get current metadata directly from Liquidsoap
-        lines = liquidsoap_command("output.icecast.metadata")
-        if not lines:
-            print("No response from Liquidsoap metadata command")
-            return {}
+        # Since telnet is disabled in Liquidsoap, use Icecast metadata directly
+        print("Using Icecast metadata only (telnet disabled in Liquidsoap)")
         
-        # Parse metadata sections (--- 1 ---, --- 2 ---, etc.)
-        sections = []
-        current_section = {}
+        current_track = {}
+        filename = ""
         
-        for line in lines:
-            line = line.strip()
-            if line.startswith("--- ") and line.endswith(" ---"):
-                if current_section:
-                    sections.append(current_section)
-                current_section = {}
-            elif "=" in line and not line.startswith("itunsmpb") and not line.startswith("cover"):
-                key, val = line.split("=", 1)
-                key = key.strip()
-                val = val.strip().strip('"')
-                current_section[key] = val
+        if icecast_title:
+            # Parse Icecast title format: "Artist - Title" 
+            if " - " in icecast_title and not icecast_title.startswith("AI DJ"):
+                parts = icecast_title.split(" - ", 1)  # Split on first " - " only
+                if len(parts) == 2:
+                    current_track = {
+                        "artist": parts[0].strip(),
+                        "title": parts[1].strip(),
+                        "album": "",
+                        "genre": "",
+                        "date": ""
+                    }
+                    print(f"Parsed track: {current_track['artist']} - {current_track['title']}")
+            else:
+                # Handle other formats or AI DJ titles
+                current_track = {
+                    "artist": "Unknown",
+                    "title": icecast_title,
+                    "album": "",
+                    "genre": "",
+                    "date": ""
+                }
         
-        if current_section:
-            sections.append(current_section)
-        
-        # Find the currently playing music track (use LAST section, which is the current one)
-        current_track = None
-        # Liquidsoap returns sections in reverse order, so search from the end
-        for section in reversed(sections):
-            # Skip AI DJ/TTS content, look for actual music
-            if section.get("artist", "") != "AI DJ" and section.get("title", "") != "DJ Intro":
-                current_track = section
-                break
+        # We already have the current track from Icecast parsing above
+        # No need to search through sections since we parsed it directly
         
         # If no music track found, use first section but mark as DJ intro
         if not current_track and sections:
@@ -262,13 +227,35 @@ def get_current_metadata():
             if metadata.get("artist", "") != "AI DJ":
                 print("METADATA STUCK: Icecast shows AI DJ but current track is music - fixing")
                 try:
-                    # Use TTS flush_and_skip which is more effective for stuck DJ intros
-                    sock = socket.create_connection(("127.0.0.1", 1234), timeout=3)
-                    sock.sendall(b"tts.flush_and_skip\nquit\n")
-                    sock.close()
-                    print("Applied fix: flushed TTS and skipped to clear stuck DJ intro")
+                    # Use Harbor HTTP skip instead of telnet (more reliable)
+                    import subprocess
+                    import tempfile
+                    
+                    # Create very short silence to force skip via Harbor
+                    with tempfile.NamedTemporaryFile(suffix='.mp3', delete=True) as temp_file:
+                        # Generate tiny silence track
+                        result = subprocess.run([
+                            'ffmpeg', '-f', 'lavfi', '-i', 'anullsrc=r=44100:cl=stereo', 
+                            '-t', '0.05', '-acodec', 'mp3', '-y', temp_file.name
+                        ], capture_output=True, timeout=5)
+                        
+                        if result.returncode == 0:
+                            # Send to Harbor music input to interrupt stuck DJ intro
+                            skip_result = subprocess.run([
+                                'curl', '-f', '-X', 'PUT', 'http://127.0.0.1:8001/music',
+                                '-H', 'Content-Type: audio/mpeg',
+                                '--data-binary', f'@{temp_file.name}'
+                            ], capture_output=True, timeout=5)
+                            
+                            if skip_result.returncode == 0:
+                                print("Applied fix: Harbor skip successful to clear stuck DJ intro")
+                            else:
+                                print(f"Harbor skip failed: {skip_result.stderr}")
+                        else:
+                            print("Failed to generate skip audio for stuck DJ fix")
+                            
                 except Exception as e:
-                    print(f"Failed to apply fix: {e}")
+                    print(f"Failed to apply Harbor fix: {e}")
         
         return metadata
         

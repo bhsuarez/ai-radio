@@ -101,3 +101,16 @@ def broadcast_metadata_update(socketio, metadata):
         socketio.emit('metadata_update', metadata)
     except Exception as e:
         print(f"Error broadcasting metadata update: {e}")
+
+def broadcast_history_update(socketio, history_item):
+    """
+    Broadcast history update to all connected clients
+    
+    Args:
+        socketio: SocketIO instance
+        history_item: History item dictionary
+    """
+    try:
+        socketio.emit('history_update', history_item)
+    except Exception as e:
+        print(f"Error broadcasting history update: {e}")

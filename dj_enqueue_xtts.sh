@@ -4,7 +4,26 @@ set -euo pipefail
 ARTIST=${1:-}
 TITLE=${2:-}
 LANG=${3:-en}
-SPEAKER="${4:-${XTTS_SPEAKER:-Damien Black}}"
+
+# Get speaker from dj_settings.json if not provided as parameter
+if [[ -n "${4:-}" ]]; then
+    SPEAKER="$4"
+elif [[ -n "${XTTS_SPEAKER:-}" ]]; then
+    SPEAKER="$XTTS_SPEAKER"
+else
+    # Read from dj_settings.json
+    SETTINGS_SPEAKER=$(python3 -c "
+import json
+try:
+    with open('/opt/ai-radio/dj_settings.json', 'r') as f:
+        settings = json.load(f)
+    print(settings.get('tts_voice', 'Damien Black'))
+except:
+    print('Damien Black')
+" 2>/dev/null)
+    SPEAKER="${SETTINGS_SPEAKER:-Damien Black}"
+fi
+
 MODE="${5:-intro}"  # intro, outro, or custom
 
 if [[ -z "${ARTIST}" || -z "${TITLE}" ]]; then
@@ -82,6 +101,17 @@ create_tts_entry(
 )
 print('Database entry created successfully')
 " || echo "WARNING: Failed to create database entry" >&2
+        
+        # Send TTS file to Liquidsoap via Harbor HTTP (replaces telnet)
+        echo "DEBUG: Submitting TTS to Harbor at http://127.0.0.1:8002/tts" >&2
+        
+        if curl -f -X PUT "http://127.0.0.1:8002/tts" \
+           -H "Content-Type: audio/mpeg" \
+           --data-binary "@${OUT}" 2>&1; then
+            echo "DEBUG: Successfully submitted TTS to Harbor" >&2
+        else
+            echo "WARNING: Failed to submit TTS to Harbor - file created but not queued" >&2
+        fi
         
         # Output the file path for the calling script
         echo "${OUT}"

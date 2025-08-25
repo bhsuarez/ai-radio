@@ -5,6 +5,7 @@ import json
 import socket
 import time
 import os
+import requests
 from pathlib import Path
 from contextlib import closing
 from typing import Dict, List, Optional
@@ -51,8 +52,11 @@ class MetadataService:
         data.setdefault("title", "Unknown title")
         data.setdefault("artist", "Unknown artist") 
         data.setdefault("album", "")
-        data.setdefault("artwork_url", "")
         data.setdefault("filename", "")
+        
+        # Generate artwork URL if not already present
+        if not data.get("artwork_url"):
+            data["artwork_url"] = self._generate_artwork_url(data)
         
         # Add frontend compatibility fields
         data.setdefault("type", "song")
@@ -75,12 +79,46 @@ class MetadataService:
     
     def get_next_track(self) -> Optional[Dict]:
         """
-        Get next track information if available.
+        Get next track information from Liquidsoap queue via HTTP API.
+        Falls back to JSON file if HTTP API unavailable.
         
         Returns:
-            Dictionary with next track info or None
+            List of upcoming tracks or fallback data
         """
-        return safe_json_read(config.NEXT_JSON)
+        try:
+            # Try HTTP API first (faster and more accurate)
+            response = requests.get("http://127.0.0.1:8003/next", timeout=2)
+            if response.status_code == 200:
+                next_tracks = response.json()
+                if next_tracks:
+                    # Add artwork URLs to tracks
+                    for track in next_tracks:
+                        if not track.get("artwork_url"):
+                            filename = track.get("filename", "")
+                            artist = track.get("artist", "")
+                            album = track.get("album", "")
+                            
+                            if filename:
+                                from urllib.parse import quote
+                                track["artwork_url"] = f"/api/cover?file={quote(filename)}"
+                            elif artist and album:
+                                from urllib.parse import quote
+                                track["artwork_url"] = f"/api/cover/online?artist={quote(artist)}&album={quote(album)}"
+                    
+                    return next_tracks
+        except Exception as e:
+            print(f"Failed to get next tracks via HTTP API: {e}")
+        
+        # Fallback to JSON file
+        fallback_data = safe_json_read(config.NEXT_JSON)
+        
+        # Ensure it's a list for consistency
+        if isinstance(fallback_data, dict):
+            return [fallback_data]
+        elif isinstance(fallback_data, list):
+            return fallback_data
+        
+        return []
     
     def _read_text_metadata(self) -> Dict:
         """Read metadata from text file (key=value or Artist - Title format)"""
@@ -164,35 +202,9 @@ class MetadataService:
         return current_track
     
     def _liquidsoap_command(self, command: str) -> List[str]:
-        """Execute Liquidsoap telnet command"""
-        try:
-            with closing(socket.socket(socket.AF_INET, socket.SOCK_STREAM)) as sock:
-                sock.settimeout(2)
-                sock.connect((config.TELNET_HOST, config.TELNET_PORT))
-                
-                # Send command
-                sock.sendall(f"{command}\n".encode())
-                
-                # Read response
-                response = b""
-                while True:
-                    try:
-                        chunk = sock.recv(1024)
-                        if not chunk:
-                            break
-                        response += chunk
-                        if b"END" in response:
-                            break
-                    except socket.timeout:
-                        break
-                
-                # Process response
-                lines = response.decode('utf-8', errors='ignore').splitlines()
-                # Remove "END" marker if present
-                return [line for line in lines if line.strip() != "END"]
-                
-        except (socket.error, socket.timeout):
-            return []
+        """DEPRECATED: Execute Liquidsoap telnet command - replaced by Harbor HTTP"""
+        print(f"WARNING: _liquidsoap_command({command}) called - telnet deprecated")
+        return []
     
     def _get_track_duration(self, title: str, artist: str, album: str = None) -> Optional[float]:
         """
@@ -289,3 +301,24 @@ class MetadataService:
         # Replace multiple spaces with single space
         sanitized = re.sub(r'\s+', ' ', sanitized).strip()
         return sanitized
+    
+    def _generate_artwork_url(self, data: Dict) -> str:
+        """Generate artwork URL based on available metadata"""
+        from urllib.parse import quote
+        
+        # Priority 1: Use filename if available
+        filename = data.get("filename", "").strip()
+        if filename:
+            return f"/api/cover?file={quote(filename)}"
+        
+        # Priority 2: Use artist and album
+        artist = data.get("artist", "").strip()
+        album = data.get("album", "").strip()
+        
+        if artist and album:
+            return f"/api/cover/online?artist={quote(artist)}&album={quote(album)}"
+        elif artist:
+            return f"/api/cover/online?artist={quote(artist)}&album={quote(artist)}"
+        
+        # Fallback: empty URL (will use default station cover)
+        return ""

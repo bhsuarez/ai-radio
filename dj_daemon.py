@@ -216,34 +216,78 @@ class DJDaemon:
             return None, None
     
     
-    def push_to_tts_queue(self, file_path: str):
-        """Push intro file to Liquidsoap TTS queue via API (no telnet)"""
+    def push_to_tts_queue(self, file_path: str, target_track: Dict = None):
+        """Push intro file to Liquidsoap TTS queue with proper metadata"""
         try:
+            # Create annotated request with DJ intro metadata
+            artist_info = ""
+            title_info = ""
+            if target_track:
+                artist_info = f" (Introducing {target_track.get('artist', 'Unknown Artist')})"
+                title_info = f" - {target_track.get('title', 'Unknown Title')}"
+            
             # Use web API instead of direct telnet to avoid connection storms
             data = {
                 "type": "dj",
                 "text": f"DJ intro for upcoming track",
-                "audio_file": file_path
+                "audio_file": file_path,
+                "metadata": {
+                    "artist": "AI DJ",
+                    "title": f"DJ Intro{title_info}",
+                    "album": "AI Radio"
+                }
             }
             
             response = requests.post(f"{self.api_base}/api/tts_queue", json=data, timeout=10)
             
             if response.ok:
-                print(f"DJ Daemon: Successfully queued intro via API")
+                print(f"DJ Daemon: Successfully queued intro via API with metadata")
             else:
                 print(f"DJ Daemon: API queue failed ({response.status_code}): {response.text}")
-                # Fallback to telnet only if API fails
-                self._fallback_telnet_push(file_path)
+                # Fallback to telnet with annotated request
+                self._fallback_telnet_push_annotated(file_path, target_track)
                 
         except Exception as e:
             print(f"DJ Daemon: API push failed: {e}")
-            # Fallback to telnet only if API fails
-            self._fallback_telnet_push(file_path)
+            # Fallback to telnet with annotated request
+            self._fallback_telnet_push_annotated(file_path, target_track)
+    
+    def _fallback_telnet_push_annotated(self, file_path: str, target_track: Dict = None):
+        """Fallback telnet push with annotated metadata (only used when API fails)"""
+        try:
+            print("DJ Daemon: Falling back to telnet push with metadata (API unavailable)")
+            import socket
+            with socket.create_connection((LS_HOST, LS_PORT), timeout=5) as s:
+                s.settimeout(5)
+                # Consume banner
+                try:
+                    s.recv(1024)
+                except:
+                    pass
+                
+                # Create annotated request with DJ intro metadata
+                title_info = ""
+                if target_track:
+                    title_info = f" - {target_track.get('title', 'Unknown Title')}"
+                
+                # Use annotate: prefix to set metadata for this request
+                annotated_path = f'annotate:artist="AI DJ",title="DJ Intro{title_info}",album="AI Radio":{file_path}'
+                
+                # Push annotated file to TTS queue
+                command = f'tts.push {annotated_path}\nquit\n'
+                s.send(command.encode())
+                
+                # Read response
+                response = s.recv(1024).decode().strip()
+                print(f"DJ Daemon: Telnet annotated TTS queue response: {response}")
+                
+        except Exception as e:
+            print(f"DJ Daemon: Fallback annotated telnet push failed: {e}")
     
     def _fallback_telnet_push(self, file_path: str):
-        """Fallback telnet push (only used when API fails)"""
+        """Simple fallback telnet push (deprecated, use annotated version)"""
         try:
-            print("DJ Daemon: Falling back to telnet push (API unavailable)")
+            print("DJ Daemon: Falling back to simple telnet push (API unavailable)")
             import socket
             with socket.create_connection((LS_HOST, LS_PORT), timeout=5) as s:
                 s.settimeout(5)
@@ -331,10 +375,10 @@ class DJDaemon:
         return None
     
     def enqueue_intro(self, intro_file: str, target_track: Dict) -> bool:
-        """Push intro to TTS queue immediately"""
+        """Push intro to TTS queue immediately with metadata"""
         try:
-            # Push to TTS queue right away so it plays before the target track
-            self.push_to_tts_queue(intro_file)
+            # Push to TTS queue with target track metadata
+            self.push_to_tts_queue(intro_file, target_track)
             print(f"Enqueued intro for upcoming track: {target_track.get('title')} by {target_track.get('artist')}")
             return True
             

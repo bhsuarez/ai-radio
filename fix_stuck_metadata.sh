@@ -10,24 +10,30 @@ ICECAST_TITLE=$(curl -s http://localhost:8000/status-json.xsl | jq -r '.icestats
 if [[ "$ICECAST_TITLE" == *"AI DJ"* ]] && [[ "$ICECAST_TITLE" == *"DJ Intro"* ]]; then
     echo "$(date): Detected stuck AI DJ metadata in Icecast: $ICECAST_TITLE"
     
-    # Get current Liquidsoap metadata (section 1 is current)
-    LIQUIDSOAP_DATA=$(echo -e "output.icecast.metadata\nquit" | nc localhost 1234 2>/dev/null)
+    # Harbor-based fix (more reliable than telnet)
+    echo "$(date): Using Harbor HTTP to fix stuck metadata"
     
-    # Extract the first section (current track) from Liquidsoap
-    CURRENT_SECTION=$(echo "$LIQUIDSOAP_DATA" | awk '/^--- 1 ---/{flag=1; next} /^--- [0-9]+ ---/{flag=0} flag && /^(artist|title)=/{print}' | head -2)
-    
-    if echo "$CURRENT_SECTION" | grep -q "artist=.*AI DJ"; then
-        echo "$(date): Liquidsoap also shows AI DJ, this is correct"
+    # Create tiny silence track to force skip via Harbor
+    TEMP_FILE=$(mktemp --suffix=.mp3)
+    if command -v ffmpeg >/dev/null 2>&1; then
+        ffmpeg -f lavfi -i anullsrc=r=44100:cl=stereo -t 0.1 -acodec mp3 -y "$TEMP_FILE" >/dev/null 2>&1
+        if [[ -f "$TEMP_FILE" ]]; then
+            echo "$(date): Sending Harbor skip command..."
+            if curl -f -X PUT http://127.0.0.1:8001/music -H "Content-Type: audio/mpeg" --data-binary "@$TEMP_FILE" >/dev/null 2>&1; then
+                echo "$(date): Harbor skip successful"
+                sleep 2
+                
+                # Verify fix
+                NEW_ICECAST_TITLE=$(curl -s http://localhost:8000/status-json.xsl | jq -r '.icestats.source.title' 2>/dev/null)
+                echo "$(date): Fixed - now showing: $NEW_ICECAST_TITLE"
+            else
+                echo "$(date): Harbor skip failed"
+            fi
+            rm -f "$TEMP_FILE"
+        else
+            echo "$(date): Failed to generate skip audio"
+        fi
     else
-        echo "$(date): Liquidsoap shows music, but Icecast stuck on AI DJ - fixing"
-        
-        # Force skip to refresh metadata
-        echo -e "output.icecast.skip\nquit" | nc localhost 1234 >/dev/null 2>&1
-        
-        sleep 2
-        
-        # Verify fix
-        NEW_ICECAST_TITLE=$(curl -s http://localhost:8000/status-json.xsl | jq -r '.icestats.source.title' 2>/dev/null)
-        echo "$(date): Fixed - now showing: $NEW_ICECAST_TITLE"
+        echo "$(date): ffmpeg not available for Harbor skip"
     fi
 fi

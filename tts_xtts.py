@@ -1,6 +1,11 @@
 #!/usr/bin/env python3
-import argparse, sys, os
+import argparse, sys, os, torch
 from TTS.api import TTS
+
+# Optimize PyTorch for CPU performance (reduced to prevent overload)
+torch.set_num_threads(4)  # Conservative thread count
+os.environ["OMP_NUM_THREADS"] = "4"
+os.environ["MKL_NUM_THREADS"] = "4"
 
 def main():
     ap = argparse.ArgumentParser()

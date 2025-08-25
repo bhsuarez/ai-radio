@@ -9,20 +9,30 @@
   "ai_fallback_config": {
     "tier1_openai": {
       "enabled": true,
-      "models": ["gpt-4o-mini", "gpt-3.5-turbo"],
+      "models": [
+        "gpt-4o-mini",
+        "gpt-3.5-turbo"
+      ],
       "timeout": 15,
       "max_retries": 2,
       "rate_limit_delay": 1
     },
     "tier2_ollama": {
       "enabled": true,
-      "models": ["llama3.2:3b", "llama3.2:1b", "phi3:mini"],
+      "models": [
+        "llama3.2:3b",
+        "llama3.2:1b",
+        "phi3:mini"
+      ],
       "timeout": 30,
       "max_retries": 2
     },
     "tier3_ollama_alt": {
       "enabled": true,
-      "models": ["mistral:7b", "gemma:2b"],
+      "models": [
+        "mistral:7b",
+        "gemma:2b"
+      ],
       "timeout": 45,
       "max_retries": 1
     },
@@ -42,7 +52,7 @@
         "prompt": "You are a sophisticated jazz radio DJ with a smooth, cultured voice. In 1-2 sentences, elegantly introduce '{title}' by {artist}. Keep it classy and refined. Use the artist name EXACTLY as written. No technical details about the music unless certain. Speak like a human DJ would."
       },
       {
-        "name": "Rock/Alternative Style", 
+        "name": "Rock/Alternative Style",
         "prompt": "You are a rock radio DJ with attitude. In 1-2 sentences, introduce '{title}' by {artist} with energy and edge. Use the artist name EXACTLY as written. Keep it real and authentic. No AI or tech references. Speak like a human DJ would."
       },
       {
@@ -96,6 +106,6 @@
     ]
   },
   "save_to_file": true,
-  "tts_voice": "Damien Black",
-  "tts_lang": "en"                 
+  "tts_voice": "Damien_Black",
+  "tts_lang": "en"
 }

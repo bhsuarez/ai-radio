@@ -1,6 +1,7 @@
 #!/bin/bash
-# TTS Queue Monitor - Prevents queue blocking
-# Add to cron: */5 * * * * /opt/ai-radio/monitor_tts_queue.sh
+# DEPRECATED: TTS Queue Monitor - No longer needed with Harbor HTTP
+# Harbor HTTP has replaced telnet TTS queueing for reliability
+# This script is kept for backward compatibility but should not be used
 
 set -euo pipefail
 
@@ -60,6 +61,8 @@ check_sine_fallback() {
 
 # Main monitoring logic
 main() {
+    log "DEPRECATED: TTS queue monitoring is deprecated - Harbor HTTP has replaced telnet TTS queueing"
+    log "WARNING: This script should not be used - Harbor HTTP handles TTS reliability automatically"
     queue_size=$(get_queue_size)
     
     # Check if we got a valid number

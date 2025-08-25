@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 #
-# AI Radio Telnet Watchdog
-# Monitors telnet connectivity and auto-restarts ai-radio service when needed
+# DEPRECATED: AI Radio Telnet Watchdog - No longer needed with Harbor HTTP
+# Telnet has been replaced with Harbor HTTP for reliability
+# This script is kept for backward compatibility but should not be used
 #
 
 LOGFILE="/opt/ai-radio/logs/telnet_watchdog.log"
@@ -58,7 +59,8 @@ fix_telnet_connection() {
 }
 
 main() {
-    log "STARTUP: AI Radio telnet watchdog started (PID: $$)"
+    log "DEPRECATED: Telnet watchdog is deprecated - Harbor HTTP has replaced telnet"
+    log "STARTUP: AI Radio telnet watchdog started (PID: $$) - DEPRECATED"
     
     local failure_count=0
     

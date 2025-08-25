@@ -10,11 +10,9 @@ class Config:
     PORT = 5055
     SECRET_KEY = 'ai-radio-socketio-secret'
     
-    # Liquidsoap Configuration
-    LS_HOST = os.environ.get("QUEUE_HOST", "127.0.0.1")
-    LS_PORT = int(os.environ.get("QUEUE_PORT", "1234"))
-    TELNET_HOST = "127.0.0.1"
-    TELNET_PORT = 1234
+    # Liquidsoap Configuration (Harbor HTTP ports)
+    HARBOR_TTS_PORT = 8002  # Harbor TTS input port
+    HARBOR_MUSIC_PORT = 8001  # Harbor music input port
     
     # Paths
     BASE_DIR = Path(__file__).parent.absolute()
@@ -50,7 +48,7 @@ class Config:
     DEDUP_WINDOW_MS = 60_000
     
     # DJ Generation
-    DJ_GENERATION_COOLDOWN = 60
+    DJ_GENERATION_COOLDOWN = 30  # Reasonable for live radio
     
     # Icecast
     ICECAST_STATUS = "http://icecast.zorro.network:8000/status-json.xsl"
