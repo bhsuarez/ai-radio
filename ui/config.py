@@ -24,7 +24,7 @@ class Config:
     MUSIC_ROOTS = ["/mnt/music", "/mnt/music/media", "/mnt/music/Music"]
     
     # File Paths
-    NOW_JSON = ROOT_DIR / "now.json"
+    NOW_JSON = ROOT_DIR / "cache" / "now_metadata.json"
     NOW_TXT = ROOT_DIR / "nowplaying.txt"
     NEXT_JSON = ROOT_DIR / "next.json"
     HISTORY_FILE = ROOT_DIR / "play_history.json"

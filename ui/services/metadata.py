@@ -4,6 +4,8 @@ Metadata service for handling current track and history information
 import json
 import socket
 import time
+import os
+from pathlib import Path
 from contextlib import closing
 from typing import Dict, List, Optional
 
@@ -51,6 +53,23 @@ class MetadataService:
         data.setdefault("album", "")
         data.setdefault("artwork_url", "")
         data.setdefault("filename", "")
+        
+        # Add frontend compatibility fields
+        data.setdefault("type", "song")
+        data.setdefault("timestamp", int(time.time()))
+        
+        # Add track timing if available (from started_at field)
+        if "started_at" in data:
+            try:
+                data["track_started_at"] = float(data["started_at"])
+            except (ValueError, TypeError):
+                pass
+        
+        # Try to get actual duration from audio file
+        if not data.get("duration") and data.get("title") and data.get("artist"):
+            duration = self._get_track_duration(data["title"], data["artist"], data.get("album"))
+            if duration:
+                data["duration"] = duration
         
         return data
     
@@ -174,3 +193,99 @@ class MetadataService:
                 
         except (socket.error, socket.timeout):
             return []
+    
+    def _get_track_duration(self, title: str, artist: str, album: str = None) -> Optional[float]:
+        """
+        Find and extract duration from audio file by searching for track metadata.
+        
+        Args:
+            title: Track title
+            artist: Artist name
+            album: Album name (optional)
+            
+        Returns:
+            Duration in seconds or None if not found
+        """
+        try:
+            from mutagen import File as MutaFile
+        except ImportError:
+            return None
+        
+        # Common music directories to search
+        music_dirs = ["/mnt/music/Music", "/mnt/music/media"]
+        
+        # Generate possible filename patterns
+        patterns = []
+        
+        # Sanitize strings for filename matching
+        clean_title = self._sanitize_for_search(title)
+        clean_artist = self._sanitize_for_search(artist)
+        clean_album = self._sanitize_for_search(album) if album else ""
+        
+        # Try different search patterns
+        if album:
+            patterns.extend([
+                f"*{clean_artist}*{clean_album}*{clean_title}*",
+                f"*{clean_artist}*{clean_album}*",
+                f"*{clean_album}*{clean_title}*",
+            ])
+        
+        patterns.extend([
+            f"*{clean_artist}*{clean_title}*",
+            f"*{clean_title}*{clean_artist}*",
+            f"*{clean_title}*",
+        ])
+        
+        # Search in music directories
+        for music_dir in music_dirs:
+            if not os.path.exists(music_dir):
+                continue
+                
+            for pattern in patterns:
+                try:
+                    # Use find command for efficient searching - search for audio files first, then filter by name
+                    import subprocess
+                    
+                    # First find all audio files in the directory
+                    cmd = ["find", music_dir, "-type", "f", 
+                          "(", "-iname", "*.mp3", "-o", "-iname", "*.m4a", "-o", 
+                          "-iname", "*.flac", "-o", "-iname", "*.wav", ")",
+                          "-iname", pattern]
+                    
+                    result = subprocess.run(cmd, capture_output=True, text=True, timeout=5)
+                    if result.returncode == 0 and result.stdout.strip():
+                        files = result.stdout.strip().split('\n')
+                        
+                        # Try to extract duration from first matching file
+                        for file_path in files[:3]:  # Limit to first 3 matches
+                            file_path = file_path.strip()
+                            if file_path and os.path.exists(file_path):
+                                try:
+                                    audio = MutaFile(file_path)
+                                    if audio and audio.info and hasattr(audio.info, 'length'):
+                                        duration = float(audio.info.length)
+                                        if duration > 0:
+                                            print(f"Found duration {duration:.1f}s for '{title}' in: {file_path}")
+                                            return duration
+                                except Exception as e:
+                                    print(f"Error reading {file_path}: {e}")
+                                    continue
+                                    
+                except (subprocess.TimeoutExpired, subprocess.SubprocessError) as e:
+                    print(f"Find command error: {e}")
+                    continue
+        
+        return None
+    
+    def _sanitize_for_search(self, text: str) -> str:
+        """Sanitize text for file search patterns"""
+        if not text:
+            return ""
+        
+        # Remove special characters that could interfere with shell patterns
+        import re
+        # Keep only alphanumeric, spaces, and basic punctuation
+        sanitized = re.sub(r'[^\w\s\-\.]', '', text)
+        # Replace multiple spaces with single space
+        sanitized = re.sub(r'\s+', ' ', sanitized).strip()
+        return sanitized
