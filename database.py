@@ -104,11 +104,17 @@ class DatabaseManager:
                     except:
                         row_dict['metadata'] = {}
                 
-                # For DJ entries, ensure we have the right text and audio URL
-                if row_dict['type'] == 'dj' and row_dict.get('tts_text'):
-                    row_dict['text'] = row_dict['tts_text']
-                    if row_dict.get('tts_audio'):
-                        row_dict['audio_url'] = f"/tts/{row_dict['tts_audio']}"
+                # For DJ entries, ensure we have the right audio URL and text content
+                if row_dict['type'] == 'dj':
+                    filename = row_dict.get('filename', '')
+                    if filename and filename.startswith('/opt/ai-radio/tts/') and filename.endswith('.mp3'):
+                        # Extract just the filename from the full path
+                        tts_filename = filename.split('/')[-1]
+                        row_dict['audio_url'] = f"/api/tts/{tts_filename}"
+                    
+                    # Add TTS text as 'text' field for DJ entries
+                    if row_dict.get('tts_text'):
+                        row_dict['text'] = row_dict['tts_text']
                 
                 # Clean up internal fields
                 if 'tts_text' in row_dict:

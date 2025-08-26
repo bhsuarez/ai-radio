@@ -1,25 +1,21 @@
 """
 History service for managing play history
 """
-import threading
+import sys
+sys.path.append('/opt/ai-radio')  # Add parent directory to path
+
 import time
-from collections import deque
 from typing import Dict, List
 
 from config import config
-from utils.file import safe_json_read, locked_json_append, atomic_write
+from database import add_history_entry, get_history as get_db_history
 
 class HistoryService:
     """Service for managing track play history"""
     
     def __init__(self):
-        self._history = deque(maxlen=config.MAX_HISTORY)
-        self._history_lock = threading.Lock()
         self._last_event_key = None
         self._last_event_time = 0
-        
-        # Load existing history on startup
-        self._load_history()
     
     def add_track(self, track_data: Dict) -> bool:
         """
@@ -33,7 +29,7 @@ class HistoryService:
         """
         # Create standardized event
         event = {
-            "type": "song",
+            "type": track_data.get("type", "song"),  # Preserve original type (song/dj)
             "time": int(track_data.get("time", time.time() * 1000)),
             "title": track_data.get("title", "").strip(),
             "artist": track_data.get("artist", "").strip(),
@@ -51,16 +47,15 @@ class HistoryService:
             current_time - self._last_event_time < config.DEDUP_WINDOW_MS):
             return False
         
-        # Add to history
-        with self._history_lock:
-            self._history.append(event)
+        # Save to database immediately
+        success = self._save_to_database(event)
+        if not success:
+            return False
         
         # Update deduplication tracking
         self._last_event_key = event_key
         self._last_event_time = current_time
         
-        # Persist to disk
-        self._save_to_disk(event)
         
         return True
     
@@ -74,16 +69,47 @@ class HistoryService:
         Returns:
             List of track events, most recent first
         """
-        with self._history_lock:
-            history_list = list(self._history)
-        
-        # Return most recent first
-        history_list.reverse()
-        
-        if limit:
-            history_list = history_list[:limit]
-        
-        return history_list
+        try:
+            # Get from database
+            db_history = get_db_history(limit=limit or 100)
+            
+            # Convert database format to expected format
+            history_list = []
+            for row in db_history:
+                item = {
+                    "type": row.get("type", "song"),
+                    "time": row.get("timestamp", 0),
+                    "title": row.get("title", ""),
+                    "artist": row.get("artist", ""),
+                    "album": row.get("album", ""),
+                    "filename": row.get("filename", ""),
+                    "artwork_url": row.get("artwork_url", ""),
+                    "audio_url": row.get("audio_url", ""),
+                    "text": row.get("text", ""),  # Include transcript text for DJ entries
+                    "created_at": row.get("created_at", "")
+                }
+                
+                # For DJ entries without text, try to read from txt file
+                if item["type"] == "dj" and not item["text"]:
+                    filename = row.get("filename", "")
+                    if filename and filename.endswith('.mp3'):
+                        txt_file = filename.replace('.mp3', '.txt')
+                        try:
+                            if __import__('os').path.exists(txt_file):
+                                with open(txt_file, 'r', encoding='utf-8') as f:
+                                    content = f.read().strip()
+                                    if content:
+                                        item["text"] = content.strip('"\'').strip()
+                        except Exception as e:
+                            print(f"Error reading txt file {txt_file}: {e}")
+                
+                history_list.append(item)
+            
+            return history_list
+            
+        except Exception as e:
+            print(f"Error: Failed to get history from database: {e}")
+            return []
     
     def clear_history(self) -> bool:
         """
@@ -92,11 +118,17 @@ class HistoryService:
         Returns:
             True if successful
         """
-        with self._history_lock:
-            self._history.clear()
-        
-        # Clear disk storage
-        return atomic_write(config.HISTORY_FILE, [])
+        try:
+            from database import DatabaseManager
+            db_manager = DatabaseManager()
+            with db_manager.get_connection() as conn:
+                cursor = conn.cursor()
+                cursor.execute("DELETE FROM play_history")
+                conn.commit()
+            return True
+        except Exception as e:
+            print(f"Error clearing history: {e}")
+            return False
     
     def _generate_event_key(self, event: Dict) -> str:
         """
@@ -114,18 +146,19 @@ class HistoryService:
         
         return f"t|{title}|{artist}|{album}"
     
-    def _load_history(self):
-        """Load history from disk on startup"""
-        history_data = safe_json_read(config.HISTORY_FILE, [])
-        
-        if isinstance(history_data, list):
-            with self._history_lock:
-                self._history.clear()
-                # Only keep recent entries within our limit
-                recent_entries = history_data[-config.MAX_HISTORY:]
-                self._history.extend(recent_entries)
-    
-    def _save_to_disk(self, event: Dict):
-        """Save single event to persistent history file"""
-        # Use atomic append with file locking
-        locked_json_append(config.HISTORY_FILE, event, max_entries=500)
+    def _save_to_database(self, event: Dict) -> bool:
+        """Save single event to database"""
+        try:
+            add_history_entry(
+                entry_type=event.get("type", "song"),
+                timestamp=event.get("time", int(time.time() * 1000)),
+                title=event.get("title", ""),
+                artist=event.get("artist", ""),
+                album=event.get("album", ""),
+                filename=event.get("filename", ""),
+                artwork_url=event.get("artwork_url", "")
+            )
+            return True
+        except Exception as e:
+            print(f"Error: Failed to save event to database: {e}")
+            return False

@@ -20,6 +20,29 @@ tts_service = TTSService()
 
 api_bp = Blueprint('api', __name__)
 
+def get_tts_transcript(filename):
+    """Get transcript text for a TTS audio file"""
+    if not filename or not filename.endswith('.mp3'):
+        return "DJ Commentary"
+    
+    # Convert audio filename to text filename
+    txt_filename = filename.replace('.mp3', '.txt')
+    
+    try:
+        if os.path.exists(txt_filename):
+            with open(txt_filename, 'r', encoding='utf-8') as f:
+                transcript = f.read().strip()
+                # Clean up the transcript - remove quotes and limit length for display
+                transcript = transcript.strip('"\'').strip()
+                if len(transcript) > 100:
+                    transcript = transcript[:97] + "..."
+                return transcript if transcript else "DJ Commentary"
+        else:
+            return "DJ Commentary"
+    except Exception as e:
+        print(f"Error reading TTS transcript from {txt_filename}: {e}")
+        return "DJ Commentary"
+
 @api_bp.route("/event")
 def api_event():
     """
@@ -60,11 +83,25 @@ def api_event():
             "artwork_url": artwork_url,
         }
     elif ev_type == "dj":
+        audio_url = request.args.get("audio_url", "")
+        # Extract filename from audio_url (e.g. "/tts/intro_123.mp3" -> "intro_123.mp3")
+        filename = ""
+        if audio_url.startswith("/tts/"):
+            filename = f"/opt/ai-radio{audio_url}"
+        
+        # Get transcript from text file if available
+        transcript = get_tts_transcript(filename) if filename else "DJ Commentary"
+        
         row = {
             "type": "dj", 
             "time": now_ms,
+            "title": transcript,
+            "artist": "AI DJ", 
+            "album": "DJ Intro",
+            "filename": filename,
             "text": request.args.get("text", "")[:2000],
-            "audio_url": request.args.get("audio_url"),
+            "audio_url": audio_url,
+            "artwork_url": "/static/station-cover.jpg",
         }
     elif ev_type == "metadata_refresh":
         # Handle metadata refresh events from Liquidsoap track changes
@@ -312,9 +349,67 @@ def add_custom_prompt():
 
 @api_bp.route("/now", methods=["GET"])
 def api_now():
-    """Get current track information"""
+    """Get current track information with time remaining"""
     try:
         current_track = metadata_service.get_current_track()
+        
+        # Add time remaining from telnet (cached to avoid too many calls)
+        try:
+            import time
+            import subprocess
+            
+            # Only fetch remaining time every 5 seconds to avoid telnet spam
+            current_time = time.time()
+            cache_key = 'remaining_time_cache'
+            
+            # Simple module-level cache (you could use Redis/etc for production)
+            if not hasattr(api_now, '_cache'):
+                api_now._cache = {}
+            
+            if (cache_key not in api_now._cache or 
+                current_time - api_now._cache[cache_key]['timestamp'] > 5):
+                
+                # Get remaining time from Liquidsoap telnet
+                result = subprocess.run(
+                    ['bash', '-c', 'echo -e "output.icecast.remaining\\nquit" | nc localhost 1234'],
+                    capture_output=True, text=True, timeout=2
+                )
+                
+                if result.returncode == 0:
+                    lines = result.stdout.strip().split('\n')
+                    for line in lines:
+                        if line.replace('.', '').replace('-', '').isdigit():
+                            remaining_seconds = float(line)
+                            api_now._cache[cache_key] = {
+                                'remaining': remaining_seconds,
+                                'timestamp': current_time
+                            }
+                            break
+                    else:
+                        # Fallback calculation if telnet fails
+                        if current_track.get('duration') and current_track.get('track_started_at'):
+                            elapsed = current_time - current_track['track_started_at']
+                            remaining_seconds = max(0, current_track['duration'] - elapsed)
+                        else:
+                            remaining_seconds = 0
+                        
+                        api_now._cache[cache_key] = {
+                            'remaining': remaining_seconds,
+                            'timestamp': current_time
+                        }
+            
+            current_track['time_remaining'] = api_now._cache[cache_key]['remaining']
+            
+        except Exception as e:
+            print(f"Error getting remaining time: {e}")
+            # Fallback calculation
+            current_time = time.time()
+            if current_track.get('duration') and current_track.get('track_started_at'):
+                elapsed = current_time - current_track['track_started_at']
+                current_track['time_remaining'] = max(0, current_track['duration'] - elapsed)
+            else:
+                current_track['time_remaining'] = 0
+        
         return jsonify(current_track)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
@@ -325,7 +420,8 @@ def api_history():
     try:
         limit = request.args.get('limit', 50, type=int)
         history = history_service.get_history(limit=limit)
-        return jsonify({"history": history})
+        # Return direct array for frontend compatibility (not wrapped in object)
+        return jsonify(history)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -333,13 +429,23 @@ def api_history():
 def api_next():
     """Get upcoming tracks"""
     try:
-        # Refresh next.json if the refresh parameter is provided
+        # Refresh next.json if the refresh parameter is provided OR automatically every 30 seconds
         refresh = request.args.get('refresh', 'false').lower() == 'true'
-        if refresh:
+        
+        # Auto-refresh logic: check if we should automatically refresh based on time
+        cache_file = Path("/opt/ai-radio/next.json")
+        auto_refresh = False
+        if cache_file.exists():
+            cache_age = time.time() - cache_file.stat().st_mtime
+            auto_refresh = cache_age > 30  # Auto-refresh if cache is older than 30 seconds
+        else:
+            auto_refresh = True  # Refresh if cache doesn't exist
+            
+        if refresh or auto_refresh:
             try:
                 result = subprocess.run(['/opt/ai-radio/refresh_next_from_requests.sh'], 
                                        capture_output=True, text=True, timeout=10)
-                print(f"Next track refresh result: {result.returncode}")
+                print(f"Next track refresh result: {result.returncode} (auto={auto_refresh})")
             except Exception as e:
                 print(f"Failed to refresh next tracks: {e}")
         
@@ -354,8 +460,17 @@ def api_next():
         
         # Clean up and ensure artwork URLs are present
         for track in next_tracks:
-            if not track.get("artwork_url"):
-                filename = track.get("filename", "")
+            filename = track.get("filename", "")
+            
+            # Handle TTS files specially
+            if filename and ("/tts/intro_" in filename or "/tts/outro_" in filename):
+                transcript = get_tts_transcript(filename)
+                track["title"] = transcript
+                track["artist"] = "AI DJ"
+                track["album"] = "DJ Intro"
+                track["type"] = "dj"
+                track["artwork_url"] = "/static/station-cover.jpg"  # Use station logo
+            elif not track.get("artwork_url"):
                 artist = track.get("artist", "")
                 album = track.get("album", "")
                 
@@ -369,7 +484,15 @@ def api_next():
                 
                 track["artwork_url"] = artwork_url
         
-        return jsonify(next_tracks)
+        # Return tracks for frontend compatibility
+        if request.args.get('all', 'false').lower() == 'true':
+            # Return all tracks for queue/playlist view
+            return jsonify(next_tracks)
+        else:
+            # Return first 3 tracks as array for "coming up" section
+            # Frontend expects array format for proper display
+            coming_up = next_tracks[:3] if next_tracks else []
+            return jsonify(coming_up)
     except Exception as e:
         return jsonify({"error": str(e)}), 500
 
@@ -572,3 +695,24 @@ def api_preview_speaker():
             
     except Exception as e:
         return jsonify({"error": str(e)}), 500
+
+@api_bp.route("/tts/<filename>", methods=["GET"])
+def serve_tts_file(filename):
+    """Serve TTS audio files for playback"""
+    try:
+        # Security: validate filename (no path traversal)
+        if '.' not in filename or '/' in filename or '\\' in filename or '..' in filename:
+            abort(400)
+        
+        # Only allow MP3 files
+        if not filename.endswith('.mp3'):
+            abort(400)
+        
+        tts_file = Path("/opt/ai-radio/tts") / filename
+        
+        if not tts_file.exists():
+            abort(404)
+        
+        return send_file(str(tts_file), mimetype="audio/mpeg")
+    except Exception as e:
+        abort(500)
