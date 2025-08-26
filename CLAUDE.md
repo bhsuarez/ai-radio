@@ -129,3 +129,44 @@ The `ai-dj-daemon.service` is failing because `/opt/ai-radio/dj_daemon.py` doesn
 
 **Multi-Station Setup:**
 The system is designed to support multiple Liquidsoap instances for different playback modes (random/sequential/genre-based) as outlined in the original CLAUDE.md planning notes.
+- root@ai-radio:~# telnet localhost 1234 
+Trying ::1...
+Connection failed: Connection refused
+Trying 127.0.0.1...
+Connected to localhost.
+Escape character is '^]'.
+help
+Available commands:
+| exit
+| help [<command>]
+| library_clean_m3u.next
+| library_clean_m3u.reload
+| library_clean_m3u.skip
+| library_clean_m3u.uri [<uri>]
+| music_harbor.buffer_length
+| music_harbor.status
+| music_harbor.stop
+| output.icecast.metadata
+| output.icecast.remaining
+| output.icecast.skip
+| quit
+| request.all
+| request.metadata <rid>
+| request.resolving
+| request.trace <rid>
+| runtime.gc.compact
+| runtime.gc.full_major
+| runtime.memory
+| shutdown
+| tts.flush_and_skip
+| tts.push <uri>
+| tts.queue
+| tts.skip
+| uptime
+| var.get
+| var.list
+| var.set <name> = <value>
+| version
+
+Type "help <command>" for more information.
+END

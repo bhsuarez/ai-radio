@@ -2,7 +2,6 @@ import React, { useState, useEffect, useCallback, useMemo } from 'react';
 import axios from 'axios';
 import io from 'socket.io-client';
 import { motion, AnimatePresence } from 'framer-motion';
-import SpeakerModal from './SpeakerModal';
 import './App.css';
 
 interface Track {
@@ -43,7 +42,6 @@ function App() {
   const [loading, setLoading] = useState(true);
   const [trackStartTime, setTrackStartTime] = useState<number>(0);
   const [currentTime, setCurrentTime] = useState<number>(Date.now());
-  const [showSpeakerModal, setShowSpeakerModal] = useState(false);
 
   const API_BASE = `${window.location.protocol}//${window.location.hostname}:5055`;
   
@@ -81,27 +79,29 @@ function App() {
       console.log('Current track response:', response.data);
       const newTrack = response.data;
       
-      // Check if this is a different track than what we currently have
-      const isNewTrack = !currentTrack || 
-        currentTrack.title !== newTrack.title || 
-        currentTrack.artist !== newTrack.artist;
-      
-      setCurrentTrack(newTrack);
-      
-      // Always use backend timestamp when available (prevents refresh timer resets)
-      if (newTrack.track_started_at) {
-        const startTime = newTrack.track_started_at * 1000;
-        setTrackStartTime(startTime);
-        console.log(`🔄 Using backend start time: ${newTrack.title} - Started at: ${new Date(startTime)} (${isNewTrack ? 'NEW' : 'REFRESH'})`);
-      } else if (newTrack.title) {
-        // Only set current time if we don't have a backend timestamp
-        setTrackStartTime(Date.now());
-        console.log(`🎵 No backend timestamp for: ${newTrack.title} - Using current time`);
-      }
+      setCurrentTrack(prevTrack => {
+        // Check if this is a different track than what we currently have
+        const isNewTrack = !prevTrack || 
+          prevTrack.title !== newTrack.title || 
+          prevTrack.artist !== newTrack.artist;
+        
+        // Always use backend timestamp when available (prevents refresh timer resets)
+        if (newTrack.track_started_at) {
+          const startTime = newTrack.track_started_at * 1000;
+          setTrackStartTime(startTime);
+          console.log(`🔄 Using backend start time: ${newTrack.title} - Started at: ${new Date(startTime)} (${isNewTrack ? 'NEW' : 'REFRESH'})`);
+        } else if (newTrack.title) {
+          // Only set current time if we don't have a backend timestamp
+          setTrackStartTime(Date.now());
+          console.log(`🎵 No backend timestamp for: ${newTrack.title} - Using current time`);
+        }
+        
+        return newTrack;
+      });
     } catch (error) {
       console.error('Failed to fetch current track:', error);
     }
-  }, [currentTrack, API_BASE]);
+  }, [API_BASE]);
 
   // Fetch history
   const fetchHistory = useCallback(async () => {
@@ -167,27 +167,29 @@ function App() {
     socket.on('track_update', (trackInfo: Track) => {
       console.log('🎵 Track update received:', trackInfo);
       
-      // Check if this is actually a new track
-      const isNewTrack = !currentTrack || 
-        currentTrack.title !== trackInfo.title || 
-        currentTrack.artist !== trackInfo.artist;
-      
-      setCurrentTrack(trackInfo);
-      
-      // Always use backend timestamp when available (prevents refresh timer resets)
-      if (trackInfo.track_started_at) {
-        const startTime = trackInfo.track_started_at * 1000;
-        setTrackStartTime(startTime);
-        if (isNewTrack) {
-          console.log('🎵 New track detected via socket:', trackInfo.title, 'Started at:', new Date(startTime));
-        } else {
-          console.log('🔄 Using backend start time via socket:', trackInfo.title, 'Started at:', new Date(startTime));
+      setCurrentTrack(prevTrack => {
+        // Check if this is actually a new track
+        const isNewTrack = !prevTrack || 
+          prevTrack.title !== trackInfo.title || 
+          prevTrack.artist !== trackInfo.artist;
+        
+        // Always use backend timestamp when available (prevents refresh timer resets)
+        if (trackInfo.track_started_at) {
+          const startTime = trackInfo.track_started_at * 1000;
+          setTrackStartTime(startTime);
+          if (isNewTrack) {
+            console.log('🎵 New track detected via socket:', trackInfo.title, 'Started at:', new Date(startTime));
+          } else {
+            console.log('🔄 Using backend start time via socket:', trackInfo.title, 'Started at:', new Date(startTime));
+          }
+        } else if (isNewTrack) {
+          // Fall back to current time only for new tracks without backend timestamp
+          setTrackStartTime(Date.now());
+          console.log('🎵 New track detected via socket (no backend timestamp):', trackInfo.title);
         }
-      } else if (isNewTrack) {
-        // Fall back to current time only for new tracks without backend timestamp
-        setTrackStartTime(Date.now());
-        console.log('🎵 New track detected via socket (no backend timestamp):', trackInfo.title);
-      }
+        
+        return trackInfo;
+      });
       
       fetchHistory(); // Refresh history when track changes
       fetchNextTracks(true); // Refresh upcoming tracks from Liquidsoap
@@ -208,7 +210,7 @@ function App() {
       console.log('Closing WebSocket connection');
       socket.close();
     };
-  }, [API_BASE, currentTrack, fetchHistory, fetchNextTracks]);
+  }, [API_BASE, fetchHistory, fetchNextTracks]);
 
   // Initial data fetch
   useEffect(() => {
@@ -409,12 +411,6 @@ function App() {
                   >
                     ⏭️ Skip Track
                   </button>
-                  <button 
-                    className="speaker-button"
-                    onClick={() => setShowSpeakerModal(true)}
-                  >
-                    🎙️ DJ Voice
-                  </button>
                   <a 
                     href={`http://${window.location.hostname}:8000/stream.mp3`}
                     target="_blank"
@@ -481,8 +477,14 @@ function App() {
                   >
                     <div className="dj-icon">🎙️</div>
                     <div className="track-info">
-                      <span className="dj-text">{item.text || 'DJ Commentary'}</span>
+                      <span className="dj-text">{item.title || item.text || 'DJ Commentary'}</span>
                       <span className="dj-label">AI DJ</span>
+                      {item.text && (
+                        <div className="dj-transcript">
+                          <span className="transcript-label">Transcript:</span>
+                          <p className="transcript-text">{item.text}</p>
+                        </div>
+                      )}
                       {item.audio_url && (
                         <audio 
                           controls 
@@ -524,17 +526,6 @@ function App() {
           )}
         </section>
       </main>
-
-      {/* Speaker Selection Modal */}
-      <AnimatePresence>
-        {showSpeakerModal && (
-          <SpeakerModal 
-            isOpen={showSpeakerModal}
-            onClose={() => setShowSpeakerModal(false)}
-            apiBase={API_BASE}
-          />
-        )}
-      </AnimatePresence>
     </div>
   );
 }
